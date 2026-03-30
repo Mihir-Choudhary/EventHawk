@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/badge/version-1.2-blue" alt="Version 1.2"/>
     <img src="https://img.shields.io/badge/platform-Windows-lightgrey" alt="Windows"/>
     <img src="https://img.shields.io/badge/python-3.10%2B-yellow" alt="Python 3.10+"/>
-    <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"/>
+    <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="Apache 2.0"/>
     <img src="https://img.shields.io/badge/engine-DuckDB%20%2B%20PyArrow-orange" alt="DuckDB + PyArrow"/>
   </p>
 </p>
@@ -289,7 +289,7 @@ Contributions are welcome — bug fixes, new event ID descriptions, additional D
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache 2.0 — see [LICENSE](LICENSE).
 
 ---
 
