@@ -26,11 +26,29 @@ pyinstaller EventHawk.spec
 
 Output: `dist\EventHawk.exe` (~7–10 MB).
 
+If you prefer to build without the spec file, use this equivalent command from the repo root:
+
+```bat
+pyinstaller --onefile --windowed --name EventHawk --icon evtx_tool\resources\images\eventhawk_logo.ico launcher.py
+```
+
 ### What the spec does
 
 - `--onefile` — single EXE, no companion DLLs
 - `--windowed` — no console window opens on launch (GUI mode)
 - `launcher.py` — the entry point: finds the system Python and runs `evtx_tool.py gui`
+
+### Critical: EXE placement
+
+After building, **copy `EventHawk.exe` to the same folder as `evtx_tool.py`** (the repo root). The launcher hardcodes this — it looks for `evtx_tool.py` in the same directory as the EXE. If they are in different folders, launching will fail with:
+
+```
+evtx_tool.py not found next to the launcher.
+```
+
+```bat
+copy dist\EventHawk.exe .
+```
 
 > **Note:** The EXE is a launcher, not a fully bundled application. It locates the system Python at runtime. This keeps the EXE small and means users can update Python dependencies without rebuilding the EXE.
 
