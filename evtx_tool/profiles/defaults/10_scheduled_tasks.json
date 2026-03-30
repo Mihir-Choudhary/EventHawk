@@ -1,0 +1,44 @@
+{
+  "name": "Scheduled Tasks",
+  "description": "Detects scheduled task creation, modification, deletion, and execution. Tasks are a common persistence and lateral movement mechanism. Event 4698 includes the full XML task definition — check TaskContent for suspicious actions, triggers, and principals.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["scheduled-tasks", "persistence", "dfir", "sans-for508"],
+  "event_ids": [4698, 4699, 4700, 4701, 4702, 106, 107, 108, 109, 110, 111, 119, 129, 140, 141, 142, 200, 201, 202, 325, 327, 329, 331],
+  "sources": [
+    "Security",
+    "Microsoft-Windows-TaskScheduler"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "Microsoft-Windows-TaskScheduler%4Operational.evtx"
+  ],
+  "keywords": ["powershell", "cmd.exe", "wscript", "cscript", "mshta", "regsvr32", "rundll32"],
+  "severity_overrides": {
+    "4698": "high",
+    "4699": "high",
+    "4702": "medium",
+    "106": "high",
+    "141": "medium",
+    "200": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4698": "Scheduled task created — TaskName, TaskContent (full XML with triggers, actions, principal)",
+    "4699": "Scheduled task deleted",
+    "4700": "Scheduled task enabled",
+    "4701": "Scheduled task disabled",
+    "4702": "Scheduled task updated — includes new XML definition",
+    "106": "Task Scheduler: Task registered — TaskName, UserContext",
+    "107": "Task Scheduler: Task triggered on scheduler",
+    "108": "Task Scheduler: Task triggered on event",
+    "110": "Task Scheduler: Task triggered by user",
+    "129": "Task Scheduler: Task created child process — ProcessName",
+    "140": "Task Scheduler: Task updated",
+    "141": "Task Scheduler: Task deleted",
+    "200": "Task Scheduler: Task action launched — ActionName, InstanceId",
+    "201": "Task Scheduler: Task action completed — ActionName, ResultCode",
+    "325": "Task Scheduler: Task completed",
+    "329": "Task Scheduler: Task engine received message to stop task"
+  }
+}

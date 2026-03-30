@@ -1,0 +1,39 @@
+{
+  "name": "PowerShell Execution",
+  "description": "Detects PowerShell execution including script block logging (captures obfuscated/encoded scripts), module logging, and engine lifecycle events. Event 4104 is the most critical — captures full script content even when encoded.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["powershell", "execution", "dfir", "sans-for508"],
+  "event_ids": [400, 403, 500, 501, 600, 800, 4103, 4104, 4105, 4106, 4688, 53504],
+  "sources": [
+    "Security",
+    "Microsoft-Windows-PowerShell",
+    "PowerShell"
+  ],
+  "target_logs": [
+    "Microsoft-Windows-PowerShell%4Operational.evtx",
+    "Windows PowerShell.evtx",
+    "Security.evtx"
+  ],
+  "keywords": ["powershell", "bypass", "encodedcommand", "invoke-expression", "iex", "downloadstring", "webclient", "amsi", "reflection"],
+  "severity_overrides": {
+    "4104": "high",
+    "4103": "medium",
+    "400": "low",
+    "600": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "400": "Engine state changed to Running — contains HostApplication (calling process)",
+    "403": "Engine state changed to Stopped",
+    "500": "Command started",
+    "501": "Command stopped",
+    "600": "Provider lifecycle — can detect AMSI bypass providers loaded",
+    "800": "Pipeline execution details",
+    "4103": "Module logging — pipeline execution details with full output",
+    "4104": "Script block logging — FULL script content captured (critical: catches Base64/obfuscated)",
+    "4105": "Script block invocation start",
+    "4106": "Script block invocation stop",
+    "53504": "PowerShell transcript started"
+  }
+}

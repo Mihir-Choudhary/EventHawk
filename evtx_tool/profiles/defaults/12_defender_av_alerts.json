@@ -1,0 +1,49 @@
+{
+  "name": "Defender and AV Alerts",
+  "description": "Captures Microsoft Defender antivirus detections, actions taken, real-time protection status changes, and configuration modifications. Disabled real-time protection (5001, 5010) is a strong indicator of tampering. Check ThreatName and ActionSuccess fields.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["defender", "antivirus", "malware", "dfir"],
+  "event_ids": [1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1015, 1116, 1117, 1118, 1119, 1120, 2000, 2001, 2002, 2003, 2004, 2005, 3002, 3007, 5000, 5001, 5004, 5007, 5008, 5010, 5012, 5013],
+  "sources": [
+    "Microsoft-Windows-Windows Defender"
+  ],
+  "target_logs": [
+    "Microsoft-Windows-Windows Defender%4Operational.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "1116": "high",
+    "1117": "high",
+    "1119": "critical",
+    "5001": "critical",
+    "5010": "critical",
+    "5013": "critical",
+    "3002": "high"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "1006": "Antivirus scan found malicious/unwanted item",
+    "1007": "Platform performed action to protect from malware",
+    "1008": "Antivirus action failed (remediation unsuccessful)",
+    "1009": "Item restored from quarantine",
+    "1010": "Item could not be removed from quarantine",
+    "1011": "Antivirus scan history delete failed",
+    "1013": "Antivirus real-time protection scan dropped old item from history",
+    "1015": "Antivirus detected suspicious behavior",
+    "1116": "Antivirus detected malware — ThreatName, Severity, Category, Path, DetectionUser, ProcessName",
+    "1117": "Antivirus took action against malware — Action (Quarantine/Remove/Allow), ActionSuccess",
+    "1118": "Antivirus remediation partially successful",
+    "1119": "Antivirus remediation failed — threat may still be active",
+    "1120": "Antivirus was configured to allow detection",
+    "2001": "Antivirus signature update failed",
+    "2003": "Antivirus signature force-updated",
+    "3002": "Real-time protection encountered error — ErrorCode",
+    "5001": "Real-time protection DISABLED — critical tampering indicator",
+    "5004": "Real-time protection configuration changed",
+    "5007": "Antivirus configuration changed — OldValue, NewValue (check for disabling features)",
+    "5010": "Anti-malware scanning disabled — critical",
+    "5012": "Antivirus scanning disabled",
+    "5013": "Tamper protection blocked operation — TamperType, ProcessName"
+  }
+}

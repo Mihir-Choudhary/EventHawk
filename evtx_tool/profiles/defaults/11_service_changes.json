@@ -1,0 +1,37 @@
+{
+  "name": "Service Install and Changes",
+  "description": "Detects service installation, start-type changes, crashes, and state transitions. Services are a primary persistence mechanism. Event 4697 (Security log) and 7045 (System log) both capture new service installation — check ImagePath for suspicious executables or command lines.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["services", "persistence", "dfir", "sans-for508"],
+  "event_ids": [4697, 7023, 7024, 7026, 7031, 7032, 7034, 7035, 7036, 7040, 7045],
+  "sources": [
+    "Security",
+    "Service Control Manager"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "System.evtx"
+  ],
+  "keywords": ["powershell", "cmd.exe", "%TEMP%", "%APPDATA%", "Users\\Public", "rundll32", "regsvr32"],
+  "severity_overrides": {
+    "4697": "high",
+    "7045": "high",
+    "7040": "medium",
+    "7034": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4697": "Service installed — ServiceName, ServiceFileName (full path/command), ServiceType, ServiceStartType, ServiceAccount",
+    "7023": "Service terminated with error",
+    "7024": "Service terminated with service-specific error",
+    "7026": "Boot-start or system-start driver did not load",
+    "7031": "Service terminated unexpectedly",
+    "7032": "Service Control Manager tried to restart the service after unexpected termination",
+    "7034": "Service terminated unexpectedly (nth time)",
+    "7035": "Service Control request sent — Start or Stop",
+    "7036": "Service entered running or stopped state",
+    "7040": "Start type of a service changed (e.g., manual → auto — persistence indicator)",
+    "7045": "New service installed — ServiceName, ImagePath, ServiceType, StartType, ServiceAccount"
+  }
+}

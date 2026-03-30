@@ -1,0 +1,49 @@
+{
+  "name": "RDP Activity",
+  "description": "Detects Remote Desktop Protocol connections, session management, and authentication. Covers both inbound (LocalSessionManager, RemoteConnectionManager) and outbound (RDPClient) RDP. Key for detecting lateral movement.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["rdp", "lateral-movement", "remote-access", "dfir"],
+  "event_ids": [4624, 4625, 4778, 4779, 21, 22, 23, 24, 25, 39, 40, 65, 66, 102, 103, 131, 140, 1024, 1025, 1026, 1027, 1028, 1029, 1102, 1149],
+  "sources": [
+    "Security",
+    "Microsoft-Windows-TerminalServices-LocalSessionManager",
+    "Microsoft-Windows-TerminalServices-RemoteConnectionManager",
+    "Microsoft-Windows-TerminalServices-RDPClient"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "Microsoft-Windows-TerminalServices-LocalSessionManager%4Operational.evtx",
+    "Microsoft-Windows-TerminalServices-RemoteConnectionManager%4Operational.evtx",
+    "Microsoft-Windows-TerminalServices-RDPClient%4Operational.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "1149": "medium",
+    "131": "medium",
+    "21": "low",
+    "24": "low"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4624": "Successful logon — filter LogonType=10 for Remote Interactive (RDP)",
+    "4625": "Failed logon — filter LogonType=10 for RDP brute force",
+    "4778": "Remote session reconnected",
+    "4779": "Remote session disconnected",
+    "21": "Remote Desktop Services: Session logon succeeded",
+    "22": "Remote Desktop Services: Shell start notification",
+    "23": "Remote Desktop Services: Session logoff succeeded",
+    "24": "Remote Desktop Services: Session has been disconnected",
+    "25": "Remote Desktop Services: Session reconnection succeeded",
+    "39": "Session X disconnected by session Y",
+    "40": "Session X connected from session Y",
+    "65": "RDP client ActiveX: An error occurred",
+    "102": "TCP connection request received",
+    "103": "TCP connection terminated",
+    "131": "Server accepted a new TCP connection — contains client IP",
+    "140": "Server could not initialize SSL/TLS connection",
+    "1024": "RDP ClientActiveX is trying to connect to server",
+    "1102": "RDP client connection failed",
+    "1149": "User authentication succeeded (RemoteConnectionManager) — contains source IP, user, domain"
+  }
+}

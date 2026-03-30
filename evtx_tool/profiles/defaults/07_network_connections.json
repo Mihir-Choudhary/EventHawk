@@ -1,0 +1,34 @@
+{
+  "name": "Network Connections",
+  "description": "Detects network connections via Windows Filtering Platform (WFP) audit events and Sysmon. WFP events require 'Audit Filtering Platform Connection' policy. Sysmon Event 3 is the richest source — includes process, direction, DNS name, and both IPs/ports.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["network", "connections", "c2", "dfir"],
+  "event_ids": [3, 5031, 5154, 5155, 5156, 5157, 5158, 5159, 5031],
+  "sources": [
+    "Security",
+    "Microsoft-Windows-Sysmon",
+    "Microsoft-Windows-Windows Firewall With Advanced Security"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "Microsoft-Windows-Sysmon%4Operational.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "5157": "medium",
+    "5031": "medium",
+    "3": "low"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "3": "Sysmon: Network connection — Image, User, Protocol, SourceIp, SourcePort, DestinationIp, DestinationPort, DestinationHostname, Initiated (true=outbound)",
+    "5031": "Windows Firewall Service blocked an application from accepting incoming connections",
+    "5154": "Windows Filtering Platform: application/service listened on a port",
+    "5155": "WFP blocked an application/service from listening on a port",
+    "5156": "WFP permitted a connection — SourceAddress, DestAddress, SourcePort, DestPort, Protocol, ProcessID",
+    "5157": "WFP blocked a connection — same fields as 5156",
+    "5158": "WFP permitted a bind to local port",
+    "5159": "WFP blocked a bind to local port"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "Privilege Escalation",
+  "description": "Detects privilege escalation including special privilege assignment, token privilege adjustment, and UAC elevation. Key: 4672 with SeDebugPrivilege or SeTcbPrivilege indicates admin-level access.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["privilege", "escalation", "dfir", "sans-for508"],
+  "event_ids": [4672, 4673, 4674, 4703, 4704, 4705, 4713, 4714, 4985, 592, 593, 577],
+  "sources": ["Security"],
+  "target_logs": ["Security.evtx"],
+  "keywords": ["SeDebugPrivilege", "SeTcbPrivilege", "SeLoadDriverPrivilege", "SeAssignPrimaryTokenPrivilege", "SeTakeOwnershipPrivilege", "SeBackupPrivilege", "SeRestorePrivilege"],
+  "severity_overrides": {
+    "4672": "high",
+    "4673": "medium",
+    "4674": "medium",
+    "4703": "high",
+    "4704": "high",
+    "4705": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4672": "Special privileges assigned to new logon — check PrivilegeList field for dangerous privileges",
+    "4673": "Privileged service called",
+    "4674": "Operation attempted on privileged object",
+    "4703": "Token right adjusted (enabled/disabled privilege — UAC bypass indicator)",
+    "4704": "User right assigned to account",
+    "4705": "User right removed from account",
+    "4985": "State of transaction changed"
+  }
+}

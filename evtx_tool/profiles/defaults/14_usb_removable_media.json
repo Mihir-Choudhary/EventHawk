@@ -1,0 +1,43 @@
+{
+  "name": "USB and Removable Media",
+  "description": "Detects USB device connections, removable media access, device installation, and file access on removable storage. Event 6416 records first device insertion with full hardware IDs. DriverFrameworks events track connect/disconnect timing. Critical for data exfiltration investigations.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["usb", "removable-media", "data-exfiltration", "dfir", "sans-for508"],
+  "event_ids": [6416, 6419, 6420, 6421, 6422, 6423, 6424, 20001, 20003, 10000, 10001, 10100, 10101, 400, 410, 430],
+  "sources": [
+    "Security",
+    "Microsoft-Windows-DriverFrameworks-UserMode",
+    "Microsoft-Windows-Kernel-PnP"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "Microsoft-Windows-DriverFrameworks-UserMode%4Operational.evtx",
+    "Microsoft-Windows-Kernel-PnP%4Device Configuration.evtx",
+    "System.evtx"
+  ],
+  "keywords": ["USB", "Removable", "Mass Storage", "USBSTOR", "WPD"],
+  "severity_overrides": {
+    "6416": "medium",
+    "6423": "high",
+    "20001": "low",
+    "10000": "low"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "6416": "New external device recognized by system — DeviceId (VID/PID), ClassName (DiskDrive/USB), ClassId, HardwareIds, CompatibleIds. First-insertion record.",
+    "6419": "Request to disable a device",
+    "6420": "Device was disabled",
+    "6421": "Request to enable a device",
+    "6422": "Device was enabled",
+    "6423": "Device installation blocked by policy — DeviceId",
+    "6424": "Device installation allowed after previously being blocked",
+    "20001": "DriverFrameworks: USB device connected — DeviceInstanceId, Location",
+    "20003": "DriverFrameworks: USB device disconnected — DeviceInstanceId, elapsed time",
+    "10000": "Kernel-PnP: Device configured — DeviceInstanceId",
+    "10001": "Kernel-PnP: Device not configured",
+    "10100": "Kernel-PnP: Device driver installed",
+    "400": "PnP: Device attached (System log, source Disk)",
+    "410": "PnP: Device removed"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "Application Crashes",
+  "description": "Detects application crashes, hangs, and Windows Error Reporting events. Useful in DFIR for identifying exploit attempts (crashes from injected shellcode), malware that crashed during execution, or repeated crashes indicating instability after an attack.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["crashes", "stability", "exploit", "dfir"],
+  "event_ids": [1000, 1001, 1002, 1005, 1006, 1008, 1026, 5, 1000, 1001],
+  "sources": [
+    "Application Error",
+    "Windows Error Reporting",
+    ".NET Runtime",
+    "Application Hang"
+  ],
+  "target_logs": [
+    "Application.evtx"
+  ],
+  "keywords": ["faulting", "exception", "0xc0000005", "0xc000001d", "heap", "stack overflow"],
+  "severity_overrides": {
+    "1000": "medium",
+    "1002": "medium",
+    "1026": "low"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "1000": "Application Error — FaultingApplicationName, FaultingModuleName, ExceptionCode (0xc0000005=access violation, 0xc000001d=illegal instruction), Offset",
+    "1001": "Windows Error Reporting — BucketId, EventName, links crash to WER fault bucket",
+    "1002": "Application Hang — FaultingApplicationName, HangType (deadlock, UI freeze)",
+    "1005": "Windows Error Reporting upload started",
+    "1006": "Windows Error Reporting upload completed",
+    "1008": "WER: Application error reporting was disabled",
+    "1026": ".NET Runtime error — Application, Description (full .NET exception with stack trace)"
+  }
+}

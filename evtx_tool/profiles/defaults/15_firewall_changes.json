@@ -1,0 +1,45 @@
+{
+  "name": "Firewall Changes",
+  "description": "Detects Windows Firewall rule additions, modifications, deletions, profile changes, and policy overrides. Attackers frequently add firewall rules to allow C2 traffic or disable the firewall entirely. Event 2033 (all rules deleted) is a critical indicator.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["firewall", "network-defense", "dfir"],
+  "event_ids": [2002, 2003, 2004, 2005, 2006, 2009, 2010, 2011, 2033, 4946, 4947, 4948, 4950, 4951, 4952, 4953, 4954, 4956, 4957, 4958],
+  "sources": [
+    "Security",
+    "Microsoft-Windows-Windows Firewall With Advanced Security"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "Microsoft-Windows-Windows Firewall With Advanced Security%4Firewall.evtx"
+  ],
+  "keywords": ["netsh", "advfirewall", "allow", "disable"],
+  "severity_overrides": {
+    "2033": "critical",
+    "4948": "high",
+    "4954": "high",
+    "4956": "medium",
+    "2004": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "2002": "Windows Firewall setting changed — Profile, Setting, NewValue",
+    "2003": "Windows Firewall allowed incoming connection",
+    "2004": "Rule added to Windows Firewall exception list — RuleName, ApplicationPath, Service, Direction, Protocol, LocalPorts",
+    "2005": "Rule modified in Windows Firewall exception list",
+    "2006": "Rule deleted from Windows Firewall exception list",
+    "2009": "Windows Firewall could not load group policy rule",
+    "2010": "Windows Firewall started",
+    "2011": "Windows Firewall stopped",
+    "2033": "ALL RULES DELETED from a firewall store — critical: complete firewall policy wipe",
+    "4946": "Rule added to Windows Firewall exception list",
+    "4947": "Rule modified in Windows Firewall exception list — ModifyingUser, RuleId, RuleName",
+    "4948": "Rule deleted from Windows Firewall exception list",
+    "4950": "Windows Firewall setting changed",
+    "4951": "Rule ignored by Windows Firewall (version mismatch)",
+    "4954": "Windows Firewall Group Policy settings changed — policy push may override local rules",
+    "4956": "Windows Firewall active profile changed",
+    "4957": "Windows Firewall did not apply rule",
+    "4958": "Windows Firewall did not apply rule (dependency not found)"
+  }
+}

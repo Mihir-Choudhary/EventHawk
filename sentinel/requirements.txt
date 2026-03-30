@@ -1,0 +1,13 @@
+# Sentinel Baseline Engine — dependencies
+# Install with: pip install -r sentinel/requirements.txt
+
+# EVTX binary parsing
+python-evtx>=0.7.4
+
+# Sigma rule evaluation — optional, tagging is silently skipped if absent
+pySigma>=0.10.0
+
+# NOTE: PySide6 is required for the GUI but already installed by the main evtx_tool.
+# NOTE: The XOR8 probabilistic filter is pure Python (stdlib only), no extra package needed.
+
+

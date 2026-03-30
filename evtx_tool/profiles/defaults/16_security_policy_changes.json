@@ -1,0 +1,40 @@
+{
+  "name": "Security Policy Changes",
+  "description": "Detects audit policy changes, domain policy modifications, and security descriptor changes. Event 4719 is critical — attackers frequently disable audit policies to cover their tracks. Event 4906 (CrashOnAuditFail) modification can be used to crash systems when audit log is full.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["policy", "audit", "dfir", "anti-forensics"],
+  "event_ids": [4715, 4719, 4739, 4817, 4864, 4865, 4866, 4867, 4902, 4904, 4905, 4906, 4907, 4908, 4912, 4913, 1102, 517],
+  "sources": ["Security"],
+  "target_logs": ["Security.evtx"],
+  "keywords": ["audit", "policy", "disabled", "removed"],
+  "severity_overrides": {
+    "4719": "critical",
+    "1102": "critical",
+    "517": "critical",
+    "4906": "high",
+    "4739": "high",
+    "4907": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4715": "Audit policy on an object changed",
+    "4719": "System audit policy changed — SubcategoryName, AuditPolicyChanges (enabling/disabling audit subcategories). Attackers use this to blind logging.",
+    "4739": "Domain policy changed — password policy, lockout policy, Kerberos policy modifications",
+    "4817": "Auditing settings on object changed",
+    "4864": "Namespace collision was detected — Local Policy Namespace",
+    "4865": "Trusted forest information entry added",
+    "4866": "Trusted forest information entry removed",
+    "4867": "Trusted forest information entry modified",
+    "4902": "Per-user audit policy table was created",
+    "4904": "Attempt to register security event source",
+    "4905": "Attempt to unregister security event source",
+    "4906": "CrashOnAuditFail value changed — can be used to DoS system when audit log is full",
+    "4907": "Auditing settings on object changed — ObjectName, SubcategoryName",
+    "4908": "Special Groups Logon table modified",
+    "4912": "Per-user audit policy changed",
+    "4913": "Per-user audit policy deleted",
+    "1102": "Audit log cleared — SubjectUserName, SubjectDomainName. Anti-forensic indicator.",
+    "517": "Audit log cleared (Windows XP/2003 equivalent of 1102)"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "Registry Modifications",
+  "description": "Detects registry key/value creation, modification, deletion, and permission changes. Security log events require 'Audit Registry' policy and SACLs on registry keys. Sysmon Events 12/13/14 are far easier to deploy — no SACL configuration required.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["registry", "persistence", "dfir", "sans-for508"],
+  "event_ids": [4656, 4657, 4658, 4659, 4660, 4663, 4670, 12, 13, 14],
+  "sources": [
+    "Security",
+    "Microsoft-Windows-Sysmon"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "Microsoft-Windows-Sysmon%4Operational.evtx"
+  ],
+  "keywords": ["Run", "RunOnce", "CurrentVersion\\Run", "Winlogon", "AppInit_DLLs", "Image File Execution Options", "Debugger", "shell", "userinit", "HKLM\\SYSTEM\\CurrentControlSet\\Services"],
+  "severity_overrides": {
+    "4657": "medium",
+    "4660": "high",
+    "4670": "high",
+    "12": "low",
+    "13": "medium",
+    "14": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4656": "Handle to registry key requested",
+    "4657": "Registry value modified — ObjectName (key path), OldValueName, OldValue, NewValue, ProcessName",
+    "4658": "Handle to registry key closed",
+    "4659": "Handle to registry key requested with intent to delete",
+    "4660": "Registry key deleted",
+    "4663": "Registry key access attempt",
+    "4670": "Registry key permissions changed",
+    "12": "Sysmon: RegistryEvent — key/value Created or Deleted — TargetObject (full key path), Image",
+    "13": "Sysmon: RegistryEvent — value Set — TargetObject, Details (new value data), Image",
+    "14": "Sysmon: RegistryEvent — key/value Renamed — TargetObject, NewName, Image"
+  }
+}

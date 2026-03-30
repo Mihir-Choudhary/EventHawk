@@ -1,0 +1,39 @@
+{
+  "name": "Windows Update and Patch Activity",
+  "description": "Tracks Windows Update downloads, installations, failures, and uninstalls. Essential for identifying unpatched systems, failed critical patches, and suspicious KB uninstalls that may expose vulnerabilities. Cross-reference with CVE databases using KB numbers.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["windows-update", "patching", "vulnerability", "dfir"],
+  "event_ids": [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31, 33, 34, 35, 43, 44, 1009],
+  "sources": [
+    "Microsoft-Windows-WindowsUpdateClient"
+  ],
+  "target_logs": [
+    "Microsoft-Windows-WindowsUpdateClient%4Operational.evtx"
+  ],
+  "keywords": ["KB", "Security Update", "Critical", "failed", "error"],
+  "severity_overrides": {
+    "20": "high",
+    "23": "high",
+    "1009": "medium",
+    "21": "low"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "19": "Update download succeeded — UpdateTitle (KB number), UpdateRevisionNumber",
+    "20": "Update download FAILED — UpdateTitle, ErrorCode. Critical patches repeatedly failing = vulnerability exposure.",
+    "21": "Update installation succeeded — UpdateTitle (KB number applied), RebootRequired",
+    "22": "Update installation ABORTED",
+    "23": "Update installation FAILED — UpdateTitle, ErrorCode. System remains unpatched.",
+    "24": "Update uninstalled successfully",
+    "25": "Update uninstall FAILED",
+    "26": "Update not applicable to this system",
+    "27": "Update marked as permanently not applicable",
+    "31": "Update reboot required",
+    "33": "Reboot pending for update installation",
+    "34": "Scheduled restart to complete update",
+    "43": "Update download started",
+    "44": "Update download stage changed",
+    "1009": "Update was uninstalled — UpdateTitle, KB number. Suspicious if security update removed."
+  }
+}

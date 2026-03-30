@@ -1,0 +1,68 @@
+# Python bytecode
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Runtime logs and temp data
+evtx_tool_logs/
+*.log
+
+# PyInstaller build artifacts (keep .spec, not the binary)
+*.exe
+*.app
+
+# Claude Code session config
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test / debug scripts
+_test_ev_str.py
+
+# Baseline artifacts (user-generated, not source)
+baseline/
+*.pkl
+*.pickle
+baseline_meta.json
+artifact_checksums.json
+baseline.db
+
+# Parquet shards / DuckDB temp files (Juggernaut runtime)
+*.parquet
+parquet_manifest.json
+*.duckdb
+*.duckdb.wal
+*.duckdb-journal
+temp_*/
+tmp_*/
+
+# User case files
+*.case
+*.evtx
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

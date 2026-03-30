@@ -1,0 +1,42 @@
+{
+  "name": "System Boot and Shutdown Events",
+  "description": "Tracks system start, shutdown, restart, and unexpected shutdown events. Kernel-Power 41 (dirty shutdown) indicates crash, BSOD, or hard power loss — critical for timeline reconstruction. Events 6005/6006 bookend system uptime periods. Event 1074 captures who initiated shutdown/restart and why.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["boot", "shutdown", "timeline", "dfir", "sans-for508"],
+  "event_ids": [12, 13, 41, 42, 107, 1074, 1076, 6005, 6006, 6008, 6009, 6013],
+  "sources": [
+    "System",
+    "EventLog",
+    "Microsoft-Windows-Kernel-Power",
+    "Microsoft-Windows-Kernel-General",
+    "Microsoft-Windows-Kernel-Boot"
+  ],
+  "target_logs": [
+    "System.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "41": "high",
+    "6008": "medium",
+    "1102": "critical",
+    "1074": "low",
+    "6005": "low",
+    "6006": "low"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "12": "Kernel-General: OS started at time — StartTime field. System start timestamp.",
+    "13": "Kernel-General: OS shutdown at time — StopTime field. Clean shutdown timestamp.",
+    "41": "Kernel-Power: System rebooted without clean shutdown — BugcheckCode (0=power loss, non-zero=BSOD code). Critical for timeline gaps.",
+    "42": "Kernel-Power: System entering sleep state",
+    "107": "Kernel-Power: System resumed from sleep",
+    "1074": "Initiated restart or shutdown — ProcessName (who), Reason (code), Comment, Type (restart/shutdown/power off)",
+    "1076": "Previous unexpected shutdown explanation confirmed — Reason code entered by user",
+    "6005": "Event Log service started — system boot marker. Use as start of Windows session.",
+    "6006": "Event Log service stopped — clean shutdown marker. Use as end of Windows session.",
+    "6008": "Unexpected previous shutdown — PreviousShutdownTime. Previous session ended without 6006 = crash/power loss.",
+    "6009": "OS version logged at startup — ProductName, CurrentBuildNumber, CSDVersion, RegisteredOrganization",
+    "6013": "System uptime in seconds — useful for computing boot time from event timestamp"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "User Account Management",
+  "description": "Detects user account creation, deletion, modification, group membership changes, lockouts, and password operations. Critical for detecting persistence via rogue accounts and privilege escalation through group manipulation.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["account", "persistence", "dfir", "sans-for508"],
+  "event_ids": [4720, 4722, 4723, 4724, 4725, 4726, 4727, 4728, 4729, 4730, 4731, 4732, 4733, 4734, 4735, 4737, 4738, 4740, 4741, 4742, 4743, 4744, 4745, 4746, 4747, 4748, 4749, 4750, 4751, 4752, 4753, 4754, 4755, 4756, 4757, 4758, 4764, 4765, 4766, 4767, 4781, 4782, 4793, 4798, 4799],
+  "sources": ["Security"],
+  "target_logs": ["Security.evtx"],
+  "keywords": [],
+  "severity_overrides": {
+    "4720": "high",
+    "4726": "high",
+    "4728": "high",
+    "4732": "high",
+    "4756": "high",
+    "4740": "medium",
+    "4767": "low",
+    "4738": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4720": "User account created",
+    "4722": "User account enabled",
+    "4723": "Attempt to change account password",
+    "4724": "Attempt to reset account password (by admin)",
+    "4725": "User account disabled",
+    "4726": "User account deleted",
+    "4728": "Member added to global security group",
+    "4729": "Member removed from global security group",
+    "4732": "Member added to local security group",
+    "4733": "Member removed from local security group",
+    "4735": "Security-enabled local group changed",
+    "4738": "User account changed",
+    "4740": "User account locked out",
+    "4756": "Member added to universal security group",
+    "4767": "User account unlocked",
+    "4781": "Account name changed",
+    "4798": "User's local group membership enumerated",
+    "4799": "Security-enabled local group membership enumerated"
+  }
+}

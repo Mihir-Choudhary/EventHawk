@@ -1,0 +1,39 @@
+{
+  "name": "File System Activity",
+  "description": "Detects file access, creation, deletion, and modification via Object Access auditing and Sysmon. Requires 'Audit Object Access' policy and SACL on monitored files/folders. Sysmon Events 11/23 work without SACL configuration.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["filesystem", "file-access", "dfir", "data-exfiltration"],
+  "event_ids": [4656, 4657, 4658, 4659, 4660, 4661, 4663, 4664, 4665, 4666, 4667, 4668, 4670, 11, 15, 23, 26],
+  "sources": [
+    "Security",
+    "Microsoft-Windows-Sysmon"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "Microsoft-Windows-Sysmon%4Operational.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "4660": "high",
+    "4663": "medium",
+    "23": "medium",
+    "26": "high"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4656": "Handle to object requested — ObjectType, ObjectName, AccessMask, ProcessName",
+    "4657": "Registry/file value modified — OldValue, NewValue",
+    "4658": "Handle to object closed",
+    "4659": "Handle to object requested with intent to delete",
+    "4660": "Object deleted",
+    "4661": "Handle to an object requested (SAM)",
+    "4663": "Attempt to access object — AccesMask indicates READ/WRITE/DELETE/EXECUTE",
+    "4664": "Attempt to create a hard link",
+    "4670": "Permissions on an object were changed",
+    "11": "Sysmon: File created — TargetFilename, Image, ProcessGuid, CreationUtcTime",
+    "15": "Sysmon: FileCreateStreamHash — alternate data stream created (ADS indicator)",
+    "23": "Sysmon: File deleted — archived to Sysmon archive directory",
+    "26": "Sysmon: File deleted detected (without archive)"
+  }
+}

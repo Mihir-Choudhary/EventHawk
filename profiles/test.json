@@ -1,0 +1,29 @@
+{
+  "name": "test",
+  "description": "test",
+  "author": "",
+  "tags": [],
+  "event_ids": [
+    4624,
+    1001
+  ],
+  "sources": [
+    "blah blah"
+  ],
+  "channels": [
+    "Security",
+    "System"
+  ],
+  "computers": [],
+  "users": [],
+  "keywords": [],
+  "levels": [
+    "Verbose"
+  ],
+  "conditions": [],
+  "case_sensitive": false,
+  "version": "1.0",
+  "target_logs": [],
+  "severity_overrides": {},
+  "correlation_rules": []
+}

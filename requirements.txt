@@ -1,0 +1,42 @@
+# EventHawk — Dependencies
+# Install with: py -3 -m pip install -r requirements.txt
+
+# ── Core parsing ─────────────────────────────────────────────────────────────
+evtx>=0.8.0          # pyevtx-rs: Rust-speed EVTX parsing (imported as 'evtx' / 'Evtx')
+psutil>=5.9.0        # CPU/RAM monitoring (resource_monitor.py, cli.py, analysis_worker_proc.py)
+
+# ── CLI & Terminal UI ─────────────────────────────────────────────────────────
+click>=8.1.0         # CLI argument parsing (cli.py)
+rich>=13.0.0         # Terminal UI — progress bars, live dashboard, tables (cli.py, tui.py)
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+PyYAML>=6.0.0        # Profile YAML support (analysis/normalizer.py)
+
+# ── Export / output ───────────────────────────────────────────────────────────
+lxml>=4.9.0          # Fast XML export (output/exporters.py)
+orjson>=3.9.0        # ~5x faster JSON serialisation; falls back to stdlib if absent
+                     # (core/_json_compat.py, core/heavyweight/engine.py)
+reportlab>=4.0       # PDF report generation (output/pdf_exporter.py)
+
+# ── GUI ────────────────────────────────────────────────────────────────────────
+PySide6>=6.6.0       # Qt6 GUI (gui/*, analysis/analysis_runner.py)
+
+# ── Juggernaut Mode (high-volume columnar engine) ────────────────────────────
+duckdb>=1.0.0        # Columnar in-process SQL for 2M-10M+ events
+                     # (core/heavyweight/engine.py, gui/heavyweight_model.py,
+                     #  gui/jm_col_worker.py, core/heavyweight/filter_sql.py)
+pyarrow>=12.0.0      # Zero-copy Arrow/Parquet batch ingestion
+                     # (core/heavyweight/engine.py, gui/main_window.py)
+
+# ── GPU acceleration (optional — Linux / WSL2 only) ──────────────────────────
+# RAPIDS cuDF provides GPU-accelerated DataFrame ops via NVIDIA CUDA.
+# Auto-detected at startup via try/except; CPU-only mode used when absent.
+# *** NOT available on Windows — the tool runs CPU-only regardless. ***
+#
+# Linux / WSL2 (CUDA 12.x):
+#   pip install cudf-cu12 --extra-index-url=https://pypi.nvidia.com
+# Linux / WSL2 (CUDA 11.x):
+#   pip install cudf-cu11 --extra-index-url=https://pypi.nvidia.com
+# Version selector: https://rapids.ai/install
+#
+# cudf-cu12>=24.0.0   # Uncomment after running the command above (Linux/WSL2 only)

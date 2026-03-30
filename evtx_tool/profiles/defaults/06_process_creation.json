@@ -1,0 +1,31 @@
+{
+  "name": "Process Creation and Termination",
+  "description": "Tracks process creation and termination. Event 4688 (requires audit policy + command line logging enabled) and Sysmon Event 1 provide full command lines, parent process, and user context. Essential for detecting malware execution, LOLBins, and lateral movement tools.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["process", "execution", "dfir", "sans-for508"],
+  "event_ids": [4688, 4689, 4696, 1, 5],
+  "sources": [
+    "Security",
+    "Microsoft-Windows-Sysmon"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "Microsoft-Windows-Sysmon%4Operational.evtx"
+  ],
+  "keywords": ["cmd.exe", "powershell.exe", "wscript.exe", "cscript.exe", "mshta.exe", "regsvr32.exe", "rundll32.exe", "certutil.exe", "bitsadmin.exe", "wmic.exe", "psexec", "mimikatz", "meterpreter"],
+  "severity_overrides": {
+    "4688": "medium",
+    "4689": "low",
+    "1": "medium",
+    "5": "low"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4688": "Process created — requires 'Audit Process Creation' + 'Include command line in process creation events' policy. Fields: NewProcessName, CommandLine, ParentProcessName, TokenElevationType, SubjectUserName",
+    "4689": "Process exited — includes exit code, duration derivable from 4688/4689 pair",
+    "4696": "Primary token assigned to process",
+    "1": "Sysmon: Process created — full CommandLine, Image, ParentImage, User, Hashes, ProcessGuid, ParentProcessGuid, CurrentDirectory",
+    "5": "Sysmon: Process terminated — ProcessGuid for correlation with Event 1"
+  }
+}

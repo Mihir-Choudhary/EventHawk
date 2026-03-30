@@ -1,0 +1,41 @@
+{
+  "name": "Logon/Logoff Activity",
+  "description": "Tracks all authentication events including successful/failed logons, logoff, session activity, and explicit credential use. Logon Type field is critical: 2=Interactive, 3=Network, 4=Batch, 5=Service, 7=Unlock, 8=NetworkCleartext, 9=NewCredentials, 10=RemoteInteractive, 11=CachedInteractive.",
+  "version": "1.0",
+  "author": "EventHawk (SANS/Microsoft/Sigma)",
+  "tags": ["authentication", "logon", "dfir", "sans-for508"],
+  "event_ids": [4624, 4625, 4626, 4627, 4634, 4646, 4647, 4648, 4649, 4650, 4651, 4675, 4778, 4779, 4800, 4801, 4802, 4803, 4804, 4820, 4821, 4822, 4823, 4824, 4825],
+  "sources": ["Security"],
+  "target_logs": ["Security.evtx"],
+  "keywords": [],
+  "severity_overrides": {
+    "4625": "warning",
+    "4648": "high",
+    "4649": "high",
+    "4675": "medium"
+  },
+  "correlation_rules": [
+    {
+      "name": "Brute Force Detection",
+      "description": "5+ failed logons (4625) from same source within 5 minutes",
+      "event_ids": [4625],
+      "threshold": 5,
+      "window_seconds": 300,
+      "group_by": "IpAddress"
+    }
+  ],
+  "event_descriptions": {
+    "4624": "Successful account logon — check LogonType field",
+    "4625": "Failed account logon — check FailureReason and LogonType",
+    "4627": "Group membership enumerated at logon",
+    "4634": "Account logoff",
+    "4647": "User-initiated logoff",
+    "4648": "Logon with explicit credentials (runas/Pass-the-Hash indicator)",
+    "4778": "Session reconnected (RDP/Terminal Services)",
+    "4779": "Session disconnected (RDP/Terminal Services)",
+    "4800": "Workstation locked",
+    "4801": "Workstation unlocked",
+    "4802": "Screen saver invoked",
+    "4803": "Screen saver dismissed"
+  }
+}
