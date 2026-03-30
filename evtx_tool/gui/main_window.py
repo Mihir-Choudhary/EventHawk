@@ -7243,7 +7243,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(logo_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Title and description
-        title = QLabel("<b>EventHawk v1.1</b>")
+        title = QLabel("<b>EventHawk v1.2</b>")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"font-size: 14pt; color: {COLORS['text']};")
         layout.addWidget(title)

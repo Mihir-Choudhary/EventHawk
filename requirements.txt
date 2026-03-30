@@ -2,7 +2,7 @@
 # Install with: py -3 -m pip install -r requirements.txt
 
 # ── Core parsing ─────────────────────────────────────────────────────────────
-evtx>=0.8.0          # pyevtx-rs: Rust-speed EVTX parsing (imported as 'evtx' / 'Evtx')
+evtx>=0.11.0         # pyevtx-rs: Rust-speed EVTX parsing (imported as 'evtx' / 'Evtx')
 psutil>=5.9.0        # CPU/RAM monitoring (resource_monitor.py, cli.py, analysis_worker_proc.py)
 
 # ── CLI & Terminal UI ─────────────────────────────────────────────────────────

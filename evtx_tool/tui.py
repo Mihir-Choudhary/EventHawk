@@ -3,7 +3,7 @@ Rich-based Terminal UI for EventHawk.
 
 Layout:
   ┌─ Header ────────────────────────────────────────────────┐
-  │ EventHawk v1.1                            [Ctrl+C stop] │
+  │ EventHawk v1.2                            [Ctrl+C stop] │
   ├─ Resource Monitor ──────┬─ Progress ───────────────────┤
   │ CPU ████░░░ 72%         │ Files: [████░░░] 67/100       │
   │ RAM ███░░░░ 45%         │ Events matched: 45,231        │
@@ -65,7 +65,7 @@ class EVTXParserTUI:
 
     REFRESH_RATE = 4  # renders per second
 
-    def __init__(self, console: Console | None = None, title: str = "EventHawk v1.1"):
+    def __init__(self, console: Console | None = None, title: str = "EventHawk v1.2"):
         self._console = console or Console()
         self._title = title
         self._live: Live | None = None
