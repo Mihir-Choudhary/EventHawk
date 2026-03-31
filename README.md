@@ -21,24 +21,6 @@ It parses Windows Event Logs in parallel using a Rust-backed engine, loads resul
 
 ---
 
-## The Problem
-
-Most analysts working with Windows Event Logs hit the same frustrations regardless of the tool they use:
-
-❌ **Event Viewer** — built for reading one event at a time, not investigation at scale. No bulk filtering, no export, no correlation, no analysis.
-
-❌ **Flat CSV exports** — tools like EvtxECmd dump a flat spreadsheet with no threat context. A 1.5 million row CSV in Excel tells you nothing on its own.
-
-❌ **Memory walls** — tools that load everything into RAM hit a hard ceiling. Millions of events from a full disk image capture simply will not load.
-
-❌ **Signature-only detection** — Sigma rules are excellent but require a rule to already exist for the technique. Novel malware, LOLBin abuse, and insider threats often produce no rule matches at all.
-
-❌ **Manual correlation** — connecting a logon event, a process creation, a network connection, and a scheduled task across multiple `.evtx` files requires manual work that is slow and error-prone under time pressure.
-
-❌ **Raw event data** — clicking a row in most tools shows you raw XML. You have to know that `LogonType 3` means network logon, that `SubjectUserName` is the actor, and that `IpAddress` is where it came from — every time, for every event ID.
-
----
-
 ## Why EventHawk?
 
 ### For large-scale parsing
