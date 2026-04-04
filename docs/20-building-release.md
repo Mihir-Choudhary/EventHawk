@@ -71,13 +71,13 @@ REM Copy default profiles for user convenience
 xcopy evtx_tool\profiles\defaults dist\release\profiles\defaults\ /E /I /Q
 
 REM Create ZIP
-powershell Compress-Archive -Path dist\release\* -DestinationPath EventHawk-v1.2-win64.zip -Force
+powershell Compress-Archive -Path dist\release\* -DestinationPath EventHawk-v1.3-win64.zip -Force
 ```
 
 ### Release ZIP contents
 
 ```
-EventHawk-v1.2-win64.zip
+EventHawk-v1.3-win64.zip
 ├── EventHawk.exe          ← Double-click launcher
 ├── requirements.txt       ← For install.bat / manual pip install
 ├── install.bat            ← Run once if dependencies are missing
@@ -95,23 +95,23 @@ EventHawk-v1.2-win64.zip
 **Tag the release:**
 
 ```bat
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 **Create the release via GitHub CLI:**
 
 ```bat
-gh release create v1.2.0 ^
-    EventHawk-v1.2-win64.zip ^
-    --title "EventHawk v1.2" ^
-    --notes "See README.md — What's New in v1.2"
+gh release create v1.3.0 ^
+    EventHawk-v1.3-win64.zip ^
+    --title "EventHawk v1.3" ^
+    --notes "See README.md — What's New in v1.3"
 ```
 
 Or create manually via the GitHub web UI:
 1. Go to **Releases → Draft a new release**.
-2. Set tag: `v1.2.0`.
-3. Upload `EventHawk-v1.2-win64.zip`.
+2. Set tag: `v1.3.0`.
+3. Upload `EventHawk-v1.3-win64.zip`.
 4. Add release notes.
 5. Click **Publish release**.
 
@@ -123,14 +123,17 @@ Use [Semantic Versioning](https://semver.org/):
 
 | Version | When to increment |
 |---|---|
-| `v1.2.0` → `v1.3.0` | New feature added |
-| `v1.2.0` → `v1.2.1` | Bug fix only |
-| `v1.2.0` → `v2.0.0` | Breaking change (incompatible profiles, changed CLI args) |
+| `v1.3.0` → `v1.4.0` | New feature added |
+| `v1.3.0` → `v1.3.1` | Bug fix only |
+| `v1.3.0` → `v2.0.0` | Breaking change (incompatible profiles, changed CLI args) |
 
 **Update version in:**
-- `evtx_tool/__init__.py` — `__version__ = "1.2"`
+- `evtx_tool/__init__.py` — `__version__ = "1.3.0"`
 - `sentinel/__init__.py` — `__version__ = "0.1.0"`
-- `evtx_tool/tui.py` — `title: str = "EventHawk v1.2"`
+- `evtx_tool/tui.py` — `title: str = "EventHawk v1.3"`
+- `evtx_tool/cli.py` — `@click.version_option("1.3.0", ...)`
+- `evtx_tool/gui/main_window.py` — window title and about dialog
+- `install.bat` — installer banner
 - `README.md` — version badge
 
 ---

@@ -185,7 +185,7 @@ py -3 evtx_tool.py benchmark C:\Logs --workers 4
 
 Sample output:
 ```
-EventHawk v1.2 — Benchmark
+EventHawk v1.3 — Benchmark
 Files: 47  |  Total size: 8.4 GB
 Workers: 6 (auto)
 
