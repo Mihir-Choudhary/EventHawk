@@ -41,6 +41,8 @@ It parses Windows Event Logs in parallel using a Rust-backed engine, loads resul
 
 ✅ **Hayabusa integration** — point EventHawk at the Hayabusa binary and get ~3,000 community Sigma rules evaluated against your loaded files, merged into the ATT&CK tab alongside EventHawk's own detections.
 
+✅ **PowerShell History extraction** — reconstruct every PowerShell session, command, and script block from loaded EVTX files. Reassembles multi-fragment script blocks, detects ATT&CK techniques and obfuscation patterns, and exports five artefacts: session timeline, individual script block files, summary, JSON export, and an Excel timeline with clickable hyperlinks.
+
 ### For unknown threats
 
 ✅ **Sentinel anomaly engine** — builds a statistical frequency model + process ancestry trie + fuse filter from a known-good baseline corpus. Scores every process-create event in a suspect capture. A Tier 4 alert means something happened that was never seen in baseline — even with no Sigma rule for it.
@@ -86,6 +88,7 @@ python -m sentinel.cli analyze --evtx C:\Target   --baseline baseline/ --sigma C
 | **4-layer filter stack** | Advanced filter, quick filter chips, full-text search (including raw event data in JM), and record-ID pivot — all combinable, all clearable in one click. |
 | **Threat analysis** | MITRE ATT&CK mapping, IOC extraction, attack-chain correlation. |
 | **Hayabusa integration** | Point EventHawk at your Hayabusa binary and it runs ~3,000 community Sigma rules against the loaded files, merging results into the ATT&CK tab. |
+| **PowerShell History extraction** | Reconstructs PS sessions, commands, and script blocks (EID 400/403/600/800/4103/4104). Reassembles multi-fragment script blocks, maps ATT&CK techniques, and exports a session timeline, individual script files, JSON, and an Excel workbook with clickable hyperlinks. |
 | **Sentinel anomaly engine** | Builds a frequency model + process ancestry trie + fuse filter from a known-good corpus. Scores every process-create event in a suspect capture and classifies findings into 4 tiers (T1 normal → T4 critical). |
 | **Export everywhere** | JSON, CSV, XML, HTML, PDF report, STIX 2.1, OpenIOC, YARA. |
 | **CLI + TUI** | Full headless CLI for scripting and automation. Rich terminal dashboard for live parse progress. |
@@ -129,6 +132,7 @@ python -m sentinel.cli analyze --evtx C:\Target   --baseline baseline/ --sigma C
 |---|---|
 | [Analysis Tabs](docs/09-analysis-tabs.md) | ATT&CK mapping, IOC extraction, attack chains, case notes |
 | [Hayabusa Integration](docs/10-hayabusa.md) | Download, configure, run Hayabusa — auto-detected paths, update-rules |
+| [PowerShell History Extraction](docs/10b-ps-extract.md) | PS session/command/script-block reconstruction — output files, ATT&CK detection, prerequisites |
 
 ### Output
 
@@ -260,6 +264,32 @@ Juggernaut Mode has been rebuilt from the ground up around an **Arrow in-memory 
 - Scrolling: `table.slice(start, count).to_pydict()` — O(1), zero disk I/O at any position.
 - Filtering: vectorised DuckDB SQL over the registered Arrow table, 20–120 ms at 6M rows.
 - Event detail: `event_data_json` lazy-loaded per row from Parquet on click (<20 ms on SSD), LRU-cached for repeat clicks.
+
+---
+
+### PowerShell History Extraction — new in v1.2
+
+A new **Analysis → PowerShell History** menu item reconstructs the full PowerShell forensic picture from loaded EVTX files without any extra tooling.
+
+**What it produces:**
+
+| File | Contents |
+|------|----------|
+| `ps_commands.txt` | Chronological session/command timeline with script block previews |
+| `scriptblock_<GUID>.txt` × N | Fully reassembled script block source per unique block ID |
+| `ps_extraction_summary.txt` | Session/command/block stats, ATT&CK summary, ghost session count |
+| `ps_extraction.json` | Machine-readable export — sessions, events, script blocks, IOCs |
+| `ps_timeline.xlsx` | Flat Excel timeline with native clickable hyperlinks to script block files |
+
+**Key capabilities:**
+- Parses EID 400, 403, 600, 800, 4103, 4104 — all PS logging channels
+- Reassembles multi-fragment EID 4104 script blocks automatically
+- Detects ATT&CK techniques and obfuscation patterns (encoded commands, AMSI bypass, credential access, etc.)
+- Filters ghost sessions from corrupted EID 400 records automatically
+- Timestamps normalised to `YYYY-MM-DD HH:MM:SS.ffffff` throughout all outputs
+- Excel timeline uses `cell.hyperlink` (not a formula string) — works in Excel 2016+ without trust prompts
+
+See [PowerShell History Extraction](docs/10b-ps-extract.md) for full documentation.
 
 ---
 

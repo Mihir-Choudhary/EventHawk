@@ -131,5 +131,6 @@ Lets you mark individual events as case notes — saving them with analyst annot
 ## Related Docs
 
 - [Hayabusa Integration](10-hayabusa.md) — adds Hayabusa detections to ATT&CK tab
+- [PowerShell History Extraction](10b-ps-extract.md) — dedicated PS session/command/script-block reconstruction
 - [Exporting](11-exporting.md) — export IOCs as STIX/YARA, Case as PDF
 - [Event Detail Panel](05-event-detail-panel.md)
