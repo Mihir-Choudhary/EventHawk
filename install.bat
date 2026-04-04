@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 
 echo.
 echo  ====================================================
-echo   EventHawk v1.2 - Installer
+echo   EventHawk v1.3 - Installer
 echo  ====================================================
 echo.
 

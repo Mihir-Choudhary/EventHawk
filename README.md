@@ -3,7 +3,7 @@
   <h1 align="center">EventHawk</h1>
   <p align="center">Windows Event Log analysis built for DFIR — fast, scalable, and practical</p>
   <p align="center">
-    <img src="https://img.shields.io/badge/version-1.2-blue" alt="Version 1.2"/>
+    <img src="https://img.shields.io/badge/version-1.3-blue" alt="Version 1.3"/>
     <img src="https://img.shields.io/badge/platform-Windows-lightgrey" alt="Windows"/>
     <img src="https://img.shields.io/badge/python-3.10%2B-yellow" alt="Python 3.10+"/>
     <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="Apache 2.0"/>
