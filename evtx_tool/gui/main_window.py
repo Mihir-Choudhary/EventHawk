@@ -2170,6 +2170,14 @@ class MainWindow(QMainWindow):
         tz_act.setToolTip("Configure how event timestamps are displayed")
         tz_act.triggered.connect(self._on_timezone_action)
 
+        # ── PowerShell History ─────────────────────────────────────────────
+        self._act_ps_extract = mb.addAction("PowerShell History")
+        self._act_ps_extract.setToolTip(
+            "Export PowerShell artifacts — commands and scripts executed"
+        )
+        self._act_ps_extract.setEnabled(False)
+        self._act_ps_extract.triggered.connect(self._on_ps_extract)
+
 
     # =========================================================================
     # CENTRAL WIDGET (3-panel splitter)
@@ -3510,6 +3518,7 @@ class MainWindow(QMainWindow):
         item.setData(Qt.ItemDataRole.UserRole, path)
         item.setToolTip(path)
         self._file_list.addItem(item)
+        self._act_ps_extract.setEnabled(True)
 
     def _on_add_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -7105,6 +7114,141 @@ class MainWindow(QMainWindow):
             self._panel_open = False
 
     # =========================================================================
+    # POWERSHELL FORENSIC EXTRACTION
+    # =========================================================================
+
+    def _on_ps_extract(self) -> None:
+        """Launch PowerShell forensic artifact extraction in a background thread."""
+        from .ps_worker import PSWorker
+
+        # Guard: don't launch if already running
+        if getattr(self, "_ps_worker", None) is not None and self._ps_worker.isRunning():
+            return
+
+        evtx_files = self._collect_files()
+        if not evtx_files:
+            QMessageBox.information(
+                self, "No Files",
+                "Add EVTX files to the file list first, then click PowerShell History."
+            )
+            return
+
+        output_dir = QFileDialog.getExistingDirectory(
+            self, "Choose Output Directory for PowerShell History", ""
+        )
+        if not output_dir:
+            return
+
+        # Build progress dialog with cancel support
+        self._ps_dlg = _PSProgressDialog(parent=self)
+        self._ps_dlg.cancel_requested.connect(self._on_ps_cancel)
+        self._ps_dlg.show()
+
+        self._ps_worker = PSWorker(evtx_files, output_dir, parent=self)
+        self._ps_worker.progress.connect(self._on_ps_progress)
+        self._ps_worker.extraction_done.connect(self._on_ps_finished)
+        self._ps_worker.extraction_error.connect(self._on_ps_error)
+        self._act_ps_extract.setEnabled(False)
+        self._ps_worker.start()
+        self._ps_output_dir = output_dir
+
+    def _on_ps_cancel(self) -> None:
+        """Handle cancel request from progress dialog."""
+        worker = getattr(self, "_ps_worker", None)
+        if worker is not None and worker.isRunning():
+            worker.request_cancel()
+
+    @Slot(str, float)
+    def _on_ps_progress(self, step: str, pct: float) -> None:
+        dlg = getattr(self, "_ps_dlg", None)
+        if dlg is None:
+            return
+        dlg.set_step(step)
+        if pct < 0:
+            dlg.set_indeterminate(True)
+        else:
+            dlg.set_indeterminate(False)
+            dlg.set_value(int(pct * 100))
+
+    def _cleanup_ps_worker(self) -> None:
+        """Wait for PS worker thread to finish and schedule its deletion."""
+        worker = getattr(self, "_ps_worker", None)
+        if worker is not None:
+            worker.wait()
+            worker.deleteLater()
+            self._ps_worker = None
+
+    @Slot(dict)
+    def _on_ps_finished(self, summary: dict) -> None:
+        dlg = getattr(self, "_ps_dlg", None)
+        if dlg:
+            dlg.force_close()
+            self._ps_dlg = None
+
+        self._act_ps_extract.setEnabled(True)
+        self._cleanup_ps_worker()
+
+        # If extraction was cancelled, show a brief message
+        if summary.get("cancelled"):
+            QMessageBox.information(self, "PowerShell History", "Extraction cancelled.")
+            return
+
+        output_dir = getattr(self, "_ps_output_dir", "")
+
+        ps_events  = summary.get("total_ps_events", 0)
+        blocks     = summary.get("script_blocks", 0)
+        sessions   = summary.get("sessions", 0)
+        partial    = summary.get("partial_blocks", 0)
+        safety_net = summary.get("safety_net", 0)
+        errors     = summary.get("parse_errors", 0)
+
+        msg = (
+            "PowerShell extraction complete.\n\n"
+            f"PS events found   : {ps_events:,}\n"
+            f"Script blocks     : {blocks:,}"
+            + (f"  ({partial} incomplete)" if partial else "") + "\n"
+            f"Safety-net blocks : {safety_net:,}\n"
+            f"Sessions (400/403): {sessions:,}\n"
+            "\nOutput files:\n"
+            "  ps_commands.txt\n"
+            "  ps_extraction_summary.txt\n"
+            "  ps_extraction.json\n"
+            "  ps_timeline.xlsx\n"
+            f"  scriptblock_<GUID>.txt × {blocks:,}\n"
+        )
+        if errors:
+            msg += f"\nParse errors: {errors}\n"
+        msg += f"\nDirectory:\n{output_dir}"
+
+        result_dlg = QMessageBox(self)
+        result_dlg.setWindowTitle("PowerShell History — Complete")
+        result_dlg.setText(msg)
+        result_dlg.setIcon(QMessageBox.Icon.Information)
+        open_btn = result_dlg.addButton("Open Folder", QMessageBox.ButtonRole.ActionRole)
+        result_dlg.addButton(QMessageBox.StandardButton.Ok)
+        result_dlg.exec()
+        if result_dlg.clickedButton() is open_btn and output_dir:
+            try:
+                os.startfile(output_dir)
+            except Exception:
+                pass
+
+    @Slot(str)
+    def _on_ps_error(self, tb: str) -> None:
+        dlg = getattr(self, "_ps_dlg", None)
+        if dlg:
+            dlg.force_close()
+            self._ps_dlg = None
+
+        self._act_ps_extract.setEnabled(True)
+        self._cleanup_ps_worker()
+
+        err_dlg = QMessageBox(self)
+        err_dlg.setWindowTitle("PowerShell History — Failed")
+        err_dlg.setIcon(QMessageBox.Icon.Critical)
+        err_dlg.setText("PowerShell extraction encountered an error.")
+        err_dlg.setDetailedText(tb)
+        err_dlg.exec()
 
     def _on_clear_files(self) -> None:
         """✕ button — clear the file/directory list AND discard parsed results."""
@@ -7172,6 +7316,8 @@ class MainWindow(QMainWindow):
         self._lbl_elapsed.setText("Time: —")
         self._btn_export.setEnabled(False)
         self._act_export.setEnabled(False)
+        if self._file_list.count() == 0:
+            self._act_ps_extract.setEnabled(False)
         self._refresh_attack_tab()
         self._refresh_iocs_tab()
         self._refresh_chains_tab()
@@ -7348,6 +7494,8 @@ class MainWindow(QMainWindow):
             ),
         }
         self._set_status(f"Timezone: {_labels.get(self._tz_mode, self._tz_mode)}")
+
+
 
     # =========================================================================
     # COLUMN VISIBILITY / HEADER CONTEXT MENU
@@ -7820,6 +7968,86 @@ class MainWindow(QMainWindow):
             self._active_proxy.set_record_id_filter(rid_set)
         self._update_count_label()
         self._set_status(f"Pivot to bookmarked event (record_id={rid})")
+
+
+# ── PS Extract Progress Dialog ────────────────────────────────────────────────
+
+class _PSProgressDialog(QDialog):
+    """Modal progress dialog shown during PowerShell forensic extraction."""
+
+    cancel_requested = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("PowerShell History — Running")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self.setWindowFlags(
+            self.windowFlags()
+            & ~Qt.WindowType.WindowContextHelpButtonHint
+            & ~Qt.WindowType.WindowCloseButtonHint
+        )
+        # Set to True by force_close() so closeEvent knows extraction is done
+        # and should allow the close rather than intercepting it as a cancel.
+        self._extraction_done = False
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        self._lbl = QLabel("Initialising...")
+        self._lbl.setWordWrap(True)
+        layout.addWidget(self._lbl)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+        layout.addWidget(self._bar)
+
+        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel.setFixedWidth(90)
+        self._btn_cancel.clicked.connect(self._on_cancel_clicked)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(self._btn_cancel)
+        layout.addLayout(btn_row)
+
+    def force_close(self) -> None:
+        """Close the dialog after extraction has finished (not a cancel)."""
+        self._extraction_done = True
+        self.close()
+
+    def _on_cancel_clicked(self) -> None:
+        self._btn_cancel.setEnabled(False)
+        self._btn_cancel.setText("Cancelling\u2026")
+        self._lbl.setText("Cancelling \u2014 please wait\u2026")
+        self.cancel_requested.emit()
+
+    def set_step(self, text: str) -> None:
+        if self._btn_cancel.isEnabled():
+            self._lbl.setText(text)
+
+    def set_value(self, pct: int) -> None:
+        self._bar.setValue(pct)
+
+    def set_indeterminate(self, on: bool) -> None:
+        if on:
+            self._bar.setRange(0, 0)
+        else:
+            self._bar.setRange(0, 100)
+
+    def closeEvent(self, event) -> None:
+        """Intercept X-button close — trigger cancel instead of hiding.
+        When force_close() is called (extraction complete/error), allow normally."""
+        if self._extraction_done:
+            event.accept()
+        else:
+            if self._btn_cancel.isEnabled():
+                self._on_cancel_clicked()
+            event.ignore()
+
+
+
 
 
 # ── Diff Dialog ───────────────────────────────────────────────────────────────

@@ -14,6 +14,7 @@ PyYAML>=6.0.0        # Profile YAML support (analysis/normalizer.py)
 
 # ── Export / output ───────────────────────────────────────────────────────────
 lxml>=4.9.0          # Fast XML export (output/exporters.py)
+openpyxl>=3.1.0      # Native .xlsx output for ps_timeline (PS extractor)
 orjson>=3.9.0        # ~5x faster JSON serialisation; falls back to stdlib if absent
                      # (core/_json_compat.py, core/heavyweight/engine.py)
 reportlab>=4.0       # PDF report generation (output/pdf_exporter.py)
