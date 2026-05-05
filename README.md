@@ -8,6 +8,7 @@
     <img src="https://img.shields.io/badge/python-3.10%2B-yellow" alt="Python 3.10+"/>
     <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="Apache 2.0"/>
     <img src="https://img.shields.io/badge/engine-DuckDB%20%2B%20PyArrow-orange" alt="DuckDB + PyArrow"/>
+    <img src="https://visitor-badge.laobi.icu/badge?page_id=Mihir-Choudhary.EventHawk" alt="Visitors"/>
   </p>
 </p>
 
