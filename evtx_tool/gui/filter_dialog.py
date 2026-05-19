@@ -216,6 +216,14 @@ class FilterDialog(QDialog):
         Output of ``build_metadata(events)`` — field → {value → count}.
     current_filter : dict | None
         Previously applied filter config to restore state.
+    juggernaut_mode : bool
+        When True, the dialog disables filter controls whose backend does not
+        yet support Juggernaut datasets — currently the "Text in description"
+        field (plus its RegExp / Exclude flags).  The live JM search bar only
+        covers extracted metadata columns; ``event_data_json`` is not part of
+        the Arrow search blob, so a text-in-description filter would silently
+        miss the data the user typically wants to find.  Disabling the widget
+        is clearer than letting the filter run against a partial haystack.
     parent : QWidget | None
     """
 
@@ -224,6 +232,7 @@ class FilterDialog(QDialog):
         metadata: dict,
         current_filter: dict | None = None,
         parent=None,
+        juggernaut_mode: bool = False,
     ):
         super().__init__(parent)
         self.setWindowTitle("Filter")
@@ -231,9 +240,12 @@ class FilterDialog(QDialog):
         self.setMinimumSize(580, 550)
         self._metadata = metadata
         self._current = current_filter or {}
+        self._juggernaut_mode = bool(juggernaut_mode)
         self._build_ui()
         self._restore_state(self._current)
         self._apply_styles()
+        if self._juggernaut_mode:
+            self._disable_text_in_description()
 
     # =====================================================================
     # UI CONSTRUCTION
@@ -371,7 +383,8 @@ class FilterDialog(QDialog):
 
         # ── Text in description ───────────────────────────────────────────
         text_row = QHBoxLayout()
-        text_row.addWidget(_lbl("Text in description:"))
+        self._lbl_text = _lbl("Text in description:")
+        text_row.addWidget(self._lbl_text)
         self._inp_text = QLineEdit()
         self._inp_text.setPlaceholderText("Search in event data values")
         text_row.addWidget(self._inp_text, stretch=1)
@@ -381,6 +394,20 @@ class FilterDialog(QDialog):
         self._chk_text_exclude = QCheckBox("Exclude")
         text_row.addWidget(self._chk_text_exclude)
         body.addLayout(text_row)
+
+        # Hidden by default — surfaced when juggernaut_mode is True so the user
+        # knows why the field above is greyed out.  See _disable_text_in_description.
+        self._lbl_text_disabled_hint = QLabel(
+            "Disabled in Juggernaut Mode — event_data_json is not part of the "
+            "live search blob.  Use field-level conditions below to match on "
+            "specific event_data keys instead."
+        )
+        self._lbl_text_disabled_hint.setWordWrap(True)
+        self._lbl_text_disabled_hint.setStyleSheet(
+            f"color:{COLORS['text_dim']}; font-size:7pt;"
+        )
+        self._lbl_text_disabled_hint.setVisible(False)
+        body.addWidget(self._lbl_text_disabled_hint)
 
         body.addWidget(_styled_line())
 
@@ -789,6 +816,18 @@ class FilterDialog(QDialog):
     # ── Save / Load presets ───────────────────────────────────────────────
 
     def _save_preset(self) -> None:
+        # Validate first so we never persist a preset that would silently match
+        # nothing (or, combined with an Exclude checkbox, everything) when the
+        # user reloads it later.
+        errors = self._validate_inputs()
+        if errors:
+            QMessageBox.warning(
+                self,
+                "Cannot save — invalid filter input",
+                "\n\n".join(errors)
+                + "\n\nFix the highlighted field(s) before saving the preset.",
+            )
+            return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Filter Preset", "", "JSON files (*.json)"
         )
@@ -981,10 +1020,18 @@ class FilterDialog(QDialog):
             # Event IDs
             "event_id_expr": self._inp_event_ids.text().strip(),
             "event_id_exclude": self._chk_eid_exclude.isChecked(),
-            # Text
-            "text_search": self._inp_text.text().strip(),
-            "text_regex": self._chk_regex.isChecked(),
-            "text_exclude": self._chk_text_exclude.isChecked(),
+            # Text — in Juggernaut Mode the widgets are disabled (see
+            # _disable_text_in_description) but read defensively so even if a
+            # caller re-enables them programmatically the cfg stays clean.
+            "text_search": (
+                "" if self._juggernaut_mode else self._inp_text.text().strip()
+            ),
+            "text_regex": (
+                False if self._juggernaut_mode else self._chk_regex.isChecked()
+            ),
+            "text_exclude": (
+                False if self._juggernaut_mode else self._chk_text_exclude.isChecked()
+            ),
             # Date/time
             "date_enabled": self._chk_date_enable.isChecked(),
             "time_enabled": self._chk_time_enable.isChecked(),
@@ -1004,3 +1051,152 @@ class FilterDialog(QDialog):
             # Options
             "case_sensitive": self._chk_case_sensitive.isChecked(),
         }
+
+    # =====================================================================
+    # JUGGERNAUT MODE — disable widgets whose backend can't honour them
+    # =====================================================================
+
+    def _disable_text_in_description(self) -> None:
+        """Grey out the Text-in-description field + its flags in JM mode.
+
+        Why disabled: the JM live-filter pipeline builds its search blob from
+        the Arrow metadata columns only (event_id, level_name, channel,
+        provider, computer, user_id, source_file, ed_subject_user,
+        ed_target_user, ed_ip_address, ed_new_process).  ``event_data_json``
+        is NOT part of that blob, so a text-in-description filter run through
+        the dialog would silently miss the data the user typically wants to
+        find (PIDs, paths, command lines, etc.).  Greying out the controls is
+        clearer than letting them run against a partial haystack.
+
+        Field-level Conditions (further down in the dialog) DO query
+        ``event_data_json`` via ``json_extract_string`` in Juggernaut mode and
+        remain enabled.
+        """
+        _tip = (
+            "Disabled in Juggernaut Mode.\n\n"
+            "The live JM filter pipeline cannot search inside event_data_json, "
+            "so this field would silently miss most of what you're looking for "
+            "(process IDs, file paths, command lines, etc.).\n\n"
+            "Use the field-level Conditions below to match on specific "
+            "event_data keys instead — those DO run against event_data_json "
+            "via json_extract_string."
+        )
+        # Clear any prefilled text so a stale value can't leak into the cfg.
+        self._inp_text.clear()
+        self._inp_text.setPlaceholderText("Disabled in Juggernaut Mode")
+        self._inp_text.setEnabled(False)
+        self._inp_text.setToolTip(_tip)
+        self._chk_regex.setChecked(False)
+        self._chk_regex.setEnabled(False)
+        self._chk_regex.setToolTip(_tip)
+        self._chk_text_exclude.setChecked(False)
+        self._chk_text_exclude.setEnabled(False)
+        self._chk_text_exclude.setToolTip(_tip)
+        # Dim the label too so the whole row reads as inactive.
+        self._lbl_text.setEnabled(False)
+        self._lbl_text.setToolTip(_tip)
+        self._lbl_text_disabled_hint.setVisible(True)
+
+    # =====================================================================
+    # VALIDATION — surface silent parse failures before the dialog accepts
+    # =====================================================================
+
+    def _validate_inputs(self) -> list[str]:
+        """Return a list of human-readable error messages.
+
+        Empty list means the dialog state is valid and ``accept()`` can proceed.
+
+        Three classes of input were previously dropped silently and turned
+        the filter into a no-op (which then *looked* like "show all rows"):
+
+          1. Event ID expression — unparseable tokens caught by a bare
+             ``except: pass`` in ``parse_event_id_expression``.
+          2. Text-in-description with the RegExp checkbox on — invalid regex
+             was caught by ``except _re.error`` in ``set_advanced_filter`` and
+             fell back to plain substring without telling the user.
+          3. Custom condition with ``operator == "regex"`` — invalid regex was
+             also caught silently inside DuckDB at query time.
+
+        All three now produce visible errors and block the dialog from closing.
+        """
+        from evtx_tool.core.filters import validate_event_id_expression
+
+        errors: list[str] = []
+
+        # ── Event ID expression ───────────────────────────────────────────
+        eid_expr = self._inp_event_ids.text().strip()
+        if eid_expr:
+            invalid = validate_event_id_expression(eid_expr)
+            if invalid:
+                tokens = ", ".join(repr(t) for t in invalid)
+                errors.append(
+                    f"Event ID(s): invalid token(s) — {tokens}.\n"
+                    f"Use integers, ranges, and commas (e.g. 1-19,100,250-450 "
+                    f"or with excludes: 1-19,100!10,255)."
+                )
+
+        # ── Text-in-description regex ─────────────────────────────────────
+        text_expr = self._inp_text.text().strip()
+        if text_expr and self._chk_regex.isChecked():
+            try:
+                re.compile(text_expr)
+            except re.error as exc:
+                errors.append(
+                    f"Text in description: invalid regular expression — {exc}.\n"
+                    f"Uncheck 'RegExp' for a literal substring match, "
+                    f"or fix the pattern."
+                )
+
+        # ── Custom conditions with regex / numeric operators ──────────────
+        for row in range(self._tbl_conditions.rowCount()):
+            name_cmb   = self._tbl_conditions.cellWidget(row, 0)
+            op_cmb     = self._tbl_conditions.cellWidget(row, 1)
+            value_item = self._tbl_conditions.item(row, 2)
+            name_text  = (name_cmb.currentText().strip() if name_cmb else "")
+            if not name_text:
+                continue  # incomplete row — get_filter_config() drops it anyway
+            op_text  = op_cmb.currentText() if op_cmb else "contains"
+            val_text = (value_item.text().strip() if value_item else "")
+            if not val_text:
+                continue  # empty value — nothing to validate
+
+            if op_text == "regex":
+                try:
+                    re.compile(val_text)
+                except re.error as exc:
+                    errors.append(
+                        f"Condition #{row + 1} ({name_text} regex): "
+                        f"invalid regular expression — {exc}."
+                    )
+            elif op_text in ("greater than", "less than"):
+                # DuckDB uses TRY_CAST so the query won't crash, but a
+                # non-numeric value silently matches zero rows — warn the user.
+                try:
+                    float(val_text)
+                except ValueError:
+                    errors.append(
+                        f"Condition #{row + 1} ({name_text} {op_text}): "
+                        f"value {val_text!r} is not a number — "
+                        f"this comparison will match no rows."
+                    )
+
+        return errors
+
+    def accept(self) -> None:  # type: ignore[override]
+        """Validate inputs before closing the dialog.
+
+        Replaces the previous behaviour where invalid Event ID expressions,
+        invalid regex patterns, and non-numeric numeric-comparison values were
+        silently dropped — leaving the user with a filter that quietly matched
+        nothing (or, combined with an Exclude checkbox, everything).
+        """
+        errors = self._validate_inputs()
+        if errors:
+            QMessageBox.warning(
+                self,
+                "Invalid filter input",
+                "\n\n".join(errors)
+                + "\n\nFix the highlighted field(s) and click OK again.",
+            )
+            return  # do NOT call super().accept() — dialog stays open
+        super().accept()

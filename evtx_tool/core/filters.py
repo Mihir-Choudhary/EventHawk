@@ -79,6 +79,58 @@ def parse_event_id_expression(expr: str) -> tuple[set[int], set[int]]:
     return _parse_ids(include_part), _parse_ids(exclude_part)
 
 
+def validate_event_id_expression(expr: str) -> list[str]:
+    """Return the list of unparseable tokens in ``expr`` (empty when valid).
+
+    Mirrors the token rules of ``parse_event_id_expression`` so the FilterDialog
+    can surface a clear error message before silently dropping bad tokens.  A
+    token is *invalid* when:
+
+      - it is a range (contains ``-``) whose endpoints are not both integers
+      - it is a single value that is not an integer
+
+    Empty / whitespace-only expressions are treated as "no filter" and return
+    an empty list (valid).
+
+    Examples
+    --------
+    >>> validate_event_id_expression("1-19,100,250-450")
+    []
+    >>> validate_event_id_expression("1=1")
+    ['1=1']
+    >>> validate_event_id_expression("1-19,abc,100-xyz")
+    ['abc', '100-xyz']
+    """
+    if not expr or not expr.strip():
+        return []
+
+    invalid: list[str] = []
+    # parse_event_id_expression splits on '!' (left = include, right = exclude).
+    # The validator does not care which side a token came from — every token
+    # must parse to an integer or an integer range either way.
+    for segment in expr.split("!"):
+        segment = segment.strip()
+        if not segment:
+            continue
+        for token in segment.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if "-" in token:
+                lo, _, hi = token.partition("-")
+                try:
+                    int(lo.strip())
+                    int(hi.strip())
+                except (ValueError, TypeError):
+                    invalid.append(token)
+            else:
+                try:
+                    int(token)
+                except ValueError:
+                    invalid.append(token)
+    return invalid
+
+
 # ── Default (pass-all) filter ─────────────────────────────────────────────────
 
 

@@ -215,7 +215,16 @@ class ColumnFilterPopup(QDialog):
     Unchecked values are excluded via Quick Filter.
     """
 
-    filterApplied = Signal(int, list)      # (column_index, list_of_excluded_values)
+    # Signal:  (column_index, mode, values)
+    #   mode = "include"  → keep only rows whose value is IN values  (use when popup
+    #                       was truncated or user picked a small subset)
+    #   mode = "exclude"  → keep all rows EXCEPT those whose value is IN values
+    #                       (efficient when user unchecked only a few)
+    #   mode = "clear"    → no filter for this column
+    # Sending mode explicitly (instead of always emitting "excluded") fixes the
+    # truncation bug: the popup caps at the top 1000 unique values, so events
+    # with values outside that set used to slip past an EXCLUDE filter.
+    filterApplied = Signal(int, str, list)
     sortRequested = Signal(int, Qt.SortOrder)  # (column_index, order)
 
     # Columns that support dropdown filtering  →  event-dict key
@@ -351,14 +360,44 @@ class ColumnFilterPopup(QDialog):
         """)
 
     def _filter_list(self, text: str) -> None:
+        """Filter the checkbox list as the user types in the search box.
+
+        Auto-check semantics — important for correctness:
+
+          * Visibility uses **substring** match against the value (not the
+            label-with-count) so the user sees every candidate that mentions
+            their search term.
+          * Auto-check is restricted to **exact** value matches.  Substring
+            matches stay visible but are auto-UNCHECKED so the user can see
+            them and opt in only if they want them.
+
+        Without the exact-match gate, typing ``5464`` in a Process ID column
+        would also auto-check ``54640``, ``15464``, ``5464221``, etc. — the
+        resulting "exclude everything not containing 5464" filter would then
+        let events from all those PIDs through.  Users perceived this as the
+        filter "not working".
+
+        The empty-search branch restores the default state (all checked) so
+        the popup behaves like "no filter active" the moment the search is
+        cleared.
+        """
         text_lower = text.lower()
         for chk in self._checkboxes:
-            visible = not text_lower or text_lower in chk.text().lower()
+            val = str(chk.property("filter_value") or "").lower()
+            # Visibility: substring against the value itself (not the label
+            # "{value}  ({count})", which would also match the count digits).
+            visible = not text_lower or text_lower in val
             chk.setVisible(visible)
         if text_lower:
-            # Auto-check matching items, uncheck hidden items
+            # Hidden (no substring match) → unchecked.
+            # Visible + exact match     → checked.
+            # Visible + partial match   → unchecked (user opts in manually).
             for chk in self._checkboxes:
-                chk.setChecked(chk.isVisible())
+                if not chk.isVisible():
+                    chk.setChecked(False)
+                    continue
+                val = str(chk.property("filter_value") or "").lower()
+                chk.setChecked(val == text_lower)
         else:
             # Search cleared — restore all to checked
             for chk in self._checkboxes:
@@ -375,11 +414,62 @@ class ColumnFilterPopup(QDialog):
                 chk.setChecked(False)
 
     def _apply(self) -> None:
-        excluded = []
+        """Emit the filter selection in the most efficient *and* correct mode.
+
+        The popup is capped at the top 1000 unique values for performance
+        (ColValueWorker / NormalColValueWorker LIMIT 1000).  When the dataset
+        actually has more than 1000 unique values, events with values OUTSIDE
+        the visible top-1000 are silently absent from the popup.
+
+        The previous behaviour always emitted "exclude unchecked" — which
+        broke for the most common use case (the user checks one value to
+        keep it):
+
+           User has 5000 unique PIDs, popup shows top 1000.
+           User checks only "916", unchecks 999.
+           Old emit → exclude=[999 visible values].
+           SQL → process_id NOT IN (999 values).
+           Result → 916 PLUS the 4000 invisible PIDs all pass through.
+
+        The fix is to choose mode by *which side is smaller*, so the popup
+        emits the side that fully describes the user's intent:
+
+          • If checked set is the small side  → emit "include" on checked.
+            Untruncated values are correctly excluded (since they're not
+            in the include list), matching what the user sees.
+          • If unchecked set is the small side → emit "exclude" on unchecked.
+            Untruncated values pass through (since they're not in the
+            exclude list), matching "I unchecked a few specific things".
+          • All checked or empty popup → emit "clear" (no filter).
+          • Nothing checked → emit "include" on empty list (matches no rows).
+        """
+        checked: list[str]   = []
+        unchecked: list[str] = []
         for chk in self._checkboxes:
-            if not chk.isChecked():
-                excluded.append(chk.property("filter_value"))
-        self.filterApplied.emit(self._col, excluded)
+            val = chk.property("filter_value")
+            (checked if chk.isChecked() else unchecked).append(val)
+
+        total = len(checked) + len(unchecked)
+        if total == 0 or not unchecked:
+            # Empty popup, or every value still checked → no filter on this column
+            self.filterApplied.emit(self._col, "clear", [])
+        elif not checked:
+            # Every value unchecked → emit as EXCLUDE on the unchecked list.
+            # This preserves the old "match nothing" semantic when the popup is
+            # not truncated, while never emitting an empty include list (which
+            # would need a fragile sentinel to behave like "match nothing" in
+            # heavyweight_model's int-type quick-filter path).
+            self.filterApplied.emit(self._col, "exclude", unchecked)
+        elif len(checked) <= len(unchecked):
+            # Include list is smaller → emit include.  Also fixes the truncation
+            # bug for the common "pick one value to keep" case: untruncated
+            # values are correctly excluded because they're absent from the
+            # include list, matching what the user sees in the popup.
+            self.filterApplied.emit(self._col, "include", checked)
+        else:
+            # Exclude list is smaller → emit exclude.  Efficient + correct when
+            # the user explicitly saw and unchecked each of these values.
+            self.filterApplied.emit(self._col, "exclude", unchecked)
         self.accept()
 
     def _emit_sort(self, order: Qt.SortOrder) -> None:
@@ -4278,6 +4368,598 @@ class _RemoteAssistJMFetchWorker(QThread):
         self.finished.emit(events, truncated)
 
 
+# ── Computer Normalisation helpers ────────────────────────────────────────────
+
+def _norm_computer_key(raw: str) -> str:
+    """Collapse a Computer field to a canonical short-hostname key.
+
+    Rules (applied in order):
+      • strip whitespace and any trailing dot (FQDN trailing-dot form)
+      • lowercase
+      • take the first label before "." so FQDN and short name collapse:
+            "WORK01.contoso.local"  → "work01"
+            "Work01"                 → "work01"
+            "WORK01 "                → "work01"
+      • blank input → "(unknown)" so empty Computer fields cluster together
+    """
+    s = str(raw or "").strip().rstrip(".").lower()
+    if not s:
+        return "(unknown)"
+    # Short hostname before first dot
+    return s.split(".", 1)[0]
+
+
+def _is_forwarded_source(source_file: str) -> bool:
+    """True if the source EVTX file is a Windows Event Forwarding collector log.
+
+    ForwardedEvents.evtx (the default WEF target) contains events from MANY
+    remote source computers — each event preserves the source machine's
+    Computer field, so a single forwarded log can inflate distinct-computer
+    counts dramatically.  We flag rows from such files so the UI can show
+    "Forwarded? Yes" and the analyst can decide whether to filter them out.
+    """
+    import os as _os
+    base = _os.path.basename(str(source_file or "")).lower()
+    # Default name + custom-channel variants seen in the wild
+    return "forwardedevents" in base or base.endswith("_forwarded.evtx")
+
+
+# ── Computer Normalisation JM worker ──────────────────────────────────────────
+
+class _ComputerNormJMWorker(QThread):
+    """Aggregate distinct (computer, source_file, count) tuples in JM mode.
+
+    Single DuckDB GROUP BY against the full parquet shard set — much cheaper
+    than the WiFi / Remote Assistance fetchers because we never read
+    event_data_json, only the small columnar fields.  No LIMIT needed: even
+    on a 50 M-event dataset the GROUP BY produces at most a few thousand rows.
+
+    Signal naming mirrors _RemoteAssistJMFetchWorker:
+      finished(list)       — list[dict] with keys: computer, source_file, n
+      fetch_error(str,str) — (error_kind, detail_message)
+    """
+
+    finished    = Signal(list)
+    fetch_error = Signal(str, str)
+
+    def __init__(self, parquet_dir: str, parent=None) -> None:
+        super().__init__(parent)
+        self._parquet_dir = parquet_dir
+
+    def run(self) -> None:
+        import json   as _json
+        import os     as _os
+        import duckdb as _duckdb
+
+        manifest_path = _os.path.join(self._parquet_dir, "parquet_manifest.json")
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as _f:
+                _raw = _f.read()
+        except FileNotFoundError:
+            logger.error("ComputerNorm JM [manifest_missing]: %s", manifest_path)
+            self.fetch_error.emit(
+                "manifest_missing",
+                f"Parquet manifest not found:\n{manifest_path}",
+            )
+            return
+        except OSError as exc:
+            logger.error("ComputerNorm JM [manifest_read_error]: %s — %s",
+                         manifest_path, exc)
+            self.fetch_error.emit("manifest_read_error",
+                                  f"Cannot read Parquet manifest:\n{exc}")
+            return
+
+        try:
+            shards = _json.loads(_raw)
+        except _json.JSONDecodeError as exc:
+            logger.error("ComputerNorm JM [manifest_parse_error]: %s", exc)
+            self.fetch_error.emit("manifest_parse_error",
+                                  f"Parquet manifest is not valid JSON:\n{exc}")
+            return
+
+        if not shards:
+            self.finished.emit([])
+            return
+
+        shard_list = (
+            "[" + ", ".join(f"'{p.replace(chr(39), chr(39)*2)}'" for p in shards) + "]"
+        )
+        sql = (
+            f"SELECT COALESCE(computer, '') AS computer, "
+            f"       COALESCE(source_file, '') AS source_file, "
+            f"       COUNT(*) AS n "
+            f"FROM parquet_scan({shard_list}) "
+            f"GROUP BY computer, source_file"
+        )
+
+        try:
+            con = _duckdb.connect()
+            try:
+                rows = con.execute(sql).fetchall()
+            finally:
+                con.close()
+        except Exception as exc:
+            logger.error("ComputerNorm JM [duckdb_query_error]: %s", exc)
+            self.fetch_error.emit("duckdb_query_error", str(exc))
+            return
+
+        out: list[dict] = []
+        for computer, source_file, n in rows:
+            out.append({
+                "computer":    str(computer or ""),
+                "source_file": str(source_file or ""),
+                "n":           int(n or 0),
+            })
+        self.finished.emit(out)
+
+
+# ── Computer Normalisation dialog ─────────────────────────────────────────────
+
+class _ComputerNormalisationDialog(QDialog):
+    """Browse all Computer-field values collapsed to canonical hostnames.
+
+    Each row represents one normalised key (lowercased short hostname).  The
+    Variants column shows how many distinct raw strings collapsed into that
+    key; the Variant Details column lists them comma-separated (truncated).
+    The Forwarded column flags rows that include events from a
+    ForwardedEvents.evtx collector log — a single such file can inflate the
+    distinct-Computer count by dozens because WEF preserves the original
+    source machine in each forwarded event.
+
+    *rows* is the raw aggregation: list[dict] with keys
+        ``computer``, ``source_file``, ``n``.
+    *on_filter_fn* is invoked with ``(variants: list[str])`` when the user
+    chooses "Filter Events to This Computer" from the context menu.
+    """
+
+    _HEADERS = [
+        "Normalised Name", "Variants", "Events", "Source Files",
+        "Forwarded?", "Variant Details",
+    ]
+
+    _BASE_QSS = """
+        QDialog { background: #f5f0e8; }
+        QLabel  { color: #1e1a14; font-size: 9pt; }
+        QLineEdit {
+            background: #faf7f2; color: #1e1a14;
+            border: 1px solid #c4bba8; border-radius: 3px;
+            padding: 2px 6px; font-size: 9pt;
+        }
+        QLineEdit:focus { border-color: #7a5c1e; }
+        QComboBox {
+            background: #faf7f2; color: #1e1a14;
+            border: 1px solid #c4bba8; border-radius: 3px;
+            padding: 2px 6px; font-size: 9pt; min-width: 130px;
+        }
+        QComboBox QAbstractItemView {
+            background: #faf7f2; color: #1e1a14;
+            selection-background-color: #7a5c1e;
+        }
+        QPushButton {
+            background: #e4ddd3; color: #1e1a14;
+            border: 1px solid #c4bba8; border-radius: 3px;
+            padding: 3px 12px; font-size: 9pt;
+        }
+        QPushButton:hover    { background: #d6cdbf; }
+        QPushButton:pressed  { background: #c4bba8; }
+        QPushButton#okBtn {
+            background: #7a5c1e; color: #ffffff;
+            border: 1px solid #5a3e1e;
+        }
+        QPushButton#okBtn:hover   { background: #8a6c2e; }
+        QPushButton#okBtn:pressed { background: #5a3e1e; }
+        QTableWidget {
+            background: #faf7f2; color: #1e1a14;
+            border: 1px solid #c4bba8; gridline-color: #e0d8c4;
+            font-size: 9pt; outline: none;
+        }
+        QTableWidget::item { padding: 1px 4px; }
+        QTableWidget::item:selected {
+            background: #7a5c1e; color: #ffffff;
+        }
+        QHeaderView::section {
+            background: #e4ddd3; color: #1e1a14;
+            border: none; border-right: 1px solid #c4bba8;
+            border-bottom: 1px solid #c4bba8;
+            padding: 3px 6px; font-size: 9pt; font-weight: bold;
+        }
+        QScrollBar:vertical { background: #f5f0e8; width: 8px; margin: 0; }
+        QScrollBar::handle:vertical {
+            background: #5a3e1e; border-radius: 4px; min-height: 20px;
+        }
+        QScrollBar::handle:vertical:hover { background: #7a5c1e; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        QScrollBar:horizontal { background: #f5f0e8; height: 8px; margin: 0; }
+        QScrollBar::handle:horizontal {
+            background: #5a3e1e; border-radius: 4px; min-width: 20px;
+        }
+        QScrollBar::handle:horizontal:hover { background: #7a5c1e; }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+    """
+
+    def __init__(self, rows: list[dict], on_filter_fn=None, parent=None) -> None:
+        super().__init__(parent)
+        self._on_filter_fn = on_filter_fn
+        self._all_rows:    list[dict] = self._build_rows(rows)
+        self._shown_rows:  list[dict] = list(self._all_rows)
+        self._build_ui()
+        self._apply_display_filters()
+
+    # ── Aggregation ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_rows(raw_rows: list[dict]) -> list[dict]:
+        """Group (computer, source_file, n) tuples by normalised key.
+
+        Each output row carries:
+          norm_name        — canonical hostname used for grouping
+          variants         — list[str] of raw Computer strings (originals)
+          variant_counts   — dict[variant → event_count]
+          source_files     — list[str] of basenames the variants appear in
+          source_files_full— list[str] of FULL source paths (for filtering)
+          forwarded        — True if any source_file is a ForwardedEvents log
+          event_count      — sum of n across all (variant, source_file) entries
+        """
+        import os as _os
+        agg: dict[str, dict] = {}
+        for r in raw_rows:
+            comp = str(r.get("computer") or "")
+            sf   = str(r.get("source_file") or "")
+            n    = int(r.get("n") or 0)
+            key  = _norm_computer_key(comp)
+            slot = agg.setdefault(key, {
+                "norm_name":         key,
+                "variants_set":      set(),
+                "variant_counts":    {},
+                "source_files_set":  set(),
+                "source_files_full": set(),
+                "forwarded":         False,
+                "event_count":       0,
+            })
+            slot["variants_set"].add(comp)
+            slot["variant_counts"][comp] = slot["variant_counts"].get(comp, 0) + n
+            slot["source_files_full"].add(sf)
+            if sf:
+                slot["source_files_set"].add(_os.path.basename(sf))
+            if _is_forwarded_source(sf):
+                slot["forwarded"] = True
+            slot["event_count"] += n
+
+        out: list[dict] = []
+        for slot in agg.values():
+            variants_sorted = sorted(slot["variants_set"], key=lambda x: x.lower())
+            out.append({
+                "norm_name":         slot["norm_name"],
+                "variants":          variants_sorted,
+                "variant_count":     len(variants_sorted),
+                "variant_counts":    slot["variant_counts"],
+                "source_files":      sorted(slot["source_files_set"]),
+                "source_files_full": sorted(slot["source_files_full"]),
+                "source_file_count": len(slot["source_files_set"]),
+                "forwarded":         slot["forwarded"],
+                "event_count":       slot["event_count"],
+            })
+        # Sort: most variants first (so ambiguous / FQDN-vs-short rises to top)
+        out.sort(key=lambda d: (-d["variant_count"], -d["event_count"],
+                                 d["norm_name"]))
+        return out
+
+    # ── UI building ────────────────────────────────────────────────────────
+
+    def _build_ui(self) -> None:
+        self.setWindowTitle("Computer Normalisation")
+        self.resize(1100, 600)
+        self.setStyleSheet(self._BASE_QSS)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 10, 12, 10)
+        root.setSpacing(8)
+
+        # ── Filter row ─────────────────────────────────────────────────────
+        frow = QHBoxLayout()
+        frow.setSpacing(6)
+
+        frow.addWidget(QLabel("Show:"))
+        self._cmb_show = QComboBox()
+        self._cmb_show.addItems([
+            "All hosts",
+            "Only hosts with multiple variants",
+            "Only hosts in Forwarded logs",
+            "Hide Forwarded-only hosts",
+        ])
+        self._cmb_show.currentIndexChanged.connect(self._apply_display_filters)
+        frow.addWidget(self._cmb_show)
+
+        frow.addWidget(QLabel("Search:"))
+        self._txt_search = QLineEdit()
+        self._txt_search.setPlaceholderText("hostname / variant / source file…")
+        self._txt_search.setFixedWidth(220)
+        self._txt_search.returnPressed.connect(self._apply_display_filters)
+        frow.addWidget(self._txt_search)
+
+        btn_apply = QPushButton("Apply")
+        btn_apply.setFixedWidth(60)
+        btn_apply.clicked.connect(self._apply_display_filters)
+        frow.addWidget(btn_apply)
+
+        btn_clear = QPushButton("Clear")
+        btn_clear.setFixedWidth(60)
+        btn_clear.clicked.connect(self._clear_filters)
+        frow.addWidget(btn_clear)
+
+        frow.addStretch()
+        root.addLayout(frow)
+
+        # ── Table ──────────────────────────────────────────────────────────
+        self._tbl = QTableWidget(0, len(self._HEADERS))
+        self._tbl.setHorizontalHeaderLabels(self._HEADERS)
+        self._tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._tbl.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._tbl.setAlternatingRowColors(False)
+        self._tbl.setSortingEnabled(True)
+        self._tbl.verticalHeader().setVisible(False)
+        self._tbl.verticalHeader().setDefaultSectionSize(22)
+        hdr = self._tbl.horizontalHeader()
+        hdr.setStretchLastSection(True)
+        hdr.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._tbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tbl.customContextMenuRequested.connect(self._on_context_menu)
+        root.addWidget(self._tbl, 1)
+
+        # ── Summary bar ────────────────────────────────────────────────────
+        self._lbl_summary = QLabel("")
+        self._lbl_summary.setWordWrap(True)
+        self._lbl_summary.setTextFormat(Qt.TextFormat.RichText)
+        self._lbl_summary.setStyleSheet(
+            "background:#faf7f2; border:1px solid #c4bba8;"
+            " border-radius:3px; padding:4px 8px; color:#1e1a14;"
+        )
+        root.addWidget(self._lbl_summary)
+
+        # ── Button row ─────────────────────────────────────────────────────
+        brow = QHBoxLayout()
+        brow.setSpacing(8)
+
+        btn_export = QPushButton("Export CSV…")
+        btn_export.clicked.connect(self._on_export_csv)
+        brow.addWidget(btn_export)
+
+        brow.addStretch()
+
+        btn_close = QPushButton("Close")
+        btn_close.setObjectName("okBtn")
+        btn_close.setFixedWidth(80)
+        btn_close.clicked.connect(self.close)
+        brow.addWidget(btn_close)
+
+        root.addLayout(brow)
+
+    # ── Display logic ──────────────────────────────────────────────────────
+
+    def _apply_display_filters(self) -> None:
+        mode   = self._cmb_show.currentText() if hasattr(self, "_cmb_show") else "All hosts"
+        needle = (self._txt_search.text().strip().lower()
+                  if hasattr(self, "_txt_search") else "")
+        shown: list[dict] = []
+        for r in self._all_rows:
+            if mode == "Only hosts with multiple variants" and r["variant_count"] < 2:
+                continue
+            if mode == "Only hosts in Forwarded logs" and not r["forwarded"]:
+                continue
+            if mode == "Hide Forwarded-only hosts":
+                # Drop rows where EVERY source file is a ForwardedEvents log —
+                # these are the most likely "extra" hosts inflating the count.
+                _all_fwd = all(
+                    _is_forwarded_source(sf) for sf in r["source_files_full"]
+                ) if r["source_files_full"] else False
+                if _all_fwd:
+                    continue
+            if needle:
+                hay = " ".join([
+                    r["norm_name"],
+                    " ".join(r["variants"]),
+                    " ".join(r["source_files"]),
+                ]).lower()
+                if needle not in hay:
+                    continue
+            shown.append(r)
+        self._shown_rows = shown
+        self._populate_table()
+        self._update_summary()
+
+    def _clear_filters(self) -> None:
+        if hasattr(self, "_cmb_show"):
+            self._cmb_show.setCurrentIndex(0)
+        if hasattr(self, "_txt_search"):
+            self._txt_search.clear()
+        self._apply_display_filters()
+
+    def _populate_table(self) -> None:
+        tbl = self._tbl
+        tbl.setSortingEnabled(False)
+        tbl.setRowCount(0)
+        for orig_row, r in enumerate(self._shown_rows):
+            # Compact variant detail string (truncated)
+            _vd_full = ", ".join(r["variants"])
+            _vd_show = _vd_full if len(_vd_full) <= 100 else _vd_full[:97] + "…"
+            cells = [
+                r["norm_name"],
+                str(r["variant_count"]),
+                f"{r['event_count']:,}",
+                str(r["source_file_count"]),
+                "Yes" if r["forwarded"] else "No",
+                _vd_show,
+            ]
+            row = tbl.rowCount()
+            tbl.insertRow(row)
+            for c, text in enumerate(cells):
+                if c in (1, 3):       # Variants / Source Files (int sort)
+                    item = _NumericSortItem(text)
+                    item.setData(Qt.ItemDataRole.UserRole,
+                                 r["variant_count"] if c == 1 else r["source_file_count"])
+                elif c == 2:          # Events (int sort, comma-formatted)
+                    item = _NumericSortItem(text)
+                    item.setData(Qt.ItemDataRole.UserRole, r["event_count"])
+                else:
+                    item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if c == 0:
+                    # Stash orig_row index for context-menu lookup.
+                    item.setData(Qt.ItemDataRole.UserRole, orig_row)
+                    if r["variant_count"] > 1:
+                        item.setForeground(QColor("#7a5c1e"))   # highlight
+                if c == 4 and r["forwarded"]:
+                    item.setForeground(QColor("#8a4800"))       # amber
+                if c == 5:
+                    # Full variant list as tooltip so truncation is non-lossy
+                    item.setToolTip(_vd_full)
+                tbl.setItem(row, c, item)
+        tbl.setSortingEnabled(True)
+
+    def _update_summary(self) -> None:
+        total = len(self._all_rows)
+        shown = len(self._shown_rows)
+        multi = sum(1 for r in self._all_rows if r["variant_count"] > 1)
+        fwd   = sum(1 for r in self._all_rows if r["forwarded"])
+        total_events  = sum(r["event_count"] for r in self._all_rows)
+        total_raw_vars = sum(r["variant_count"] for r in self._all_rows)
+        html = (
+            f"<span style='color:#1e1a14;'>"
+            f"Showing <b>{shown}</b> of <b>{total}</b> normalised host(s)"
+            f"</span>"
+            f"&ensp;—&ensp;<span style='color:#5a4030;'>"
+            f"<b>{total_raw_vars}</b> raw Computer string(s) collapsed&ensp;|"
+            f"&ensp;<b>{multi}</b> with multiple variants&ensp;|"
+            f"&ensp;<b>{fwd}</b> seen in Forwarded logs&ensp;|"
+            f"&ensp;<b>{total_events:,}</b> event(s)"
+            f"</span>"
+        )
+        if hasattr(self, "_lbl_summary"):
+            self._lbl_summary.setText(html)
+
+    # ── Context menu ───────────────────────────────────────────────────────
+
+    def _on_context_menu(self, pos) -> None:
+        from PySide6.QtWidgets import QMenu, QMessageBox
+        from PySide6.QtGui     import QGuiApplication
+        index = self._tbl.indexAt(pos)
+        if not index.isValid():
+            return
+        self._tbl.selectRow(index.row())
+        cell = self._tbl.item(index.row(), 0)
+        if cell is None:
+            return
+        orig = cell.data(Qt.ItemDataRole.UserRole)
+        if orig is None or not (0 <= orig < len(self._shown_rows)):
+            return
+        r = self._shown_rows[orig]
+
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background:#2b2b2b; color:#e8e8e8; border:1px solid #555; }"
+            "QMenu::item:selected { background:#4a6fa5; color:white; }"
+            "QMenu::separator { height:1px; background:#555; margin:4px 8px; }"
+        )
+
+        act_n = menu.addAction(f"\U0001f4cb  Copy Normalised Name  ({r['norm_name']})")
+        act_n.triggered.connect(lambda: QGuiApplication.clipboard().setText(r["norm_name"]))
+
+        if r["variants"]:
+            act_v = menu.addAction(f"\U0001f4cb  Copy All Variants  ({r['variant_count']})")
+            act_v.triggered.connect(
+                lambda: QGuiApplication.clipboard().setText("\n".join(r["variants"]))
+            )
+
+        if r["source_files"]:
+            act_s = menu.addAction(
+                f"\U0001f4cb  Copy Source Files  ({r['source_file_count']})"
+            )
+            act_s.triggered.connect(
+                lambda: QGuiApplication.clipboard().setText("\n".join(r["source_files"]))
+            )
+
+        # Show variant breakdown popup with per-variant event counts.
+        act_d = menu.addAction("\U0001f4cb  Show Variant Breakdown…")
+        act_d.triggered.connect(lambda: self._show_variant_breakdown(r))
+
+        if self._on_filter_fn and r["variants"]:
+            menu.addSeparator()
+            _vars = list(r["variants"])
+            act_f = menu.addAction(
+                f"\U0001f50d  Filter Events to This Computer  "
+                f"({r['variant_count']} variant{'s' if r['variant_count'] != 1 else ''})"
+            )
+            act_f.triggered.connect(lambda: self._on_filter_fn(_vars))
+
+        menu.exec(self._tbl.viewport().mapToGlobal(pos))
+
+    def _show_variant_breakdown(self, r: dict) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        lines = [f"Normalised:  {r['norm_name']}",
+                 f"Total events: {r['event_count']:,}", ""]
+        lines.append("Variants (raw Computer values):")
+        for v in r["variants"]:
+            n = r["variant_counts"].get(v, 0)
+            disp = v if v else "(empty)"
+            lines.append(f"  • {disp}  —  {n:,} event(s)")
+        lines.append("")
+        lines.append("Source files:")
+        for sf in r["source_files"]:
+            mark = "  (FORWARDED)" if _is_forwarded_source(sf) else ""
+            lines.append(f"  • {sf}{mark}")
+        QMessageBox.information(self, f"Variant Breakdown — {r['norm_name']}",
+                                "\n".join(lines))
+
+    # ── Export ─────────────────────────────────────────────────────────────
+
+    def _on_export_csv(self) -> None:
+        import csv
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Computer Normalisation",
+            "computer_normalisation.csv", "CSV files (*.csv);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            # Respect current sort order
+            ordered: list[dict] = []
+            for vis in range(self._tbl.rowCount()):
+                cell = self._tbl.item(vis, 0)
+                if cell is None:
+                    continue
+                orig = cell.data(Qt.ItemDataRole.UserRole)
+                if orig is not None and 0 <= orig < len(self._shown_rows):
+                    ordered.append(self._shown_rows[orig])
+            if not ordered:
+                ordered = list(self._shown_rows)
+
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    "Normalised Name", "Variants", "Events",
+                    "Source Files", "Forwarded?", "Variant Details",
+                    "Source File Details",
+                ])
+                for r in ordered:
+                    writer.writerow([
+                        r["norm_name"],
+                        r["variant_count"],
+                        r["event_count"],
+                        r["source_file_count"],
+                        "Yes" if r["forwarded"] else "No",
+                        " | ".join(r["variants"]),
+                        " | ".join(r["source_files"]),
+                    ])
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Failed",
+                                 f"Could not write CSV:\n{exc}")
+            return
+        QMessageBox.information(self, "Export Complete",
+                                f"Saved {len(ordered)} row(s) to:\n{path}")
+
+
 # ── Add / Remove Columns dialog ───────────────────────────────────────────────
 
 class AddRemoveColumnsDialog(QDialog):
@@ -4813,6 +5495,10 @@ class MainWindow(QMainWindow):
         # it without relying on getattr's default-value fallback.
         self._ra_filter_active: bool = False
         self._ra_dlg = None
+        # Computer Normalisation dialog tracking (single instance, JM async).
+        self._computer_norm_dlg = None
+        self._computer_norm_jm_req_id: int = 0
+        self._computer_norm_jm_workers: list = []
         # Detail-pane render cache: skip re-building HTML when the same event
         # and display mode are re-selected.  Key: (record_id, source_file, full_mode).
         self._last_detail_key: tuple | None = None
@@ -4828,7 +5514,11 @@ class MainWindow(QMainWindow):
         self._adv_filter_cfg:  dict | None = None   # last-used FilterDialog config
 
         # ── Column header dropdown filter state ─────────────────────────────
-        self._col_filters: dict[int, list[str]] = {}  # col_idx → list of excluded values
+        # col_idx → (mode, values) where mode in {"include", "exclude"}.
+        # "include" means "keep only rows whose value is in values".
+        # "exclude" means "drop rows whose value is in values".
+        # An entry exists only while a non-trivial filter is active on the column.
+        self._col_filters: dict[int, tuple[str, list[str]]] = {}
 
         # ── Per-file tab/tree state ───────────────────────────────────────────
         self._view_mode: str = "merged"                   # "merged" or "separate"
@@ -4926,6 +5616,14 @@ class MainWindow(QMainWindow):
             "reconstructed from Windows event logs"
         )
         a.triggered.connect(self._on_show_remote_assist)
+
+        a = tm.addAction("Computer Normalisation\u2026")
+        a.setToolTip(
+            "Collapse FQDN/short-name/case variants of the Computer field to canonical "
+            "hostnames; flag computers introduced by ForwardedEvents.evtx (Windows "
+            "Event Forwarding) so they can be excluded from host counts"
+        )
+        a.triggered.connect(self._on_show_computer_norm)
 
         tm.addSeparator()
         a = tm.addAction("Clear Results")
@@ -6222,6 +6920,7 @@ class MainWindow(QMainWindow):
         if self._hw_model is None:
             self._close_logon_sessions_dlg()
             self._close_ra_dlg()
+            self._close_computer_norm_dlg()
 
     def _remove_loaded_file(self, filepath: str) -> None:
         """Remove a file completely — close tab + free memory."""
@@ -6989,14 +7688,29 @@ class MainWindow(QMainWindow):
         """Re-apply the profile selection as a SQL filter in Juggernaut mode.
 
         Called whenever the user checks/unchecks a profile while Juggernaut
-        Mode is active.  Converts the selected profiles to a filter_config
-        (same as parse-time), translates it to SQL via filter_config_to_sql,
-        and applies it to the live SQLite model — no re-parse needed.
+        Mode is active.  Builds the *combined* filter (active profiles stacked
+        ON TOP of any Advanced Filter cfg already applied) and pushes it to
+        the live model.
+
+        Why stack rather than replace: profile and Advanced Filter share the
+        same ``apply_filter()`` slot on ArrowTableModel — replacing it with a
+        profile-only cfg would silently wipe whatever the user typed in the
+        Advanced Filter dialog (and vice-versa in ``_on_advanced_filter_clicked``).
         """
         if self._hw_model is None:
             return
-        fc = self._build_filter_config()
+        # Stack profiles on top of the last-applied Advanced Filter cfg.
+        # When neither is active, _build_filter_config returns empty_filter().
+        fc = self._build_filter_config(base=getattr(self, "_adv_filter_cfg", None))
         self._hw_model.apply_filter(fc)
+        # Mirror to per-file JM tabs so they stay in sync with the live filter.
+        for _fp, _st in self._file_tabs.items():
+            if _fp.startswith("__chain__"):
+                continue
+            try:
+                _st.model.apply_filter(fc)
+            except Exception:
+                pass
         self._update_adv_filter_badge()
         self._update_count_label()
 
@@ -7184,7 +7898,14 @@ class MainWindow(QMainWindow):
         popup = ColumnFilterPopup(logical_index, values, parent=self)
 
         # Bug 7 fix: derive pre-uncheck state from the active tab's actual quick filters
-        # rather than the global _col_filters (which is shared across tabs)
+        # rather than the global _col_filters (which is shared across tabs).
+        #
+        # Both filter modes need to be reflected back into the popup's checkbox
+        # state so the user sees what's already filtering:
+        #   • EXCLUDE filters → uncheck those specific values
+        #   • INCLUDE filters → uncheck EVERYTHING except those values
+        # The previous code only handled the exclude case, leaving include-mode
+        # filters silently invisible after a re-open of the popup.
         _popup_col_key = ColumnFilterPopup.FILTERABLE.get(logical_index, "")
         if _popup_col_key:
             if self._hw_model is not None:
@@ -7194,13 +7915,24 @@ class MainWindow(QMainWindow):
                 _active_qf = _qf_src.get_quick_filters()
             else:
                 _active_qf = self._active_proxy.get_quick_filters()
-            excluded_set = {
-                qf["value"] for qf in _active_qf
-                if qf.get("key") == _popup_col_key and not qf.get("include", True)
+
+            _col_qfs = [qf for qf in _active_qf if qf.get("key") == _popup_col_key]
+            _excluded_vals = {
+                qf["value"] for qf in _col_qfs if not qf.get("include", True)
             }
-            if excluded_set:
+            _included_vals = {
+                qf["value"] for qf in _col_qfs if qf.get("include", True)
+            }
+
+            if _included_vals:
+                # Include-mode: only checked values are the included ones.
                 for chk in popup._checkboxes:
-                    if chk.property("filter_value") in excluded_set:
+                    val = chk.property("filter_value")
+                    chk.setChecked(val in _included_vals)
+            elif _excluded_vals:
+                # Exclude-mode: uncheck the excluded values, leave others checked.
+                for chk in popup._checkboxes:
+                    if chk.property("filter_value") in _excluded_vals:
                         chk.setChecked(False)
 
         popup.filterApplied.connect(self._on_col_filter_applied)
@@ -7233,8 +7965,14 @@ class MainWindow(QMainWindow):
         popup.move(p)
         popup.show()
 
-    def _on_col_filter_applied(self, col_index: int, excluded: list) -> None:
-        """Apply column filter selections by setting Quick Filters."""
+    def _on_col_filter_applied(self, col_index: int, mode: str, values: list) -> None:
+        """Apply column filter selections by setting Quick Filters.
+
+        *mode* is "include", "exclude", or "clear" — see ColumnFilterPopup.
+        Picking the right mode at the popup means events with values outside
+        the popup's top-1000 cap are handled correctly (see bug RCA in
+        ColumnFilterPopup._apply).
+        """
         col_key = ColumnFilterPopup.FILTERABLE.get(col_index, "")
         if not col_key:
             return
@@ -7250,19 +7988,30 @@ class MainWindow(QMainWindow):
                 if scope_dlg.exec() != QDialog.DialogCode.Accepted:
                     return  # cancelled — _col_filters stays unchanged
 
-        # Commit column filter state now that we know we're applying
-        if excluded:
-            self._col_filters[col_index] = excluded
-        else:
+        # Commit column filter state now that we know we're applying.
+        # "clear" with non-empty values is a programmer error from the popup,
+        # but we treat it the same as clear for robustness.
+        if mode == "clear" or (mode == "exclude" and not values):
+            # No filtering needed on this column
             self._col_filters.pop(col_index, None)
+        else:
+            self._col_filters[col_index] = (mode, list(values))
 
-        # Build the full quick-filter list from all current column filters
+        # Build the full quick-filter list from all current column filters.
+        # Each column contributes 0..N quick-filter entries, all sharing
+        # the column's mode (include or exclude).
+        #
+        # Note: the popup never emits ("include", []) — the "everything
+        # unchecked" case is emitted as ("exclude", all_visible_values) so we
+        # never need a sentinel here.  See ColumnFilterPopup._apply.
         new_qf: list[dict] = []
-        for ci, excl_values in self._col_filters.items():
+        for ci, (col_mode, col_values) in self._col_filters.items():
             ck = ColumnFilterPopup.FILTERABLE.get(ci, "")
-            if ck:
-                for val in excl_values:
-                    new_qf.append({"key": ck, "value": val, "include": False})
+            if not ck:
+                continue
+            include_flag = (col_mode == "include")
+            for val in col_values:
+                new_qf.append({"key": ck, "value": val, "include": include_flag})
 
         if self._view_mode == "separate":
             if scope_dlg is not None:
@@ -7337,13 +8086,22 @@ class MainWindow(QMainWindow):
 
     def _update_header_indicators(self) -> None:
         """Add ▼ indicator to column headers that have active filters."""
+        # _col_filters entries are (mode, values) tuples — the column is filtered
+        # iff the values list is non-empty.  An "include" with empty values is
+        # technically a "match nothing" filter and still counts as active.
+        def _is_active(entry) -> bool:
+            if not entry:
+                return False
+            mode, values = entry
+            return mode in ("include", "exclude")  # "clear" entries are popped above
+
         if self._hw_model is not None:
             # Juggernaut mode: update HW model's _header_overrides dict
             if not hasattr(self._hw_model, "_header_overrides"):
                 self._hw_model._header_overrides = {}
             self._hw_model._header_overrides.clear()
-            for col in self._col_filters:
-                if self._col_filters[col] and col < len(COLUMNS):
+            for col, entry in self._col_filters.items():
+                if _is_active(entry) and col < len(COLUMNS):
                     self._hw_model._header_overrides[col] = f"▼ {COLUMNS[col]}"
             self._hw_model.headerDataChanged.emit(
                 Qt.Orientation.Horizontal, 0, self._hw_model.columnCount() - 1
@@ -7351,8 +8109,8 @@ class MainWindow(QMainWindow):
             return
         model = self._active_model
         model._header_overrides.clear()
-        for col in self._col_filters:
-            if self._col_filters[col] and col < len(COLUMNS):
+        for col, entry in self._col_filters.items():
+            if _is_active(entry) and col < len(COLUMNS):
                 model._header_overrides[col] = f"▼ {COLUMNS[col]}"
         model.headerDataChanged.emit(
             Qt.Orientation.Horizontal, 0, model.columnCount() - 1
@@ -7363,9 +8121,19 @@ class MainWindow(QMainWindow):
     # BUILD FILTER
     # =========================================================================
 
-    def _build_filter_config(self) -> dict:
+    def _build_filter_config(self, base: dict | None = None) -> dict:
+        """Build a filter config, optionally stacking on top of a *base* cfg.
+
+        With ``base=None`` (the default) this returns just the profile-derived
+        config — used at parse time, when nothing else is active yet.
+
+        With ``base=<dialog cfg>`` it stacks the active profiles ON TOP of
+        the dialog cfg.  This is what JM-mode live filtering must use so that
+        applying the Advanced Filter does not silently wipe an active profile
+        selection (and vice-versa).
+        """
         from evtx_tool.core.filters import empty_filter
-        fc = empty_filter()
+        fc = dict(base) if base else empty_filter()
 
         # Apply profiles (parse-time event ID / provider filtering)
         checked_profiles = self._get_checked_profiles()
@@ -7520,6 +8288,7 @@ class MainWindow(QMainWindow):
         self._events         = events
         self._close_logon_sessions_dlg()   # close + invalidate session browser cache
         self._close_ra_dlg(clear_filter=True)  # M1: close + clear RA filter + kill worker
+        self._close_computer_norm_dlg()    # invalidate cached aggregation
         self._attack_summary = attack_summary
         self._iocs           = None
         self._chains         = []
@@ -7840,10 +8609,21 @@ class MainWindow(QMainWindow):
             metadata=self._metadata,
             current_filter=self._adv_filter_cfg,
             parent=self,
+            juggernaut_mode=(self._hw_model is not None),
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         cfg = dlg.get_filter_config()
+
+        # ── Stack the dialog cfg ON TOP of any active profile selection ──
+        # In JM mode both the profile filter and the dialog filter are applied
+        # via the same `apply_filter()` slot on the live model.  Without this
+        # stacking step, opening the Advanced Filter would silently wipe an
+        # active profile (and toggling a profile would wipe the Advanced
+        # Filter).  In normal mode profiles are baked into the events at parse
+        # time, so the proxy still receives only the dialog cfg — but using
+        # the helper keeps both paths symmetric.
+        cfg_effective = self._build_filter_config(base=cfg) if self._hw_model is not None else cfg
 
         # In separate-tabs mode ask which files to target before committing cfg
         if self._view_mode == "separate":
@@ -7852,12 +8632,14 @@ class MainWindow(QMainWindow):
                 scope_dlg = _FilterTargetDialog(target_tabs, self)
                 if scope_dlg.exec() != QDialog.DialogCode.Accepted:
                     return  # cancelled — _adv_filter_cfg stays unchanged
+                # Store the raw dialog cfg (not the merged one) so subsequent
+                # profile toggles can re-build the combined filter cleanly.
                 self._adv_filter_cfg = cfg
                 is_jm = self._hw_model is not None
                 for fp in scope_dlg.selected():
                     if fp == "__all_events__":
                         if is_jm:
-                            self._hw_model.apply_filter(cfg)
+                            self._hw_model.apply_filter(cfg_effective)
                         else:
                             self._proxy_model.set_advanced_filter(cfg)
                         continue
@@ -7865,7 +8647,7 @@ class MainWindow(QMainWindow):
                     if state is None:
                         continue
                     if is_jm:
-                        state.model.apply_filter(cfg)
+                        state.model.apply_filter(cfg_effective)
                     else:
                         state.proxy.set_advanced_filter(cfg)
                 self._update_adv_filter_badge()
@@ -7875,7 +8657,7 @@ class MainWindow(QMainWindow):
         # Merged mode (or no file tabs yet) — apply to active model as before
         self._adv_filter_cfg = cfg
         if self._hw_model is not None:
-            self._hw_model.apply_filter(cfg)
+            self._hw_model.apply_filter(cfg_effective)
             self._update_adv_filter_badge()
             self._update_count_label()
             return
@@ -7884,15 +8666,37 @@ class MainWindow(QMainWindow):
         self._update_count_label()
 
     def _clear_advanced_filter(self) -> None:
-        """Remove the advanced filter and hide the badge."""
+        """Remove the advanced filter and hide the badge.
+
+        In Juggernaut Mode the profile filter and the Advanced Filter share the
+        same ``apply_filter`` slot.  Calling ``clear_filter()`` blindly would
+        also wipe an active profile selection.  Instead, re-build the filter
+        from the active profile state alone (with ``base=None`` so the dialog
+        cfg is gone) so the profile filter survives the clear.
+        """
         self._adv_filter_cfg = None
-        # Bug 3 fix: in Juggernaut Mode clear via hw_model
+        # Bug 3 fix: in Juggernaut Mode clear via hw_model — but keep profiles.
         if self._hw_model is not None:
-            self._hw_model.clear_filter()
-            # Also clear per-file tab filters (separate-tabs mode)
-            for _fp, _st in self._file_tabs.items():
-                if not _fp.startswith("__chain__"):
-                    _st.model.clear_filter()
+            # Rebuild filter from profiles only (no dialog cfg).
+            # _build_filter_config with base=None == profile-only cfg.
+            # When no profiles are checked this returns empty_filter(), which
+            # apply_filter() treats as "no filter".
+            profile_only_fc = self._build_filter_config(base=None)
+            checked = self._get_checked_profiles()
+            if checked:
+                self._hw_model.apply_filter(profile_only_fc)
+                for _fp, _st in self._file_tabs.items():
+                    if not _fp.startswith("__chain__"):
+                        try:
+                            _st.model.apply_filter(profile_only_fc)
+                        except Exception:
+                            pass
+            else:
+                # No profile active either — same as a full clear.
+                self._hw_model.clear_filter()
+                for _fp, _st in self._file_tabs.items():
+                    if not _fp.startswith("__chain__"):
+                        _st.model.clear_filter()
             self._update_adv_filter_badge()
             self._update_count_label()
             return
@@ -7980,14 +8784,107 @@ class MainWindow(QMainWindow):
                 pass
 
     def _update_adv_filter_badge(self) -> None:
-        """Show/hide the 'Filter Active' badge."""
-        # Bug 12 fix: in Juggernaut Mode ask hw_model directly
-        if self._hw_model is not None:
-            active = self._hw_model.has_filter()
-        else:
-            active = self._active_proxy.has_advanced_filter()
+        """Show/hide the 'Filter Active' badge and surface inverted/exclude modes.
+
+        The badge represents the **Advanced Filter dialog** state, not any
+        active *profile* filter.  In JM mode profiles and the Advanced Filter
+        share ``ArrowTableModel.has_filter()`` — using that directly would
+        keep the badge (and its X clear button) visible after the user clears
+        the Advanced Filter, making the X look broken when only a profile is
+        actually filtering.  Read ``_adv_filter_cfg`` directly instead so the
+        badge tracks the dialog cfg exclusively.
+
+        When any *exclude* checkbox in the FilterDialog is on, the corresponding
+        clause is wrapped in ``NOT (...)`` at SQL level (or inverted at Python
+        level in normal mode).  If the inverted criterion matches *no* rows
+        (e.g. searching ``Exclude: 1=1`` where no event contains "1=1"), the
+        result is the entire dataset — which is visually indistinguishable from
+        "no filter applied".
+
+        Fix: when any exclude mode is active, the badge text and tooltip
+        explicitly name the inverted layers so the user can never confuse
+        "filter not applied" with "filter is inverted on a no-match term".
+        """
+        # Use _adv_filter_cfg (dialog state) as the source of truth — NOT
+        # hw_model.has_filter(), which is also True for profile-only filters
+        # in JM mode.
+        active = getattr(self, "_adv_filter_cfg", None) is not None
+        # In normal mode also honour the proxy's view in case some other path
+        # set an advanced filter without going through _adv_filter_cfg.
+        if not active and self._hw_model is None:
+            try:
+                active = self._active_proxy.has_advanced_filter()
+            except Exception:
+                pass
         self._lbl_adv_filter_badge.setVisible(active)
         self._btn_clear_adv.setVisible(active)
+
+        if not active:
+            # Reset to the default appearance — important when the user clears
+            # an inverted filter and applies a non-inverted one in sequence.
+            self._lbl_adv_filter_badge.setText("⚡ Filter Active")
+            self._lbl_adv_filter_badge.setToolTip("")
+            return
+
+        # Identify every active exclude/inverted mode from the stored cfg.
+        # Use the last-applied cfg (works for both merged and separate modes —
+        # in separate mode the per-file proxies all share the same cfg shape).
+        cfg = getattr(self, "_adv_filter_cfg", None) or {}
+        excludes: list[str] = []
+        # Map cfg key → human-readable label.  Only listed when the
+        # corresponding *filter clause is actually applied* — an unused
+        # exclude checkbox combined with an empty value field carries no
+        # behavioural risk and would just produce a false positive.
+        _EXCLUDE_LAYERS = [
+            # Simple list/string layers — gated on the value field having content
+            ("event_id_exclude",  "event_id_expr",  "Event ID(s)"),
+            ("text_exclude",      "text_search",    "Text in description"),
+            ("source_exclude",    "sources",        "Source"),
+            ("category_exclude",  "categories",     "Category"),
+            ("user_exclude",      "users",          "User"),
+            ("computer_exclude",  "computers",      "Computer"),
+        ]
+        for excl_key, value_key, label in _EXCLUDE_LAYERS:
+            if not cfg.get(excl_key):
+                continue
+            val = cfg.get(value_key)
+            if val:  # non-empty string or non-empty list
+                excludes.append(label)
+
+        # Date / time exclude — only surface when the date filter is actually
+        # applied (filter_sql.py line 246 gates the date clause on date_from
+        # or date_to being non-empty; without either, date_exclude is dead).
+        if cfg.get("date_exclude") and (cfg.get("date_from") or cfg.get("date_to")):
+            excludes.append("Date / Time")
+
+        # Relative time exclude — only surface when the relative filter is
+        # actually applied (filter_sql.py line 379 gates on days OR hours > 0).
+        _rel_days  = cfg.get("relative_days", 0)  or 0
+        _rel_hours = cfg.get("relative_hours", 0) or 0
+        try:
+            _rel_active = (int(_rel_days) > 0 or int(_rel_hours) > 0)
+        except (TypeError, ValueError):
+            _rel_active = False
+        if cfg.get("relative_exclude") and _rel_active:
+            excludes.append("Relative time")
+
+        if excludes:
+            self._lbl_adv_filter_badge.setText(
+                f"⚡ Filter Active  ⚠ Exclude×{len(excludes)}"
+            )
+            tip_lines = ["Filter is INVERTED on the following layer(s):"]
+            tip_lines.extend(f"  • {label}" for label in excludes)
+            tip_lines.append("")
+            tip_lines.append(
+                "Exclude inverts the match: rows that DO match the criterion "
+                "are HIDDEN, and rows that do NOT match are shown.  If the "
+                "search term doesn't appear in any event, exclude shows ALL "
+                "rows — which can look identical to 'no filter applied'."
+            )
+            self._lbl_adv_filter_badge.setToolTip("\n".join(tip_lines))
+        else:
+            self._lbl_adv_filter_badge.setText("⚡ Filter Active")
+            self._lbl_adv_filter_badge.setToolTip("")
 
     def _update_count_label(self) -> None:
         # Bug 5 fix: in Juggernaut Mode read count from hw_model
@@ -8532,6 +9429,157 @@ class MainWindow(QMainWindow):
             f"Filtered to {n} event{'s' if n != 1 else ''} "
             f"for {typ} session"
             + (f" starting {ts}" if ts else "")
+        )
+
+    # ── Computer Normalisation browser ─────────────────────────────────────────
+
+    def _close_computer_norm_dlg(self) -> None:
+        """Close the Computer Normalisation dialog and invalidate in-flight workers.
+
+        Bumping ``_computer_norm_jm_req_id`` ensures that any pending JM fetch
+        from the previous dataset cannot open a stale dialog after the dataset
+        has been replaced (parse-complete, clear-results, tab-change).
+        """
+        dlg = getattr(self, "_computer_norm_dlg", None)
+        if dlg is not None:
+            try:
+                dlg.close()
+            except RuntimeError:
+                pass
+        self._computer_norm_dlg = None
+        self._computer_norm_jm_req_id = (
+            getattr(self, "_computer_norm_jm_req_id", 0) + 1
+        )
+
+    def _on_show_computer_norm(self) -> None:
+        """Open the Computer Normalisation dialog (non-modal).
+
+        Always discards any previous dialog instance so the aggregation is
+        rebuilt fresh — prevents serving stale data after a re-parse.
+        Normal mode: scan in-memory events.  JM mode: background DuckDB query.
+        """
+        existing = getattr(self, "_computer_norm_dlg", None)
+        if existing is not None:
+            try:
+                existing.close()
+            except RuntimeError:
+                pass
+            self._computer_norm_dlg = None
+
+        if self._hw_model is not None:
+            parquet_dir = getattr(self, "_hw_db_path", None)
+            if not parquet_dir:
+                QMessageBox.information(self, "Computer Normalisation",
+                                        "No Juggernaut dataset loaded.")
+                return
+            self._set_status("Aggregating computer field…")
+            self._computer_norm_jm_req_id = (
+                getattr(self, "_computer_norm_jm_req_id", 0) + 1
+            )
+            _req = self._computer_norm_jm_req_id
+
+            worker = _ComputerNormJMWorker(parquet_dir, parent=self)
+
+            def _on_ready(rows, _r=_req):
+                if getattr(self, "_computer_norm_jm_req_id", None) != _r:
+                    return   # stale — newer request owns the slot
+                self._on_computer_norm_jm_ready(rows)
+
+            def _on_err(kind, msg, _r=_req):
+                if getattr(self, "_computer_norm_jm_req_id", None) != _r:
+                    return
+                self._on_computer_norm_jm_error(kind, msg)
+
+            worker.finished.connect(_on_ready)
+            worker.fetch_error.connect(_on_err)
+            worker.start()
+            # Keep a strong reference so the worker is not GC'd mid-flight.
+            self._computer_norm_jm_workers = [
+                w for w in self._computer_norm_jm_workers if w.isRunning()
+            ]
+            self._computer_norm_jm_workers.append(worker)
+            return
+
+        # Normal mode — aggregate in-memory events.
+        events = self._active_events
+        if not events:
+            QMessageBox.information(self, "Computer Normalisation",
+                                    "No events loaded.")
+            return
+        rows: list[dict] = []
+        agg: dict[tuple[str, str], int] = {}
+        for ev in events:
+            key = (str(ev.get("computer") or ""),
+                   str(ev.get("source_file") or ""))
+            agg[key] = agg.get(key, 0) + 1
+        for (comp, sf), n in agg.items():
+            rows.append({"computer": comp, "source_file": sf, "n": n})
+        self._open_computer_norm_dialog(rows)
+
+    def _on_computer_norm_jm_ready(self, rows: list) -> None:
+        self._set_status("")
+        if not rows:
+            QMessageBox.information(self, "Computer Normalisation",
+                                    "No events found in the dataset.")
+            return
+        self._open_computer_norm_dialog(rows)
+
+    def _on_computer_norm_jm_error(self, kind: str, msg: str) -> None:
+        self._set_status("")
+        _TITLES = {
+            "manifest_missing":     "Parquet Manifest Not Found",
+            "manifest_read_error":  "Cannot Read Parquet Manifest",
+            "manifest_parse_error": "Parquet Manifest Corrupt",
+            "duckdb_query_error":   "Computer Normalisation Query Failed",
+        }
+        title = _TITLES.get(kind, "Computer Normalisation Error")
+        QMessageBox.warning(self, title, msg)
+
+    def _open_computer_norm_dialog(self, rows: list) -> None:
+        """Instantiate and show a fresh _ComputerNormalisationDialog from *rows*."""
+        dlg = _ComputerNormalisationDialog(
+            rows=rows,
+            on_filter_fn=self._apply_computer_norm_filter,
+            parent=self,
+        )
+        self._computer_norm_dlg = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
+    def _apply_computer_norm_filter(self, variants: list[str]) -> None:
+        """Apply an OR-of-variants quick filter on the computer column.
+
+        Uses ``set_quick_filters([...])`` directly (rather than repeated
+        ``add_quick_filter`` calls) because add_quick_filter dedupes by key
+        — the same-key replacement logic would collapse all variants down
+        to the last one.  ``set_quick_filters`` preserves the full list and
+        ``_rebuild_quick_where`` groups them into a single ``IN (?, ?, …)``
+        clause that ORs the values together.
+        """
+        if not variants:
+            return
+        filters = [{"key": "computer", "value": v, "include": True}
+                   for v in variants if v]
+        if not filters:
+            self._set_status("Selected host has only empty Computer values; "
+                             "no filter applied.")
+            return
+        if self._hw_model is not None:
+            self._hw_model.set_quick_filters(filters)
+            # Also push to per-file JM models so the per-file tab views match.
+            for _st in self._file_tabs.values():
+                _st.model.set_quick_filters(filters)
+        else:
+            self._proxy_model.set_quick_filters(filters)
+            for _st in self._file_tabs.values():
+                _st.proxy.set_quick_filters(filters)
+        self._update_quick_filter_badge()
+        self._update_count_label()
+        n = len(filters)
+        self._set_status(
+            f"Filtered to events where Computer matches "
+            f"{n} variant{'s' if n != 1 else ''}."
         )
 
     # ── Juggernaut Mode — post-parse analysis (Hayabusa) ─────────────────────
@@ -10821,6 +11869,7 @@ class MainWindow(QMainWindow):
         self._events             = []
         self._close_logon_sessions_dlg()   # close + invalidate session browser cache
         self._close_ra_dlg(clear_filter=True)  # M1: close + clear RA filter + kill worker
+        self._close_computer_norm_dlg()    # invalidate cached aggregation
         self._attack_summary     = None
         self._iocs               = None
         self._chains             = []
@@ -10863,6 +11912,12 @@ class MainWindow(QMainWindow):
         # ─────────────────────────────────────────────────────────────────
 
         self._event_model.set_events([])
+        # Drop the cached Advanced Filter cfg.  Without this it would carry
+        # across to the next parse, and — combined with the profile-stacking
+        # fix in _on_hw_profile_filter_changed — toggling a profile on the
+        # newly loaded dataset would silently re-apply the previous session's
+        # advanced filter to it.  Also refresh the badge so it hides cleanly.
+        self._adv_filter_cfg = None
         # Clear bookmarks — events no longer exist after a reset
         self._bookmarks.clear()
         self._bookmarked_keys.clear()
@@ -11023,14 +12078,29 @@ class MainWindow(QMainWindow):
         # This recomputes _adv_date_from / _adv_date_to in the new timezone so
         # a specific-day or date-range filter continues to match the dates the
         # user sees in the table rather than drifting by a timezone offset.
+        #
+        # In JM mode we must rebuild the *combined* filter (profiles stacked on
+        # top of the dialog cfg) — applying the dialog cfg alone would silently
+        # wipe an active profile selection.  In normal mode the proxy holds
+        # only the dialog cfg, so passing it through unchanged is correct.
         _cfg = getattr(self, "_adv_filter_cfg", None)
-        if _cfg is not None:
+        if _cfg is not None or (
+            self._hw_model is not None and self._get_checked_profiles()
+        ):
             if self._hw_model is not None:
                 try:
-                    self._hw_model.apply_filter(_cfg)
+                    _effective = self._build_filter_config(base=_cfg)
+                    self._hw_model.apply_filter(_effective)
+                    for _fp, _st in self._file_tabs.items():
+                        if _fp.startswith("__chain__"):
+                            continue
+                        try:
+                            _st.model.apply_filter(_effective)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
-            else:
+            elif _cfg is not None:
                 # Merged-mode proxy
                 try:
                     if self._proxy_model.has_advanced_filter():
