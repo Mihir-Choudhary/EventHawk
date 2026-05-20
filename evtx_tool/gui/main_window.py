@@ -8715,6 +8715,14 @@ class MainWindow(QMainWindow):
         Covers: text search bar, advanced filter, quick column filters,
         session LogonId filter, ATT&CK tactic filter, bookmark/IOC pivot
         (record-ID filter).  Safe to call even when no filters are active.
+
+        **Profile selection is NOT cleared** — the profile combo's checkboxes
+        stay as they were and the profile-derived filter is re-applied at
+        the end so the user's "what kind of events am I investigating"
+        choice survives a Clear All.  Without this, JM mode would visibly
+        wipe the profile filter even though the checkboxes still showed
+        checked (the underlying model state was reset, leaving the UI and
+        the live filter inconsistent).
         """
         # RA session filters are implemented on top of the bookmark/record-id
         # filter layer.  Clear the ownership flag up front so a later dataset
@@ -8753,12 +8761,37 @@ class MainWindow(QMainWindow):
             for _fp, _st in self._file_tabs.items():
                 if not _fp.startswith("__chain__"):
                     _st.model.clear_all_filters()
+
+            # ── Re-apply the profile-only filter ─────────────────────────────
+            # We just wiped self._hw_model's filter state.  If the user has
+            # any profile checked, restore that filter so the profile combo
+            # selection stays consistent with the live data view.  When no
+            # profile is checked, _build_filter_config(base=None) returns
+            # empty_filter() which apply_filter() treats as "no filter" — so
+            # the model stays unfiltered, matching what the user sees.
+            try:
+                if self._get_checked_profiles():
+                    _profile_fc = self._build_filter_config(base=None)
+                    self._hw_model.apply_filter(_profile_fc)
+                    for _fp, _st in self._file_tabs.items():
+                        if _fp.startswith("__chain__"):
+                            continue
+                        try:
+                            _st.model.apply_filter(_profile_fc)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         else:
             # Batch: clear all filter layers in one invalidateFilter() call.
             self._active_proxy.clear_all_filters()
             # Also clear per-file tab proxies in one pass each.
             for state in self._file_tabs.values():
                 state.proxy.clear_all_filters()
+            # Normal mode: profile is applied at PARSE TIME (events are pre-
+            # filtered before they reach the proxy), so the proxy needs no
+            # restore step — clearing proxy filters returns to the pre-
+            # filtered event set the user originally loaded.
 
         # 5. Session filter — JM: cleared above (step 3 resets _hw_model + per-file models
         #    + _active_jm_session_keys).  Normal mode: cleared by clear_all_filters() above.
