@@ -93,8 +93,281 @@ _TOP_LEVEL_COLS: frozenset[str] = frozenset({
     "event_id", "level", "level_name", "channel", "provider",
     "computer", "user_id", "timestamp_utc", "source_file",
     "record_id", "task",
+    # System/Execution PID/TID — decimal integers stored as top-level columns.
+    # Distinct from the event_data ProcessId/ThreadId fields (often hex strings).
+    "process_id", "thread_id",
     "ed_subject_user", "ed_target_user", "ed_ip_address", "ed_new_process",
 })
+
+# Fields where Windows stores numeric values as hex strings ("0x790") in
+# event_data while users naturally type the decimal form ("1936") — or
+# vice versa.  Equality / contains comparisons on these fields are expanded
+# into an IN-clause covering both representations so the user does not
+# have to know whether the underlying data is hex or decimal.
+#
+# WHY THIS IS A CURATED LIST (not universal):
+#
+#   Adversarial tests (see git log for the audit) confirmed that "universal"
+#   hex/decimal expansion DOES produce false positives on plain string
+#   fields.  A user typing computer="1234" had a 1234-named host AND a
+#   "0x4d2"-named host both match — because 0x4d2 = decimal 1234 and the
+#   universal expansion added it to the IN-clause.  Similarly contains "100"
+#   would match "PC0x64".  Hostnames and usernames are pathological
+#   string-typed fields where a numeric-looking value the user types must
+#   be treated literally.
+#
+#   The safe rule: expand only when we KNOW the field stores numerics in
+#   one of the two forms.  When a new field needs the same treatment, add
+#   it here — it's a one-line change.  Custom / undocumented fields stay
+#   literal until someone teaches us about them; that's better than silent
+#   false positives.
+# A few event_data field names have a TOP-LEVEL column equivalent that holds
+# the same logical value at a different storage layer:
+#
+#   ProcessId   — event_data field (per-event-type; sometimes absent),
+#                 AND the top-level `process_id` column extracted from
+#                 <Execution ProcessID=…/> by the parser.
+#   ThreadId    — same pattern with `thread_id`.
+#
+# Many events store the PID only in <Execution> (no event_data ProcessId
+# field exists for them — e.g. LessPrivilegedAppContainer error 1).  Users
+# filtering ``ProcessId = 18932`` don't know which layer holds the value
+# for any given event type — they want "events whose PID is 18932".  The
+# condition is therefore expanded into an OR across BOTH sources so the
+# user gets matches regardless of which layer the value lives in.
+_FIELD_DUAL_SOURCE: dict[str, str] = {
+    "ProcessId": "process_id",
+    "ThreadId":  "thread_id",
+}
+
+_HEX_DEC_FIELDS: frozenset[str] = frozenset({
+    # ── Top-level columns (decimal int) ────────────────────────────────
+    "process_id", "thread_id", "record_id",
+    # ── event_data — hex strings in the EVTX XML ─────────────────────────
+    # Process / thread IDs
+    "ProcessId", "NewProcessId", "ParentProcessId", "SubjectProcessId",
+    "CallerProcessId", "ClientProcessId",
+    "ThreadId", "NewThreadId",
+    # Logon IDs
+    "TargetLogonId", "SubjectLogonId",
+    "LinkedLogonId", "TargetLinkedLogonId",
+    # Handle / Object
+    "HandleId", "ObjectHandle",
+    # Mask / type — these CAN be searched by exact value (less common but valid)
+    "AccessMask", "TokenElevationType",
+    # Process token info
+    "MandatoryLabel",
+})
+
+
+def _norm(s: str) -> str:
+    """Trim + lower a string defensively (None → '')."""
+    return (s or "").strip().lower()
+
+
+# ── Logon Type number ↔ symbolic name ──────────────────────────────────────────
+# Windows EVTX stores LogonType as a number string ("3"); users typically read
+# Event Viewer's resolved name ("Network", "RemoteInteractive") and type that.
+# Aliases include common shorthand ("RDP" → 10) so the obvious forensic search
+# "show me all RDP logons" works as expected.
+_LOGON_TYPE_PAIRS = (
+    ("2",  ("interactive",)),
+    ("3",  ("network",)),
+    ("4",  ("batch",)),
+    ("5",  ("service",)),
+    ("7",  ("unlock",)),
+    ("8",  ("networkcleartext",)),
+    ("9",  ("newcredentials",)),
+    ("10", ("remoteinteractive", "rdp")),
+    ("11", ("cachedinteractive",)),
+    ("12", ("cachedremoteinteractive",)),
+    ("13", ("cachedunlock",)),
+)
+# Lookup tables built lazily on import.  Both directions point into the same
+# group set so any synonym fans out to every other form (number AND every name).
+_LOGON_TYPE_GROUPS: dict[str, frozenset[str]] = {}
+for _n, _names in _LOGON_TYPE_PAIRS:
+    _group = frozenset({_n, *_names})
+    _LOGON_TYPE_GROUPS[_n] = _group
+    for _alias in _names:
+        _LOGON_TYPE_GROUPS[_alias] = _group
+
+
+# ── Windows message reference codes ────────────────────────────────────────────
+# Windows stores certain boolean / enum event_data fields as a %%NNNN reference
+# pointing into the provider's message catalog.  Event Viewer resolves them to
+# text ("Yes" / "No" / "TokenElevationTypeFull"), so users typing those resolved
+# values silently fail to match raw %%-codes in the JSON blob.
+_YESNO_GROUPS = {
+    "%%1842": frozenset({"%%1842", "yes", "true", "1"}),
+    "%%1843": frozenset({"%%1843", "no",  "false", "0"}),
+}
+for _alias in ("yes", "true", "1"):
+    _YESNO_GROUPS[_alias] = _YESNO_GROUPS["%%1842"]
+for _alias in ("no", "false", "0"):
+    _YESNO_GROUPS[_alias] = _YESNO_GROUPS["%%1843"]
+
+_TOKEN_ELEV_GROUPS = {
+    "%%1936": frozenset({"%%1936", "default", "tokenelevationtypedefault"}),
+    "%%1937": frozenset({"%%1937", "full",    "tokenelevationtypefull"}),
+    "%%1938": frozenset({"%%1938", "limited", "tokenelevationtypelimited"}),
+}
+for _grp in list(_TOKEN_ELEV_GROUPS.values()):
+    for _alias in _grp:
+        _TOKEN_ELEV_GROUPS[_alias] = _grp
+
+
+# Per-field symbolic-alias maps.  Each entry: field name → {value → group set}.
+# Looking up the user's typed value in the inner dict returns all equivalent
+# representations to OR into the SQL clause.
+_SYMBOLIC_ALIAS_MAP: dict[str, dict[str, frozenset[str]]] = {
+    "LogonType":          _LOGON_TYPE_GROUPS,
+    "ElevatedToken":      _YESNO_GROUPS,
+    "VirtualAccount":     _YESNO_GROUPS,
+    "TokenElevationType": _TOKEN_ELEV_GROUPS,
+}
+
+
+def _expand_symbolic_value(field: str, val: str) -> list[str]:
+    """Return symbolic aliases for *val* under *field*.
+
+    Returns ``[val]`` (single-element) when no aliases apply, so the caller
+    can decide between the IN-clause branch (len > 1) and the simple equals
+    branch.  Lookup is case-insensitive.
+    """
+    table = _SYMBOLIC_ALIAS_MAP.get(field)
+    if table is None:
+        return [val]
+    key = _norm(val)
+    group = table.get(key)
+    if group is None:
+        return [val]
+    # Always include the user's original form too in case it differs from
+    # the canonical lowercase one (it usually doesn't after lowering).
+    return sorted({val, *group})
+
+
+def expand_condition_value(field: str, val: str) -> list[str]:
+    """Return every representation of *val* the user might mean for *field*.
+
+    Two layers, applied in priority order:
+
+      1. **Field-specific symbolic aliases** (LogonType ↔ "Network" / "RDP";
+         ElevatedToken ↔ "Yes" / "%%1842"; TokenElevationType ↔ "Full" /
+         "%%1937"; …) — explicit lookup tables for fields whose stored value
+         is a completely different STRING from what the user types.
+
+      2. **Hex/decimal expansion** — applied ONLY to ``_HEX_DEC_FIELDS``
+         (curated list of fields known to store numerics in hex form).  An
+         earlier version applied this UNIVERSALLY and adversarial testing
+         exposed real false positives:
+
+         * ``computer = "1234"`` also matched a host named ``"0x4d2"``
+           (=decimal 1234) because both were added to the IN-clause.
+         * ``contains "100"`` also matched ``"PC0x64"`` because the
+           expansion added ``"0x64"`` (=decimal 100) to the OR chain.
+
+         Hostnames, usernames, channels, and other string-typed fields
+         can legitimately contain numeric-looking values that must be
+         treated literally.  The curated list is the safe rule: expand
+         only when we KNOW the field stores numerics.
+
+      3. **Everything else** — return ``[val]`` unchanged.  Literal match.
+
+    Result: typing ``1936`` on ``ProcessId`` correctly matches ``0x790``;
+    typing ``1234`` on ``computer`` correctly does NOT match ``0x4d2``.
+    """
+    # Layer 1 — symbolic alias table
+    if field in _SYMBOLIC_ALIAS_MAP:
+        return _expand_symbolic_value(field, val)
+
+    # Layer 2 — hex/decimal expansion for known hex-storage fields only.
+    # Adding a new field is a one-line edit to _HEX_DEC_FIELDS.
+    if field in _HEX_DEC_FIELDS:
+        return _expand_hex_dec_value(val)
+
+    # Layer 3 — no expansion. Literal match.
+    return [val]
+
+
+# Hex widths commonly used by Windows when padding PIDs / LogonIds / handles:
+#   * unpadded canonical form (e.g. "0x790")
+#   * 4-digit  — uncommon but seen on some custom providers
+#   * 8-digit  — int32 padding (e.g. AccessMask "0x000F0007")
+#   * 16-digit — int64 padding (e.g. Keywords "0x8020000000000000")
+# All four are added to the variant set so a user typing "1936" still matches
+# a stored "0x00000790" — adversarial testing exposed this gap.
+_HEX_PAD_WIDTHS: tuple[int, ...] = (4, 8, 16)
+
+
+def _expand_hex_dec_value(val: str) -> list[str]:
+    """Return the value plus its alternate hex/decimal representation(s).
+
+    Windows EVTX stores PIDs, ThreadIds and LogonIds as hex strings such as
+    ``"0x790"`` inside ``event_data_json``, while users typing into the
+    Conditions dialog naturally enter ``"1936"`` (and vice-versa).  This
+    helper produces every variant so the SQL IN-clause will hit a match
+    regardless of which representation was typed.
+
+    **Padding variants are included.**  Some Windows components emit
+    zero-padded hex (``"0x000F0007"`` for an AccessMask, ``"0x00000790"`` for
+    a 32-bit PID).  The variant set therefore also includes ``"0x0790"``,
+    ``"0x00000790"`` and ``"0x0000000000000790"`` for the value 1936 so the
+    IN-clause matches regardless of how the source field padded the value.
+
+    Conservative rule for plain numerics without a ``0x`` prefix: only the
+    decimal interpretation is expanded.  ``"790"`` becomes ``["790",
+    "0x790", ...]`` (i.e. user's literal 790 AND its hex-spelled equivalents
+    at multiple widths), while ``"0x790"`` becomes ``["0x790", "1936", ...]``.
+    Never tries to interpret a plain unprefixed string as hex first, since
+    that would make every decimal silently match a different number.
+
+    Returns deduplicated strings in deterministic (sorted) order so the SQL
+    parameter list is stable across calls.
+    """
+    val = (val or "").strip()
+    if not val:
+        return [val]
+
+    variants: set[str] = {val}
+
+    def _add_hex_forms(n: int) -> None:
+        """Add every reasonable hex spelling of *n* to the variant set."""
+        hex_lo = f"{n:x}"
+        hex_up = f"{n:X}"
+        # Unpadded canonical form
+        variants.add(f"0x{hex_lo}")
+        variants.add(f"0x{hex_up}")
+        # Zero-padded variants — only when the natural width is short
+        # enough that padding produces a different string.
+        for width in _HEX_PAD_WIDTHS:
+            if len(hex_lo) < width:
+                variants.add("0x" + hex_lo.zfill(width))
+                variants.add("0x" + hex_up.zfill(width))
+
+    # Decimal interpretation: succeeds for "1936" / "-5" / "+12".
+    # Negative or signed values are skipped — PIDs are unsigned.
+    try:
+        n = int(val)
+        if n >= 0:
+            variants.add(str(n))
+            _add_hex_forms(n)
+    except ValueError:
+        pass
+
+    # Hex interpretation: only when prefixed.  Without this guard "790"
+    # would also be parsed as 0x790 = 1936 and silently match unrelated rows.
+    low = val.lower()
+    if low.startswith("0x"):
+        try:
+            n = int(val, 16)
+            if n >= 0:
+                variants.add(str(n))
+                _add_hex_forms(n)
+        except ValueError:
+            pass
+
+    return sorted(variants)
 
 # Windows Event Log level name → integer ID
 _LEVEL_NAME_TO_ID: dict[str, int] = {
@@ -220,10 +493,40 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
                 ph = ", ".join("?" * len(level_ints))
                 sub_parts.append(f"level IN ({ph})")
                 sub_params.extend(level_ints)
-            if level_names_only:
-                ph = ", ".join("?" * len(level_names_only))
+            # Audit Success / Audit Failure are NOT stored in level_name —
+            # they're encoded in the Keywords bitfield (bits 53 and 52 of the
+            # 64-bit hex value).  A plain ``level_name IN ('Audit Success',
+            # 'Audit Failure')`` clause silently matches zero rows because no
+            # row ever has those literal level_name values.  Detect bit 53
+            # (Audit Success) and bit 52 (Audit Failure) via a SUBSTRING on
+            # the hex string — char 5 (1-indexed) of "0xHHHHHHHHHHHHHHHH" is
+            # the audit-flag nibble.
+            #   bit 1 of that nibble = Audit Success  → digits 2,3,6,7,A-F-with-bit1
+            #   bit 0 of that nibble = Audit Failure  → digits 1,3,5,7,9,B,D,F
+            _other_names: list[str] = []
+            _audit_clauses: list[str] = []
+            for n in level_names_only:
+                _n_low = (n or "").strip().lower()
+                if _n_low == "audit success":
+                    _audit_clauses.append(
+                        "LOWER(SUBSTRING(COALESCE(keywords, ''), 5, 1)) "
+                        "IN ('2','3','6','7','a','b','e','f')"
+                    )
+                elif _n_low == "audit failure":
+                    _audit_clauses.append(
+                        "LOWER(SUBSTRING(COALESCE(keywords, ''), 5, 1)) "
+                        "IN ('1','3','5','7','9','b','d','f')"
+                    )
+                else:
+                    _other_names.append(n)
+            if _audit_clauses:
+                sub_parts.append("(" + " OR ".join(_audit_clauses) + ")")
+            if _other_names:
+                # Any remaining custom level-name (e.g. a profile-defined
+                # vendor-specific level) still uses the literal column compare.
+                ph = ", ".join("?" * len(_other_names))
                 sub_parts.append(f"level_name IN ({ph})")
-                sub_params.extend(level_names_only)
+                sub_params.extend(_other_names)
             if sub_parts:
                 clauses.append(f"({' OR '.join(sub_parts)})")
                 params.extend(sub_params)
@@ -497,72 +800,175 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
         if not name:
             continue
 
-        # Decide whether to reference the column directly (top-level) or via
-        # json_extract_string() (event_data sub-field).
+        # Build the list of SQL expressions to check.  Normally one entry.
+        # For dual-source fields (ProcessId/ThreadId) we add a SECOND entry
+        # referencing the top-level column, so the user finds matches
+        # regardless of which storage layer holds the PID (event_data vs
+        # <Execution>).  See _FIELD_DUAL_SOURCE.
+        base_exprs: list[str] = []
         if name in _TOP_LEVEL_COLS:
             # Direct column reference — safe (name comes from a known allowlist).
             # CAST to VARCHAR so all string operators work uniformly even on
             # integer columns like event_id.
-            base_expr = f"CAST({name} AS VARCHAR)"
+            base_exprs.append(f"CAST({name} AS VARCHAR)")
         elif _SAFE_JSON_KEY_RE.match(name):
             # Simple identifier — use dot notation: $.FieldName
-            base_expr = f"json_extract_string(event_data_json, '$.{name}')"
+            base_exprs.append(f"json_extract_string(event_data_json, '$.{name}')")
+            # Some event_data names also have a top-level column counterpart
+            # (ProcessId / ThreadId) — query both.
+            _dual = _FIELD_DUAL_SOURCE.get(name)
+            if _dual is not None:
+                base_exprs.append(f"CAST({_dual} AS VARCHAR)")
         elif '"' not in name and "\\" not in name and "\x00" not in name:
             # Field name contains spaces or other special characters but is
             # otherwise safe — use JSONPath double-quote bracket notation:
             # json_extract_string(col, '$."My Field Name"')
-            base_expr = f'json_extract_string(event_data_json, \'$."{name}"\')'
+            base_exprs.append(f'json_extract_string(event_data_json, \'$."{name}"\')')
         else:
             logger.warning("filter_sql: skipping condition with unsafe field name %r", name)
             continue
 
         op = cond.get("operator", "contains")
         val = cond.get("value", "")
+        # Use the FIRST expression for backwards-compatible variable names —
+        # operator branches below loop over all base_exprs and OR them.
+        base_expr = base_exprs[0]
         field_expr = base_expr
         if not cs:
             field_expr = f"lower({field_expr})"
             val = val.lower()
 
+        # Many event_data fields are stored in a form different from what the
+        # user sees in Event Viewer.  expand_condition_value() handles both:
+        #
+        #   * Numeric values are expanded to hex AND decimal forms universally
+        #     (any field — no curated list).  Typing "1936" matches "0x790"
+        #     and vice-versa for ProcessId, NewProcessId, TargetLogonId,
+        #     HandleId, custom Sysmon fields, third-party providers, etc.
+        #   * Field-specific symbolic aliases apply where the stored form is a
+        #     completely different STRING (LogonType "3" ↔ "Network" / "RDP",
+        #     ElevatedToken "%%1842" ↔ "Yes" / "true", TokenElevationType
+        #     "%%19xx" ↔ symbolic names).
+        #
+        # Returns ≥1 element; len > 1 means at least one variant was added.
+        _variants: list[str] = []
+        if op in ("equals", "not equals", "contains", "not contains"):
+            _variants = expand_condition_value(name, val)
+            if len(_variants) > 1 and not cs:
+                _variants = sorted({v.lower() for v in _variants})
+            elif len(_variants) <= 1:
+                # No expansion applied — clear so the simple-value path runs
+                _variants = []
+
+        # Build a list of (lowered) field_exprs, one per base_expr, so each
+        # operator branch below can OR across all of them.  For most fields
+        # this is a single-element list; only ProcessId/ThreadId produce two.
+        field_exprs: list[str] = []
+        for _b in base_exprs:
+            field_exprs.append(f"lower({_b})" if not cs else _b)
+
+        def _multi_or(per_expr_sql_fmt: str, *, params_per_expr: list) -> str:
+            """Build OR across every field_expr with the SAME params each time.
+
+            ``per_expr_sql_fmt`` has one ``{f}`` placeholder where field_expr
+            goes.  ``params_per_expr`` is the list of params to append PER
+            field_expr (caller repeats them in the params list).
+            """
+            sub = " OR ".join(per_expr_sql_fmt.format(f=fe) for fe in field_exprs)
+            return f"({sub})" if len(field_exprs) > 1 else sub
+
+        n_fe = len(field_exprs)
+
         if op == "contains":
-            clauses.append(f"CONTAINS(COALESCE({field_expr}, ''), ?)")
-            params.append(val)
+            if len(_variants) > 1:
+                # OR every variant × every field_expr.
+                sub_per_expr = " OR ".join(
+                    "CONTAINS(COALESCE({f}, ''), ?)" for _ in _variants
+                )
+                _full = _multi_or("(" + sub_per_expr + ")", params_per_expr=_variants)
+                clauses.append(_full)
+                # Repeat the variant list once per field_expr
+                for _ in range(n_fe):
+                    params.extend(_variants)
+            else:
+                clauses.append(_multi_or("CONTAINS(COALESCE({f}, ''), ?)", params_per_expr=[val]))
+                for _ in range(n_fe):
+                    params.append(val)
         elif op == "equals":
-            clauses.append(f"COALESCE({field_expr}, '') = ?")
-            params.append(val)
+            if len(_variants) > 1:
+                ph = ", ".join("?" * len(_variants))
+                clauses.append(_multi_or(f"COALESCE({{f}}, '') IN ({ph})", params_per_expr=_variants))
+                for _ in range(n_fe):
+                    params.extend(_variants)
+            else:
+                clauses.append(_multi_or("COALESCE({f}, '') = ?", params_per_expr=[val]))
+                for _ in range(n_fe):
+                    params.append(val)
         elif op == "starts with":
-            clauses.append(f"COALESCE({field_expr}, '') LIKE ? ESCAPE '\\'")
-            params.append(f"{_escape_like(val)}%")
+            clauses.append(_multi_or("COALESCE({f}, '') LIKE ? ESCAPE '\\'", params_per_expr=[]))
+            for _ in range(n_fe):
+                params.append(f"{_escape_like(val)}%")
         elif op == "ends with":
-            clauses.append(f"COALESCE({field_expr}, '') LIKE ? ESCAPE '\\'")
-            params.append(f"%{_escape_like(val)}")
+            clauses.append(_multi_or("COALESCE({f}, '') LIKE ? ESCAPE '\\'", params_per_expr=[]))
+            for _ in range(n_fe):
+                params.append(f"%{_escape_like(val)}")
         elif op == "not contains":
-            clauses.append(f"NOT CONTAINS(COALESCE({field_expr}, ''), ?)")
-            params.append(val)
+            # "not contains" must hold for ALL sources (AND), not "matches none of them" (OR)
+            if len(_variants) > 1:
+                sub_per_expr = " OR ".join(
+                    "CONTAINS(COALESCE({f}, ''), ?)" for _ in _variants
+                )
+                # For each field_expr, build a NOT(...) wrapper, then AND them.
+                neg_parts = [f"NOT ({sub_per_expr.format(f=fe)})" for fe in field_exprs]
+                clauses.append("(" + " AND ".join(neg_parts) + ")")
+                for _ in range(n_fe):
+                    params.extend(_variants)
+            else:
+                neg_parts = [f"NOT CONTAINS(COALESCE({fe}, ''), ?)" for fe in field_exprs]
+                clauses.append("(" + " AND ".join(neg_parts) + ")")
+                for _ in range(n_fe):
+                    params.append(val)
         elif op == "not equals":
-            clauses.append(f"COALESCE({field_expr}, '') != ?")
-            params.append(val)
+            # Same as not-contains — must hold for every source
+            if len(_variants) > 1:
+                ph = ", ".join("?" * len(_variants))
+                neg_parts = [f"COALESCE({fe}, '') NOT IN ({ph})" for fe in field_exprs]
+                clauses.append("(" + " AND ".join(neg_parts) + ")")
+                for _ in range(n_fe):
+                    params.extend(_variants)
+            else:
+                neg_parts = [f"COALESCE({fe}, '') != ?" for fe in field_exprs]
+                clauses.append("(" + " AND ".join(neg_parts) + ")")
+                for _ in range(n_fe):
+                    params.append(val)
         elif op == "regex":
             # DuckDB native regex — case flag applied based on cs setting.
-            # Use base_expr (without lower()) so the regex sees the original case
-            # when cs=True; the 'i' flag handles case-insensitive matching.
+            # Use base_exprs (without lower wrap) so the regex sees the
+            # original case when cs=True; the 'i' flag handles c-i matching.
             raw_val = cond.get("value", "")
-            raw_field = f"COALESCE({base_expr}, '')"
+            raw_fields = [f"COALESCE({be}, '')" for be in base_exprs]
             if cs:
-                clauses.append(f"regexp_matches({raw_field}, ?)")
+                sub = " OR ".join(f"regexp_matches({rf}, ?)" for rf in raw_fields)
             else:
-                clauses.append(f"regexp_matches({raw_field}, ?, 'i')")
-            params.append(raw_val)
+                sub = " OR ".join(f"regexp_matches({rf}, ?, 'i')" for rf in raw_fields)
+            clauses.append(f"({sub})" if len(raw_fields) > 1 else sub)
+            for _ in raw_fields:
+                params.append(raw_val)
         elif op == "greater than":
             # DuckDB TRY_CAST — safe equivalent of SQLite's CAST (won't crash on non-numeric)
-            clauses.append(
-                f"TRY_CAST({field_expr} AS DOUBLE) > TRY_CAST(? AS DOUBLE)"
+            sub = " OR ".join(
+                f"TRY_CAST({fe} AS DOUBLE) > TRY_CAST(? AS DOUBLE)" for fe in field_exprs
             )
-            params.append(val)
+            clauses.append(f"({sub})" if n_fe > 1 else sub)
+            for _ in range(n_fe):
+                params.append(val)
         elif op == "less than":
-            clauses.append(
-                f"TRY_CAST({field_expr} AS DOUBLE) < TRY_CAST(? AS DOUBLE)"
+            sub = " OR ".join(
+                f"TRY_CAST({fe} AS DOUBLE) < TRY_CAST(? AS DOUBLE)" for fe in field_exprs
             )
-            params.append(val)
+            clauses.append(f"({sub})" if n_fe > 1 else sub)
+            for _ in range(n_fe):
+                params.append(val)
 
     if not clauses:
         return "1=1", []

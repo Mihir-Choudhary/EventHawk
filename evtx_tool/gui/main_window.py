@@ -8063,9 +8063,11 @@ class MainWindow(QMainWindow):
         """
         if self._hw_model is None:
             return {}
-        # Keep in sync with jm_col_worker._COL_MAP (same Arrow/DuckDB column names).
-        from evtx_tool.gui.jm_col_worker import _COL_MAP
-        expr = _COL_MAP.get(col_key)
+        # resolve_col_expr handles timestamp_date dynamically (display-TZ
+        # aware) so this sync fallback shows the same date format the user
+        # sees in the event table.
+        from evtx_tool.gui.jm_col_worker import resolve_col_expr
+        expr = resolve_col_expr(col_key)
         if not expr:
             return {}
         try:

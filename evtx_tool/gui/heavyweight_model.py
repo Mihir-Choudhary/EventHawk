@@ -855,6 +855,10 @@ class ArrowTableModel(QAbstractTableModel):
 
     # ── Quick filters (right-click column filter) ─────────────────────────────
 
+    # timestamp_date intentionally omitted — its SQL expression depends on
+    # the live display-TZ state.  Resolved at filter-build time via
+    # ``_quick_col_info()`` so popup values and filters BOTH use the same
+    # display-TZ date the user sees in the event table.
     _QUICK_KEY_TO_COL: dict[str, tuple[str, str]] = {
         # ── Core columns ──────────────────────────────────────────────────────
         "event_id":       ("event_id",                       "int"),
@@ -863,9 +867,6 @@ class ArrowTableModel(QAbstractTableModel):
         "channel":        ("channel",                        "str"),
         "user_id":        ("user_id",                        "str"),
         "source_file":    ("source_file",                    "str"),
-        # timestamp_utc is the actual SQLite column name (engine.py:49).
-        # SUBSTR(…,1,10) extracts the YYYY-MM-DD prefix from the ISO-8601 text.
-        "timestamp_date": ("SUBSTR(timestamp_utc, 1, 10)",   "str"),
         # ── Extended columns ──────────────────────────────────────────────────
         # These map to real columns in the SQLite events table.
         "provider":       ("provider",                       "str"),
@@ -882,6 +883,19 @@ class ArrowTableModel(QAbstractTableModel):
         # record_id is int64 in the schema.
         "record_id":      ("record_id",                      "int"),
     }
+
+    def _quick_col_info(self, key: str) -> "tuple[str, str] | None":
+        """Resolve a quick-filter key to (sql_expr, type).
+
+        Wraps ``_QUICK_KEY_TO_COL`` so ``timestamp_date`` can return a
+        display-TZ-aware DuckDB expression rebuilt fresh each call — the
+        underlying ``_tz_state`` global is mutable so a static dict would
+        bake-in whatever TZ was active when the class was first imported.
+        """
+        if key == "timestamp_date":
+            from evtx_tool.gui.jm_col_worker import _timestamp_date_expr
+            return (_timestamp_date_expr(), "str")
+        return self._QUICK_KEY_TO_COL.get(key)
 
     def add_quick_filter(self, key: str, value: str, include: bool) -> None:
         self._quick_filters = [f for f in self._quick_filters if f["key"] != key]
@@ -936,7 +950,9 @@ class ArrowTableModel(QAbstractTableModel):
     def _rebuild_quick_where(self) -> None:
         groups: dict[tuple[str, str, bool], list] = {}
         for qf in self._quick_filters:
-            col_info = self._QUICK_KEY_TO_COL.get(qf["key"])
+            # _quick_col_info handles timestamp_date dynamically so popup
+            # values (display-TZ dates) and this filter clause stay in sync.
+            col_info = self._quick_col_info(qf["key"])
             if col_info is None:
                 continue
             col, col_type = col_info

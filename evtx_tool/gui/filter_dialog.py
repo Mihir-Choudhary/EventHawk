@@ -728,8 +728,18 @@ class FilterDialog(QDialog):
         "WorkstationName", "IpAddress", "IpPort",
         "ElevatedToken", "TargetLinkedLogonId",
         # ── Process ──────────────────────────────────────────
+        # ProcessId / SubjectProcessId / NewProcessId / ParentProcessId are
+        # event_data fields — Windows writes them as hex strings ("0x790").
+        # Decimal-or-hex matching is universal (filter_sql.expand_condition_value)
+        # so the user can type either form for ANY numeric field, not just
+        # these.  No curated allowlist is needed.
         "NewProcessName", "ParentProcessName", "CommandLine",
-        "ProcessId", "SubjectProcessId",
+        "ProcessId", "NewProcessId", "ParentProcessId", "SubjectProcessId",
+        # Top-level System/Execution PID + TID columns (decimal int).  Use
+        # these when filtering by the value shown in the "Process ID" / "Thread
+        # ID" event-table columns — those come from <Execution ProcessID=…/>
+        # and are independent from the event_data ProcessId field above.
+        "process_id", "thread_id",
         # ── Object / Access ──────────────────────────────────
         "ObjectName", "ObjectType", "AccessMask",
         "HandleId", "OperationType",

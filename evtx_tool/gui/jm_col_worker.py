@@ -27,9 +27,10 @@ _COL_MAP: dict[str, str] = {
     "channel":        "channel",
     "user_id":        "user_id",
     "source_file":    "source_file",
-    # timestamp_utc is the real Arrow/Parquet column name (engine.py:49).
-    # LEFT(10) gives YYYY-MM-DD for both ISO-8601 text and TIMESTAMP→VARCHAR.
-    "timestamp_date": "LEFT(CAST(timestamp_utc AS VARCHAR), 10)",
+    # timestamp_date is intentionally absent here — its expression depends on
+    # the runtime display-TZ state.  Use ``resolve_col_expr()`` instead so
+    # popup values and filters BOTH show display-TZ dates that match what the
+    # user sees in the event table.
     # ── Extended columns ──────────────────────────────────────────────────
     "provider":       "provider",
     "keywords":       "keywords",
@@ -43,6 +44,103 @@ _COL_MAP: dict[str, str] = {
     "correlation_id": "correlation_id",
     "record_id":      "CAST(record_id AS VARCHAR)",
 }
+
+
+def _tz_offset_seconds() -> int:
+    """Return current display-TZ offset in seconds (0 for UTC / unknown).
+
+    Read at every call so a TZ change is reflected on the next filter or
+    popup rebuild — without this, the JM ``timestamp_date`` quick filter
+    silently fell back to UTC and the popup values disagreed with the
+    table's display-TZ dates.
+    """
+    try:
+        from evtx_tool.gui.models import _tz_state
+    except Exception:
+        return 0
+    mode = _tz_state.get("mode", "utc")
+    try:
+        if mode == "utc":
+            return 0
+        if mode == "specific":
+            from zoneinfo import ZoneInfo
+            from datetime import datetime as _dt
+            tz = ZoneInfo(_tz_state.get("specific", "UTC") or "UTC")
+            off = _dt.now(tz).utcoffset()
+            return int(off.total_seconds()) if off is not None else 0
+        if mode == "local":
+            from datetime import datetime as _dt
+            off = _dt.now().astimezone().utcoffset()
+            return int(off.total_seconds()) if off is not None else 0
+        if mode == "custom":
+            return int(_tz_state.get("custom_offset_min", 0) or 0) * 60
+    except Exception:
+        return 0
+    return 0
+
+
+def _timestamp_date_expr() -> str:
+    """DuckDB expression for the YYYY-MM-DD label in the display timezone.
+
+    Mode-specific strategy:
+
+      * ``utc``        — no conversion needed; return the cheap string slice.
+      * ``specific``   — use DuckDB's ``AT TIME ZONE`` (ICU extension) so each
+                         event's offset is computed in its OWN DST period.
+                         INTERVAL arithmetic with a single offset would be off
+                         by 1 hour at DST boundaries.
+      * ``local``      — fixed offset from the system's CURRENT local TZ.
+                         Acceptable for most forensic queries; DST-period
+                         drift at the time-of-call is a known limitation.
+      * ``custom``     — fixed offset by definition.
+
+    Falls back to the UTC string slice on any error so a malformed TZ state
+    cannot break the popup / quick-filter pipeline.
+    """
+    try:
+        from evtx_tool.gui.models import _tz_state as _state
+    except Exception:
+        return "LEFT(CAST(timestamp_utc AS VARCHAR), 10)"
+    mode = _state.get("mode", "utc")
+
+    if mode == "utc":
+        return "LEFT(CAST(timestamp_utc AS VARCHAR), 10)"
+
+    if mode == "specific":
+        tz_name = (_state.get("specific") or "UTC").replace("'", "''")
+        # CAST string → naive TIMESTAMP
+        # AT TIME ZONE 'UTC' → TIMESTAMPTZ (treat the naive value as UTC)
+        # AT TIME ZONE '<name>' → TIMESTAMP in that zone (DST-aware per event)
+        # strftime → 'YYYY-MM-DD'
+        return (
+            "strftime("
+            "CAST(timestamp_utc AS TIMESTAMP) AT TIME ZONE 'UTC' "
+            f"AT TIME ZONE '{tz_name}', "
+            "'%Y-%m-%d')"
+        )
+
+    # local / custom — offset-based fallback (no per-event DST awareness).
+    off = _tz_offset_seconds()
+    if off == 0:
+        return "LEFT(CAST(timestamp_utc AS VARCHAR), 10)"
+    sign = "+" if off > 0 else "-"
+    return (
+        "strftime("
+        f"CAST(timestamp_utc AS TIMESTAMP) {sign} INTERVAL '{abs(off)} seconds', "
+        "'%Y-%m-%d')"
+    )
+
+
+def resolve_col_expr(col_key: str) -> str | None:
+    """Return the DuckDB expression for a quick-filter column key.
+
+    Wraps ``_COL_MAP`` so the dynamic ``timestamp_date`` expression (which
+    depends on the live display-TZ state) is built fresh on every lookup.
+    Returns ``None`` for unknown keys (mirrors ``_COL_MAP.get`` semantics).
+    """
+    if col_key == "timestamp_date":
+        return _timestamp_date_expr()
+    return _COL_MAP.get(col_key)
 
 
 # ── No-op shim kept for any external code that imports _register_regexp ────────
@@ -71,7 +169,9 @@ def build_cascade_where(
         k = f.get("key", "")
         if k == exclude_col_key:
             continue                 # skip this column's own filter
-        expr = _COL_MAP.get(k)
+        # Use resolve_col_expr so the dynamic timestamp_date expression
+        # (display-TZ aware) is picked up here too.
+        expr = resolve_col_expr(k)
         if not expr:
             continue
         v = str(f.get("value", "")).lower()  # always lower — JM doesn't enforce it on insert
@@ -111,7 +211,10 @@ class NormalColValueWorker(QThread):
 
     finished = Signal(dict)
 
-    _ALLOWED_KEYS: frozenset = frozenset(_COL_MAP.keys())
+    # timestamp_date is intentionally not in _COL_MAP (it's dynamic — see
+    # _timestamp_date_expr).  Re-add it here so the NormalColValueWorker
+    # gate still recognises it as a valid quick-filter key.
+    _ALLOWED_KEYS: frozenset = frozenset({*_COL_MAP.keys(), "timestamp_date"})
 
     def __init__(
         self,
@@ -230,7 +333,9 @@ class ColValueWorker(QThread):
         self._where_params = list(where_params or [])
 
     def run(self) -> None:
-        expr = _COL_MAP.get(self._col_key)
+        # resolve_col_expr handles timestamp_date specially — its expression
+        # depends on the current display-TZ state and must be rebuilt fresh.
+        expr = resolve_col_expr(self._col_key)
         if not expr:
             self.finished.emit({})
             return

@@ -884,7 +884,26 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         else:
             self._adv_rel_cutoff = None
 
-        # Custom conditions — pre-lower values
+        # Custom conditions — pre-lower values, pre-expand format variants.
+        # expand_condition_value() handles two classes of mismatch:
+        #
+        #   1. Numeric hex ↔ decimal — applied UNIVERSALLY to every field.
+        #      Typing "1936" matches stored "0x790" (and vice-versa) in
+        #      ProcessId, NewProcessId, TargetLogonId, HandleId, custom
+        #      Sysmon fields, third-party providers — anything numeric.
+        #      Safe because adding hex variants to a decimal-only field
+        #      never produces false positives (the hex form simply isn't
+        #      present in that field's rows).
+        #
+        #   2. Field-specific symbolic aliases for cases where stored form
+        #      is a wholly different STRING:
+        #        LogonType          "3" ↔ "Network", "10" ↔ "RDP" / "RemoteInteractive"
+        #        ElevatedToken      "%%1842" ↔ "Yes", "true", "1"
+        #        VirtualAccount     same
+        #        TokenElevationType "%%19xx" ↔ "Full" / "Default" / "Limited"
+        #
+        # We freeze the resulting set so the per-row hot path is O(1) membership.
+        from evtx_tool.core.heavyweight.filter_sql import expand_condition_value
         raw_conds = cfg.get("conditions", [])
         prepped: list[dict] = []
         for c in raw_conds:
@@ -894,6 +913,14 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             op = c.get("operator", "contains")
             val = c.get("value", "")
             entry: dict = {"name": name, "operator": op, "value": _low(val)}
+            # Pre-compute format/symbolic variants so the per-row hot path is
+            # just a set lookup.
+            if op in ("equals", "not equals", "contains", "not contains"):
+                _variants = expand_condition_value(name, val)
+                if len(_variants) > 1:
+                    if not cs:
+                        _variants = [v.lower() for v in _variants]
+                    entry["variants"] = frozenset(_variants)
             if op == "regex":
                 try:
                     flags = 0 if cs else _re.IGNORECASE
@@ -1229,9 +1256,30 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         _low = (lambda s: s) if self._adv_case_sensitive else str.lower
 
         # ── Event types / levels ────────────────────────────────────────────
+        # Standard ETW levels are stored in level_name ("Critical", "Error", …).
+        # "Audit Success" and "Audit Failure" are NOT — they're encoded in the
+        # Keywords bitfield (bit 53 = success, bit 52 = failure).  A plain
+        # ``level_name in _adv_levels`` check on those two would silently match
+        # zero rows.  Detect them via the Keywords value when present.
         if self._adv_levels is not None:
-            if ev.get("level_name", "") not in self._adv_levels:
-                return False
+            _lv = ev.get("level_name", "")
+            if _lv in self._adv_levels:
+                pass   # standard level match — fast path
+            else:
+                _matched = False
+                _audit_su = "Audit Success" in self._adv_levels
+                _audit_fa = "Audit Failure" in self._adv_levels
+                if _audit_su or _audit_fa:
+                    try:
+                        _kw_int = int(ev.get("keywords", "") or "0", 16)
+                    except (ValueError, TypeError):
+                        _kw_int = 0
+                    if _audit_su and (_kw_int & 0x0020000000000000):
+                        _matched = True
+                    elif _audit_fa and (_kw_int & 0x0010000000000000):
+                        _matched = True
+                if not _matched:
+                    return False
 
         # ── Event ID expression ─────────────────────────────────────────────
         eid = ev.get("event_id")
@@ -1392,46 +1440,93 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             ed = ev.get("event_data") or {}
             if not isinstance(ed, dict):
                 ed = {}
+            # Lazy-imported once outside the condition loop
+            from evtx_tool.core.heavyweight.filter_sql import _FIELD_DUAL_SOURCE
             for cond in self._adv_conditions:
                 name = cond["name"]
-                # Check top-level event fields first (event_id, computer,
-                # channel, provider, level_name, user_id, …), then fall back
-                # to event_data sub-fields.  This matches the condition
-                # dropdown which lists both top-level and event_data names.
-                raw_val = ev.get(name)
-                if raw_val is None:
-                    raw_val = ed.get(name)
-                field_val = str(raw_val or "")
+                # Build the list of candidate field values this condition can
+                # match against.  Normally one value (top-level event dict or
+                # event_data sub-field).  For dual-source fields like
+                # ProcessId / ThreadId we ALSO include the top-level column
+                # equivalent (process_id / thread_id) so the user finds events
+                # whose PID lives in <Execution> rather than event_data.
+                candidates: list[str] = []
+                raw1 = ev.get(name)
+                raw2 = ed.get(name) if raw1 is None else None
+                primary = raw1 if raw1 is not None else raw2
+                candidates.append(str(primary or ""))
+                _dual = _FIELD_DUAL_SOURCE.get(name)
+                if _dual is not None:
+                    # Append the top-level column value alongside the event_data form
+                    candidates.append(str(ev.get(_dual, "") or ""))
                 if not self._adv_case_sensitive:
-                    field_val = field_val.lower()
+                    candidates = [c.lower() for c in candidates]
                 cv = cond["value"]
                 op = cond["operator"]
+                # Set of hex/decimal variants for PID-like fields, or None if
+                # this condition is on a regular field.  Pre-computed in
+                # set_advanced_filter() so the hot path is O(1) set membership.
+                _vset = cond.get("variants")
+
+                # Helper: does ANY candidate satisfy the predicate?
+                def _any_match(predicate) -> bool:
+                    return any(predicate(c) for c in candidates)
+
+                def _all_match(predicate) -> bool:
+                    """For negative operators — must hold for ALL sources."""
+                    return all(predicate(c) for c in candidates)
 
                 if op == "contains":
-                    if cv not in field_val: return False
+                    if _vset is not None:
+                        # Any candidate contains any variant
+                        if not _any_match(lambda fv: any(v in fv for v in _vset)):
+                            return False
+                    elif not _any_match(lambda fv: cv in fv):
+                        return False
                 elif op == "equals":
-                    if field_val != cv: return False
+                    if _vset is not None:
+                        if not _any_match(lambda fv: fv in _vset):
+                            return False
+                    elif not _any_match(lambda fv: fv == cv):
+                        return False
                 elif op == "starts with":
-                    if not field_val.startswith(cv): return False
+                    if not _any_match(lambda fv: fv.startswith(cv)):
+                        return False
                 elif op == "ends with":
-                    if not field_val.endswith(cv): return False
+                    if not _any_match(lambda fv: fv.endswith(cv)):
+                        return False
                 elif op == "not contains":
-                    if cv in field_val: return False
+                    # Negation must hold for ALL candidate sources
+                    if _vset is not None:
+                        if not _all_match(lambda fv: not any(v in fv for v in _vset)):
+                            return False
+                    elif not _all_match(lambda fv: cv not in fv):
+                        return False
                 elif op == "not equals":
-                    if field_val == cv: return False
+                    if _vset is not None:
+                        if not _all_match(lambda fv: fv not in _vset):
+                            return False
+                    elif not _all_match(lambda fv: fv != cv):
+                        return False
                 elif op == "regex":
                     pat = cond.get("compiled")
-                    if pat and not pat.search(field_val):
+                    if pat and not _any_match(lambda fv: pat.search(fv) is not None):
                         return False
                 elif op == "greater than":
-                    try:
-                        if not (float(field_val) > float(cv)): return False
-                    except ValueError:
+                    def _gt(fv: str) -> bool:
+                        try:
+                            return float(fv) > float(cv)
+                        except ValueError:
+                            return False
+                    if not _any_match(_gt):
                         return False
                 elif op == "less than":
-                    try:
-                        if not (float(field_val) < float(cv)): return False
-                    except ValueError:
+                    def _lt(fv: str) -> bool:
+                        try:
+                            return float(fv) < float(cv)
+                        except ValueError:
+                            return False
+                    if not _any_match(_lt):
                         return False
 
         return True
