@@ -190,6 +190,222 @@ def _parse_ts(ts_str: str | None) -> datetime | None:
 
 # ── Core filter predicate ─────────────────────────────────────────────────────
 
+# ── Custom condition evaluation ────────────────────────────────────────────────
+# Profile editor + advanced filter dialog both write conditions of the shape:
+#   {"name": <field>, "operator": <op>, "value": <user-typed value>}
+#
+# These conditions used to be silently dropped at PARSE TIME because
+# compile_filter() and passes_filter() didn't know about them.  Result: a
+# profile that said "DriverName != msmouse.inf" got applied to the live
+# filter post-parse but not to the parse-time pre-filter, so msmouse.inf
+# events still ended up in the dataset.  The two checks below close that gap
+# and re-use the JM/SQL mode's symbolic + hex/decimal expansion table so
+# parse-time conditions behave EXACTLY the same as their live-filter
+# counterpart (no surprises about which form of the value matches).
+#
+# A small subset of fields is "dual-source" — the same logical value lives
+# in both event_data AND a top-level System field (ProcessId ↔ process_id,
+# ThreadId ↔ thread_id).  Mirror that here so a profile-defined condition on
+# ProcessId matches regardless of which layer holds the PID.
+_PARSE_TIME_DUAL_SOURCE: dict[str, str] = {
+    "ProcessId": "process_id",
+    "ThreadId":  "thread_id",
+}
+
+
+def _conditions_pass(event: dict, conditions: "list[dict]", cs: bool) -> bool:
+    """Return True iff *event* satisfies every condition (AND-combined).
+
+    Mirrors models.py ``_passes_advanced`` conditions logic but works on a
+    plain event dict at parse time (no Qt proxy state required).  Supports:
+
+      * Field lookup: top-level event field first, then event_data sub-field
+      * Dual-source PID/TID lookup
+      * Hex/decimal expansion + symbolic aliases (via filter_sql)
+      * Operators: contains, equals, starts with, ends with, not contains,
+        not equals, regex, greater than, less than
+      * Negative operators (``not equals`` / ``not contains``) hold for ALL
+        sources — i.e. the value must NOT match in ANY source.
+
+    Perf note: this runs once per event during parse-time pre-filtering, so
+    the body avoids defining helper closures inside the loop and inlines the
+    any/all-of-candidates checks directly.
+    """
+    if not conditions:
+        return True
+
+    # Lazy module-level import — kept here (not at file top) to avoid any
+    # risk of a circular import with core.heavyweight.filter_sql, which
+    # itself lazy-imports parse_event_id_expression from this module.  After
+    # first call Python's sys.modules cache makes this a single dict lookup.
+    try:
+        from evtx_tool.core.heavyweight.filter_sql import expand_condition_value
+    except Exception:
+        def expand_condition_value(_n: str, v: str) -> list[str]:
+            return [v]
+
+    import re as _re
+
+    ed = event.get("event_data")
+    if not isinstance(ed, dict):
+        ed = {}
+
+    _low = (lambda s: s) if cs else str.lower
+
+    for cond in conditions:
+        name = cond.get("name", "")
+        if not name:
+            continue
+        op = cond.get("operator", "contains")
+        raw_val = cond.get("value", "")
+        cv = _low(str(raw_val or ""))
+
+        # Build candidate values for this field — primary + dual-source.
+        primary = event.get(name)
+        if primary is None:
+            primary = ed.get(name)
+        candidates: list[str] = [_low(str(primary or ""))]
+        dual = _PARSE_TIME_DUAL_SOURCE.get(name)
+        if dual is not None:
+            candidates.append(_low(str(event.get(dual, "") or "")))
+
+        # Pre-compute value variants for known fields (hex/decimal + symbolic)
+        variants: "frozenset[str] | None" = None
+        if op in ("equals", "not equals", "contains", "not contains"):
+            _v = expand_condition_value(name, raw_val)
+            if len(_v) > 1:
+                if not cs:
+                    _v = [x.lower() for x in _v]
+                variants = frozenset(_v)
+
+        # ── Operator dispatch (inlined any/all to avoid closures in loop) ──
+        if op == "contains":
+            if variants is not None:
+                # Any candidate contains any variant
+                hit = False
+                for fv in candidates:
+                    for v in variants:
+                        if v in fv:
+                            hit = True
+                            break
+                    if hit:
+                        break
+                if not hit:
+                    return False
+            else:
+                hit = False
+                for fv in candidates:
+                    if cv in fv:
+                        hit = True
+                        break
+                if not hit:
+                    return False
+        elif op == "equals":
+            if variants is not None:
+                hit = False
+                for fv in candidates:
+                    if fv in variants:
+                        hit = True
+                        break
+                if not hit:
+                    return False
+            else:
+                hit = False
+                for fv in candidates:
+                    if fv == cv:
+                        hit = True
+                        break
+                if not hit:
+                    return False
+        elif op == "starts with":
+            hit = False
+            for fv in candidates:
+                if fv.startswith(cv):
+                    hit = True
+                    break
+            if not hit:
+                return False
+        elif op == "ends with":
+            hit = False
+            for fv in candidates:
+                if fv.endswith(cv):
+                    hit = True
+                    break
+            if not hit:
+                return False
+        elif op == "not contains":
+            # Hold for ALL sources — if the (any variant of the) value appears
+            # in ANY candidate, the condition fails.
+            if variants is not None:
+                for fv in candidates:
+                    for v in variants:
+                        if v in fv:
+                            return False
+            else:
+                for fv in candidates:
+                    if cv in fv:
+                        return False
+        elif op == "not equals":
+            if variants is not None:
+                for fv in candidates:
+                    if fv in variants:
+                        return False
+            else:
+                for fv in candidates:
+                    if fv == cv:
+                        return False
+        elif op == "regex":
+            try:
+                pat = _re.compile(raw_val, 0 if cs else _re.IGNORECASE)
+            except _re.error:
+                # Invalid regex: drop the event (matches the proxy's
+                # behaviour of treating an unparseable regex as no match).
+                return False
+            hit = False
+            for fv in candidates:
+                if pat.search(fv) is not None:
+                    hit = True
+                    break
+            if not hit:
+                return False
+        elif op == "greater than":
+            hit = False
+            try:
+                target = float(raw_val)
+            except (ValueError, TypeError):
+                return False  # non-numeric threshold → no row matches
+            for fv in candidates:
+                try:
+                    if float(fv) > target:
+                        hit = True
+                        break
+                except (ValueError, TypeError):
+                    continue
+            if not hit:
+                return False
+        elif op == "less than":
+            hit = False
+            try:
+                target = float(raw_val)
+            except (ValueError, TypeError):
+                return False
+            for fv in candidates:
+                try:
+                    if float(fv) < target:
+                        hit = True
+                        break
+                except (ValueError, TypeError):
+                    continue
+            if not hit:
+                return False
+        else:
+            # Unknown operator — be conservative and drop the event so a
+            # typo'd operator can't silently let everything through.
+            return False
+
+    return True
+
+
 def passes_filter(event: dict, fc: dict) -> bool:
     """Return True if event passes all criteria in filter config fc."""
 
@@ -260,6 +476,14 @@ def passes_filter(event: dict, fc: dict) -> bool:
         terms: list[str] = fc["text_search"]
         mode: str = fc.get("search_mode", "AND").upper()
         if not _text_search_matches(event, terms, mode):
+            return False
+
+    # Custom conditions (profile-defined or advanced-dialog).  Without this
+    # check, profile conditions silently leak through parse-time filtering —
+    # see _conditions_pass docstring.
+    conds = fc.get("conditions")
+    if conds:
+        if not _conditions_pass(event, conds, bool(fc.get("case_sensitive", False))):
             return False
 
     return True
@@ -424,6 +648,14 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
         _terms = fc["text_search"]
         _mode = fc.get("search_mode", "AND").upper()
         checks.append(lambda ev, _t=_terms, _m=_mode: _text_search_matches(ev, _t, _m))
+
+    # Custom conditions (profile-defined or advanced-dialog).  Closes the
+    # parse-time leak where conditions like "DriverName != msmouse.inf" were
+    # silently dropped — see _conditions_pass docstring.
+    if fc.get("conditions"):
+        _conds = fc["conditions"]
+        _cs    = bool(fc.get("case_sensitive", False))
+        checks.append(lambda ev, _c=_conds, _s=_cs: _conditions_pass(ev, _c, _s))
 
     # No active conditions → pass everything
     if not checks:
