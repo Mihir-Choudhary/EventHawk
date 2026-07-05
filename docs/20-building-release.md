@@ -160,7 +160,6 @@ Use [Semantic Versioning](https://semver.org/):
 
 - The EXE is a launcher, not a fully self-contained bundle. Python 3.10+ and all pip dependencies must be installed on the target machine. This is by design — it keeps the EXE small and dependencies updatable.
 - PyInstaller builds are Windows-specific. A Linux/macOS release would require building on those platforms.
-- Antivirus software may flag the freshly compiled EXE as suspicious (false positive — common with PyInstaller). Submitting the EXE to VirusTotal before release and noting the clean result in the release notes is recommended.
 - The `EventHawk.spec` targets `launcher.py`. If you rename or move `launcher.py`, update the spec `Analysis(scripts=[...])` entry accordingly.
 
 ---

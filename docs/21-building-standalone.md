@@ -80,21 +80,9 @@ That's the whole thing. To point at an already-installed Inno compiler:
 
 ### Why not PyInstaller
 
-PyInstaller's bootloader is an antivirus false-positive magnet. This build ships
-the **code-signed** `pythonw.exe` and installs via Inno Setup (a trusted
-installer) to a normal install location, so AV has no unsigned stub to flag.
-
----
-
-## Antivirus note
-
-Some aggressive engines (e.g. Kaspersky) may quarantine the Rust EVTX parser
-`evtx\_native.pyd` when it is freshly written. This is a **false positive** on a
-legitimate open-source parser — there is no way to make an unsigned native binary
-invisible to AV without malware-evasion tricks, so the fix is a one-time
-**exclusion** for the install folder (or the build folder), or code-signing the
-binaries with your own certificate. The GUI opens without the parser; only EVTX
-*parsing* needs it.
+This build ships the **code-signed** `pythonw.exe` and installs via Inno Setup
+to a normal install location — a standard signed Python runtime rather than a
+one-file bootloader stub, so it stays self-contained and easy to update.
 
 ---
 
