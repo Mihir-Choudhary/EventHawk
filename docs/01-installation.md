@@ -6,40 +6,30 @@ EventHawk can be installed in two ways: as a **pre-built Windows executable** (n
 
 ---
 
-## Option A — Pre-built EXE (Recommended for most users)
+## Option A — Standalone (recommended for most users)
 
 ### When to use
-You want to get started quickly and do not want to manage Python environments.
+You just want to run EventHawk. **No Python, no setup, nothing to configure.**
 
 ### Steps
 
 1. Go to the [Releases page](../../releases) on GitHub.
-2. Download `EventHawk-v1.1-win64.zip`.
-3. Extract the zip to any folder (e.g. `C:\Tools\EventHawk\`).
-4. Double-click **`EventHawk.exe`** to launch the GUI.
+2. Download **one** of these:
 
-> **Note:** Python 3.10+ must still be installed on the machine. The launcher (`EventHawk.exe`) locates your system Python automatically — it does not need to be in PATH. If Python is not found, you will see a prompt to install it.
+   | File | What it does |
+   |---|---|
+   | `EventHawk-1.3.0-Setup.exe` | **Installer.** Creates a Desktop / Start-Menu shortcut. Run it as a normal user (installs to your account, no admin needed) or as admin (installs for all users). |
+   | `EventHawk-portable.exe` | **Portable.** Double-click — it unpacks and runs. Nothing is installed. |
+   | `EventHawk-portable.7z` | Same as portable but smaller; extract with 7-Zip, then run `EventHawk.cmd`. |
 
-### What the zip contains
+3. Launch it — the GUI opens maximized.
 
-```
-EventHawk-v1.1-win64.zip
-├── EventHawk.exe          ← Double-click to launch
-├── requirements.txt       ← For reference / reinstalling deps
-├── install.bat            ← Run if EXE says dependencies are missing
-├── run.bat                ← Alternative launch script
-└── README.md
-```
+Everything (Python 3.14, PySide6/Qt, DuckDB, PyArrow, the Rust EVTX parser and
+all 20 DFIR profiles) is bundled inside — about 57 MB. To analyze a `.evtx`
+file, open it from within the app.
 
-### If dependencies are missing
-
-If the EXE starts but immediately closes or shows a missing-module error, run `install.bat` once:
-
-```bat
-install.bat
-```
-
-This installs all required Python packages from `requirements.txt`.
+> **Uninstall:** installer → Settings → Apps → *EventHawk* → Uninstall.
+> Portable → just delete the folder; it leaves nothing behind.
 
 ---
 
@@ -63,7 +53,7 @@ You want to modify the code, contribute, or run on a system where compiling to E
 **1. Clone the repository**
 
 ```bat
-git clone https://github.com/YOUR_USERNAME/EventHawk.git
+git clone https://github.com/Mihir-Choudhary/EventHawk.git
 cd EventHawk
 ```
 
@@ -123,3 +113,4 @@ cuDF is detected automatically at startup. If absent, the tool silently falls ba
 - [Normal Mode](03-normal-mode.md)
 - [CLI Mode](12-cli.md)
 - [Building a Release](20-building-release.md)
+- [Building the Standalone](21-building-standalone.md)

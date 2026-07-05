@@ -50,10 +50,19 @@ def _setup_gui_logging() -> None:
     """
     import atexit
     import platform
+    import tempfile
 
-    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "..", "..", "evtx_tool_logs")
-    os.makedirs(log_dir, exist_ok=True)
+    # Logs must go to a user-writable location. When installed under Program
+    # Files (per-machine), the app's own directory is read-only for non-admin
+    # users, so creating evtx_tool_logs next to the app raises PermissionError
+    # and crashes startup. Prefer %LOCALAPPDATA%\EventHawk\logs, then fall back.
+    _log_base = (os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+                 or tempfile.gettempdir())
+    log_dir = os.path.join(_log_base, "EventHawk", "logs")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except OSError:
+        log_dir = tempfile.gettempdir()
     log_path   = os.path.join(log_dir, "eventhawk_gui.log")
     crash_path = os.path.join(log_dir, "eventhawk_crash.log")
 
@@ -352,6 +361,8 @@ def launch(initial_paths: list[str] | None = None) -> None:
 
     from .main_window import MainWindow
     window = MainWindow(initial_paths=initial_paths or [])
-    window.show()
+    # Open maximized (expanded) so the multi-pane DFIR layout is usable on first
+    # launch; the 1420x860 resize() in MainWindow becomes the un-maximized size.
+    window.showMaximized()
 
     sys.exit(app.exec())
