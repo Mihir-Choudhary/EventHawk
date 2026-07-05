@@ -1,0 +1,82 @@
+name: Build EventHawk EXE
+
+# Builds EventHawk.exe with PyInstaller and packages the release ZIP.
+#   * push a tag  v*   -> build + publish a GitHub Release with the ZIP attached
+#   * manual run       -> build + upload the ZIP as a workflow artifact
+#
+# Mirrors the manual steps in docs/20-building-release.md so releases are
+# reproducible and the compiled binary never has to live in the git tree.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write        # required to create the GitHub Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+
+      - name: Install UPX
+        run: choco install upx -y --no-progress
+
+      - name: Build EXE
+        run: pyinstaller EventHawk.spec
+
+      - name: Show build output
+        shell: pwsh
+        run: |
+          $exe = Get-Item dist/EventHawk.exe
+          "Built {0}  ({1:N2} MB)" -f $exe.Name, ($exe.Length / 1MB)
+          $exe.VersionInfo | Format-List ProductName, FileVersion
+
+      - name: Assemble release ZIP
+        shell: pwsh
+        run: |
+          $rel = "dist/release"
+          New-Item -ItemType Directory -Force -Path $rel | Out-Null
+          Copy-Item dist/EventHawk.exe $rel/
+          Copy-Item requirements.txt   $rel/
+          Copy-Item install.bat        $rel/
+          Copy-Item run.bat            $rel/
+          Copy-Item README.md          $rel/
+          New-Item -ItemType Directory -Force -Path "$rel/profiles/defaults" | Out-Null
+          Copy-Item evtx_tool/profiles/defaults/* "$rel/profiles/defaults/"
+          # Tag builds use the tag name; manual runs fall back to "dev".
+          $ver = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "dev" }
+          Compress-Archive -Path "$rel/*" -DestinationPath "EventHawk-$ver-win64.zip" -Force
+          "ZIP=EventHawk-$ver-win64.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EventHawk-win64
+          path: ${{ env.ZIP }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}"
+          "${{ env.ZIP }}"
+          --title "EventHawk ${{ github.ref_name }}"
+          --notes "Automated build from ${{ github.sha }}. See README.md for what's new."
