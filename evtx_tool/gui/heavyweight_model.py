@@ -684,9 +684,20 @@ class ArrowTableModel(QAbstractTableModel):
         # Re-apply the current sort order (filter result is unordered).
         direction = "ascending" if self._sort_asc else "descending"
         try:
-            filtered_table = filtered_table.sort_by([(self._sort_col, direction)])
+            # record_id tiebreaker on timestamp sorts: same-second events (the
+            # overwhelming majority in Security logs) get deterministic,
+            # log-write order instead of arbitrary shard-interleave order.
+            if self._sort_col == "timestamp_utc":
+                _keys = [(self._sort_col, direction), ("record_id", direction)]
+            else:
+                _keys = [(self._sort_col, direction)]
+            filtered_table = filtered_table.sort_by(_keys)
         except Exception as exc:
             logger.warning("Sort after filter failed (%s) — using unsorted result", exc)
+            try:
+                filtered_table = filtered_table.sort_by([(self._sort_col, direction)])
+            except Exception:
+                pass
 
         self._display_table = filtered_table
         self._total_rows    = len(filtered_table)
@@ -970,25 +981,30 @@ class ArrowTableModel(QAbstractTableModel):
                         int_vals.append(int(v))
                     except (ValueError, TypeError):
                         int_vals.append(0)
+                # EXCLUDE must keep rows where the column is NULL — SQL `col != x`
+                # is NULL (row dropped) for a NULL col, which would silently hide
+                # every event with no value in that column (e.g. NULL user_id).
+                # Normal mode keeps them (it compares against ""), so add
+                # `OR col IS NULL` to the exclude clause to match.
                 if len(int_vals) == 1:
                     op = "=" if incl else "!="
-                    parts.append(f"{col} {op} ?")
+                    parts.append(f"{col} {op} ?" if incl else f"({col} {op} ? OR {col} IS NULL)")
                     params.append(int_vals[0])
                 else:
                     op = "IN" if incl else "NOT IN"
                     ph = ", ".join("?" * len(int_vals))
-                    parts.append(f"{col} {op} ({ph})")
+                    parts.append(f"{col} {op} ({ph})" if incl else f"({col} {op} ({ph}) OR {col} IS NULL)")
                     params.extend(int_vals)
             else:
                 lower_vals = [v.lower() for v in values]
                 if len(lower_vals) == 1:
                     op = "=" if incl else "!="
-                    parts.append(f"lower({col}) {op} ?")
+                    parts.append(f"lower({col}) {op} ?" if incl else f"(lower({col}) {op} ? OR {col} IS NULL)")
                     params.append(lower_vals[0])
                 else:
                     op = "IN" if incl else "NOT IN"
                     ph = ", ".join("?" * len(lower_vals))
-                    parts.append(f"lower({col}) {op} ({ph})")
+                    parts.append(f"lower({col}) {op} ({ph})" if incl else f"(lower({col}) {op} ({ph}) OR {col} IS NULL)")
                     params.extend(lower_vals)
 
         if parts:

@@ -41,29 +41,10 @@ logger = logging.getLogger(__name__)
 # Used by _term_clause() for both plain-text and regex text searches.
 # Also imported by heavyweight_model._ARROW_SEARCH_EXPR so there is one
 # canonical definition.
-SEARCH_TEXT_EXPR: str = (
-    "lower("
-    "CAST(event_id AS VARCHAR) || ' ' || "
-    "COALESCE(level_name,      '') || ' ' || "
-    "COALESCE(channel,         '') || ' ' || "
-    "COALESCE(provider,        '') || ' ' || "
-    "COALESCE(computer,        '') || ' ' || "
-    "COALESCE(user_id,         '') || ' ' || "
-    "COALESCE(source_file,     '') || ' ' || "
-    "COALESCE(ed_subject_user, '') || ' ' || "
-    "COALESCE(ed_target_user,  '') || ' ' || "
-    "COALESCE(ed_ip_address,   '') || ' ' || "
-    "COALESCE(ed_new_process,  '')"
-    ")"
-)
-
-# ── Full-text expression for Phase 2 Parquet search ────────────────────────────
-# Like SEARCH_TEXT_EXPR but also includes event_data_json so that paths, process
-# names, and other event-data values are searchable in Juggernaut mode.
-# Used exclusively in text_config_to_parquet_sql() — NOT in filter_config_to_sql()
-# (which runs against the Arrow table that does not contain event_data_json).
-SEARCH_TEXT_EXPR_FULL: str = (
-    "lower("
+# Raw (NON-lowered) concat.  ed_values holds every EventData VALUE (values-only),
+# loaded into the Arrow table so the quick/Phase-1 search covers all data values.
+# ed_subject_user etc. are subsumed by ed_values but kept for clarity/back-compat.
+_SEARCH_TEXT_RAW: str = (
     "CAST(event_id AS VARCHAR) || ' ' || "
     "COALESCE(level_name,      '') || ' ' || "
     "COALESCE(channel,         '') || ' ' || "
@@ -75,9 +56,28 @@ SEARCH_TEXT_EXPR_FULL: str = (
     "COALESCE(ed_target_user,  '') || ' ' || "
     "COALESCE(ed_ip_address,   '') || ' ' || "
     "COALESCE(ed_new_process,  '') || ' ' || "
-    "COALESCE(event_data_json, '')"
-    ")"
+    "COALESCE(ed_values,       '')"
 )
+# Default (case-insensitive) form wraps the raw concat in lower().  The RAW form
+# is used for case-SENSITIVE search — otherwise the blob would be pre-lowered and
+# a case-sensitive term could never match (it silently returned zero rows).
+SEARCH_TEXT_EXPR: str = f"lower({_SEARCH_TEXT_RAW})"
+
+# ── Full-text expression for Phase 2 Parquet search ────────────────────────────
+# Like SEARCH_TEXT_EXPR but values-only via ed_values (NOT event_data_json) so a
+# search for "logon" hits events whose DATA contains logon, not every event that
+# merely has a LogonType field.  Runs only in text_config_to_parquet_sql().
+_SEARCH_TEXT_RAW_FULL: str = (
+    "CAST(event_id AS VARCHAR) || ' ' || "
+    "COALESCE(level_name,      '') || ' ' || "
+    "COALESCE(channel,         '') || ' ' || "
+    "COALESCE(provider,        '') || ' ' || "
+    "COALESCE(computer,        '') || ' ' || "
+    "COALESCE(user_id,         '') || ' ' || "
+    "COALESCE(source_file,     '') || ' ' || "
+    "COALESCE(ed_values,       '')"
+)
+SEARCH_TEXT_EXPR_FULL: str = f"lower({_SEARCH_TEXT_RAW_FULL})"
 
 # Only alphanumeric, underscore, dot, and hyphen are allowed in a json_extract
 # path key ($.key).  Single quotes, braces, or spaces would break the SQL
@@ -97,6 +97,11 @@ _TOP_LEVEL_COLS: frozenset[str] = frozenset({
     # Distinct from the event_data ProcessId/ThreadId fields (often hex strings).
     "process_id", "thread_id",
     "ed_subject_user", "ed_target_user", "ed_ip_address", "ed_new_process",
+    # System-header columns that live as real Parquet columns — NOT inside
+    # event_data.  Without these a condition on e.g. "correlation_id" / "opcode"
+    # / "keywords" went through json_extract(ed_flat_json, …) → always NULL → the
+    # condition matched ZERO rows in JM while normal mode matched correctly.
+    "keywords", "correlation_id", "opcode", "qualifiers",
 })
 
 # Fields where Windows stores numeric values as hex strings ("0x790") in
@@ -653,13 +658,18 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
                 params.append(_tt)
 
         else:  # "range" — full timestamp comparison
+            # Compare on the second-truncated SUBSTRING: timestamp_utc now
+            # carries microseconds ('...SS.ffffff'), and a raw string compare
+            # against a seconds-granularity boundary would EXCLUDE events
+            # inside the boundary second on the upper bound.  SUBSTRING keeps
+            # the filter's second-granularity semantics unchanged.
             if df and len(df) >= 10:
-                date_parts.append("timestamp_utc >= ?")
+                date_parts.append("SUBSTRING(timestamp_utc, 1, 19) >= ?")
                 params.append(df)
             elif date_from_raw:
                 logger.warning("filter_sql: ignoring malformed date_from %r", date_from_raw)
             if dt and len(dt) >= 10:
-                date_parts.append("timestamp_utc <= ?")
+                date_parts.append("SUBSTRING(timestamp_utc, 1, 19) <= ?")
                 params.append(dt)
             elif date_to_raw:
                 logger.warning("filter_sql: ignoring malformed date_to %r", date_to_raw)
@@ -722,18 +732,18 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
 
     # ── users ──────────────────────────────────────────────────────────────
     # Checks user_id (System/Security header SID), ed_subject_user
-    # (SubjectUserName), and ed_target_user (TargetUserName) — all pre-extracted
-    # Arrow table columns.
-    # TODO: SubjectUserSid / TargetUserSid live only in event_data_json (Parquet)
-    # and therefore cannot be checked here without adding ed_subject_sid /
-    # ed_target_sid as pre-extracted columns to the Arrow schema (engine.py).
+    # (SubjectUserName), ed_target_user (TargetUserName), and the two SID
+    # columns ed_subject_sid / ed_target_sid — all pre-extracted Arrow columns.
+    # Matches the normal-mode filter (filters.py), which searches the same six
+    # identity fields, so a SID user-filter no longer under-matches in JM.
     if fc.get("users"):
         usr_exclude = fc.get("user_exclude", False)
         op = _like_op()
         sub_parts = []
         for u in fc["users"]:
             _eu = _escape_like(u)
-            for col in ("ed_subject_user", "ed_target_user", "user_id"):
+            for col in ("ed_subject_user", "ed_target_user", "user_id",
+                        "ed_subject_sid", "ed_target_sid"):
                 sub_parts.append(f"{col} {op} ? ESCAPE '\\'")
                 params.append(f"%{_eu}%")
         clause = f"({' OR '.join(sub_parts)})"
@@ -762,23 +772,24 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
         text_regex = fc.get("text_regex", False)
         text_exclude = fc.get("text_exclude", False)
 
+        # Case-SENSITIVE search runs against the RAW (non-lowered) blob; the
+        # lower()-wrapped expression would pre-lower the data so an upper-case
+        # term could never match.
+        _texpr = _SEARCH_TEXT_RAW if cs else SEARCH_TEXT_EXPR
+
         def _term_clause(term: str) -> str:
             if text_regex:
                 # DuckDB native: regexp_matches(expr, pattern [, flags])
                 # 'i' flag = case-insensitive; omit for case-sensitive.
-                # SEARCH_TEXT_EXPR already lower()s the blob, so case-
-                # insensitive matching works on both sides of the regex.
                 if cs:
                     params.append(term)
-                    return f"regexp_matches({SEARCH_TEXT_EXPR}, ?)"
+                    return f"regexp_matches({_texpr}, ?)"
                 else:
                     params.append(term.lower())
-                    return f"regexp_matches({SEARCH_TEXT_EXPR}, ?, 'i')"
+                    return f"regexp_matches({_texpr}, ?, 'i')"
             else:
-                # CONTAINS() on the pre-lowercased expression.
-                # term is lowercased by _lv() for case-insensitive match.
                 params.append(_lv(term))
-                return f"CONTAINS({SEARCH_TEXT_EXPR}, ?)"
+                return f"CONTAINS({_texpr}, ?)"
 
         term_clauses = [_term_clause(t) for t in text_terms]
         if mode == "AND":
@@ -812,8 +823,11 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             # integer columns like event_id.
             base_exprs.append(f"CAST({name} AS VARCHAR)")
         elif _SAFE_JSON_KEY_RE.match(name):
-            # Simple identifier — use dot notation: $.FieldName
-            base_exprs.append(f"json_extract_string(event_data_json, '$.{name}')")
+            # Simple identifier — use dot notation: $.FieldName.
+            # ed_flat_json (flattened field map), NOT event_data_json (which is
+            # the nested original), so a condition on a field nested inside a
+            # container element resolves — matching normal mode.
+            base_exprs.append(f"json_extract_string(ed_flat_json, '$.{name}')")
             # Some event_data names also have a top-level column counterpart
             # (ProcessId / ThreadId) — query both.
             _dual = _FIELD_DUAL_SOURCE.get(name)
@@ -822,8 +836,13 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
         elif '"' not in name and "\\" not in name and "\x00" not in name:
             # Field name contains spaces or other special characters but is
             # otherwise safe — use JSONPath double-quote bracket notation:
-            # json_extract_string(col, '$."My Field Name"')
-            base_exprs.append(f'json_extract_string(event_data_json, \'$."{name}"\')')
+            # json_extract_string(col, '$."My Field Name"').
+            # Escape single quotes (double them) so a name containing ' cannot
+            # terminate the surrounding SQL string literal — otherwise the query
+            # errors and the filter thread silently falls back to showing ALL
+            # rows (fail-open), or the name becomes an injection vector.
+            _safe_name = name.replace("'", "''")
+            base_exprs.append(f'json_extract_string(ed_flat_json, \'$."{_safe_name}"\')')
         else:
             logger.warning("filter_sql: skipping condition with unsafe field name %r", name)
             continue
@@ -969,6 +988,13 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             clauses.append(f"({sub})" if n_fe > 1 else sub)
             for _ in range(n_fe):
                 params.append(val)
+        else:
+            # Unknown operator — fail CLOSED (match no rows) to mirror normal
+            # mode's _conditions_pass, which returns False.  Without this a
+            # typo'd/hand-edited operator would silently pass every event in JM
+            # while dropping every event in normal mode — a silent divergence.
+            logger.warning("filter_sql: unknown condition operator %r — matching no rows", op)
+            clauses.append("1=0")
 
     if not clauses:
         return "1=1", []
@@ -1001,18 +1027,23 @@ def text_config_to_parquet_sql(fc: dict) -> "tuple[str, list[Any]]":
     def _lv(val: str) -> str:
         return val if cs else val.lower()
 
+    # Case-SENSITIVE search must run against the RAW (non-lowered) blob — using
+    # the lower()-wrapped expression pre-lowers the data so an upper-case term
+    # could never match (previously returned zero rows for e.g. "MSI" + cs).
+    _expr = _SEARCH_TEXT_RAW_FULL if cs else SEARCH_TEXT_EXPR_FULL
+
     def _term_clause(term: str) -> str:
         if text_regex:
             # DuckDB native: regexp_matches(expr, pattern [, 'i' flag])
             if cs:
                 params.append(term)
-                return f"regexp_matches({SEARCH_TEXT_EXPR_FULL}, ?)"
+                return f"regexp_matches({_expr}, ?)"
             else:
                 params.append(term.lower())
-                return f"regexp_matches({SEARCH_TEXT_EXPR_FULL}, ?, 'i')"
+                return f"regexp_matches({_expr}, ?, 'i')"
         else:
             params.append(_lv(term))
-            return f"CONTAINS({SEARCH_TEXT_EXPR_FULL}, ?)"
+            return f"CONTAINS({_expr}, ?)"
 
     term_clauses = [_term_clause(t) for t in text_terms]
     if mode == "AND":

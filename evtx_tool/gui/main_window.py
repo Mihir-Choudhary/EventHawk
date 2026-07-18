@@ -5806,6 +5806,18 @@ class MainWindow(QMainWindow):
         prof_btn_row.addWidget(btn_refresh)
         layout.addLayout(prof_btn_row)
 
+        # Explicit apply — profiles do NOT auto-apply on toggle.  The user ticks
+        # the profiles they want, then clicks Apply so a single filter pass runs.
+        # Works in BOTH Juggernaut and normal mode WITHOUT re-parsing the logs.
+        self._btn_apply_profiles = QPushButton("✓ Apply Profiles")
+        self._btn_apply_profiles.setToolTip(
+            "Apply the ticked profiles to the already-parsed events.\n"
+            "Filters in place — does NOT re-parse the logs.\n"
+            "Tick several profiles first, then click once."
+        )
+        self._btn_apply_profiles.clicked.connect(self._on_apply_profiles_clicked)
+        layout.addWidget(self._btn_apply_profiles)
+
         prof_edit_row = QHBoxLayout()
         btn_new_profile = QPushButton("＋ New Profile")
         btn_new_profile.setToolTip("Create a new custom profile")
@@ -7313,6 +7325,67 @@ class MainWindow(QMainWindow):
         self._hw_db_path = parquet_dir   # stored for cleanup (dir deletion)
         self._hw_con     = None          # no persistent DuckDB connection needed
 
+        # ── Parse-integrity check: unparsed records must be visible ──────────
+        # A skipped-record count is a forensic finding (possible corruption,
+        # tampering, or tool limitation) — surface it, never bury it in logs.
+        try:
+            _stats = getattr(self._hw_worker, "parse_stats", {}) or {}
+
+            def _file_problem(v: dict) -> str:
+                """Return a short problem description for one file's stats, or ''."""
+                bits = []
+                _sk = v.get("json_errors", 0) + v.get("extract_errors", 0)
+                if _sk:
+                    bits.append(f"{_sk:,} unparsed record(s)")
+                if v.get("stream_error"):
+                    _sal = v.get("salvaged", 0)
+                    _unrec = v.get("salvage_unrecoverable", 0)
+                    if _sal or _unrec:
+                        # Salvage ran — report recovery, not a bare abort.
+                        _txt = (f"parse aborted mid-file but RECOVERED "
+                                f"{_sal:,} record(s) via chunk salvage")
+                        if _unrec:
+                            _txt += f"; {_unrec} chunk(s) unrecoverable"
+                        bits.append(_txt)
+                    else:
+                        bits.append(f"parse ABORTED mid-file ({v['stream_error']})")
+                if v.get("open_error"):
+                    bits.append("file could not be opened")
+                if v.get("rows_lost_to_write_failure"):
+                    bits.append(
+                        f"{v['rows_lost_to_write_failure']:,} row(s) lost to shard-write failure"
+                    )
+                if v.get("missing_vs_expected"):
+                    bits.append(
+                        f"{v['missing_vs_expected']:,} record(s) declared in chunk headers "
+                        f"not parsed (see Missing Record IDs)"
+                    )
+                if v.get("truncation"):
+                    bits.append(v["truncation"])
+                return "; ".join(bits)
+
+            _problems = []
+            for k, v in _stats.items():
+                desc = _file_problem(v)
+                if desc:
+                    _name = ("[storage]" if k == "__shard_write_loss__"
+                             else os.path.basename(k))
+                    _problems.append(f"{_name}: {desc}")
+
+            if _problems:
+                QMessageBox.warning(
+                    self, "Parse Integrity Warning",
+                    "Some evidence did NOT fully load — results may be "
+                    "incomplete:\n\n"
+                    + "\n".join(_problems[:15])
+                    + ("\n…" if len(_problems) > 15 else "")
+                    + "\n\nA parse ABORT means all records after the failure "
+                    "point are missing from this session.\n"
+                    "Details: parse_stats.json in the session directory.",
+                )
+        except Exception:
+            logger.warning("Parse-integrity stats check failed", exc_info=True)
+
         # Load all events into an in-memory Arrow table (~114 MB for 6M rows).
         # ArrowTableModel's _FilterThread owns the single DuckDB connection.
         arrow_table = load_arrow_table(parquet_dir)
@@ -7404,36 +7477,14 @@ class MainWindow(QMainWindow):
         # Launch Hayabusa if the checkbox is ticked
         QTimer.singleShot(0, lambda: self._jm_launch_analysis(parquet_dir))
 
-        # ── Wire profile combo for live post-parse filtering ──────────────
-        # Profiles were applied at parse time as a pre-filter. Now also wire
-        # them so that changing the profile selection post-parse re-applies
-        # the filter against the already-loaded DuckDB data.
-        #
-        # Debounce: CheckableComboBox fires itemChanged once per checkbox tick.
-        # Checking 5 profiles in sequence would trigger 5 back-to-back filter
-        # rebuilds + COUNT(*) queries. A 150ms QTimer coalesces rapid toggles
-        # into a single apply when the user finishes clicking.
-        try:
-            if self._hw_profile_filter_timer is None:
-                from PySide6.QtCore import QTimer as _QT
-                self._hw_profile_filter_timer = _QT(self)
-                self._hw_profile_filter_timer.setSingleShot(True)
-                self._hw_profile_filter_timer.timeout.connect(
-                    self._on_hw_profile_filter_changed
-                )
-                self._hw_profile_signal_cb = (
-                    lambda: self._hw_profile_filter_timer.start(150)
-                )
-            # Only connect if not already connected — prevents signal multiplication
-            # when the user runs Juggernaut mode a second time in the same session.
-            # The cleanup function (_stop_and_reset_hw) resets this flag on disconnect.
-            if not self._hw_profile_signal_connected:
-                self._profile_combo._chk_model.itemChanged.connect(
-                    self._hw_profile_signal_cb
-                )
-                self._hw_profile_signal_connected = True
-        except Exception:
-            pass
+        # ── Profiles are applied MANUALLY via the "Apply Profiles" button ──
+        # Deliberately NOT auto-applied on toggle: ticking several profiles used
+        # to fire a filter pass per checkbox (and, on systems that fall back to
+        # normal mode, a full re-parse each time).  The explicit button runs a
+        # single filter pass over the already-loaded data in either mode.
+        # _hw_profile_signal_connected stays False so the cleanup disconnect is
+        # a no-op.  (Left here intentionally — see _on_apply_profiles_clicked.)
+        pass
 
         total = self._hw_model.total_event_count()
         elapsed = time.monotonic() - self._parse_start_ts
@@ -7518,9 +7569,13 @@ class MainWindow(QMainWindow):
                     "GROUP BY level_name ORDER BY COUNT(*) DESC"
                 ).fetchall()
                 meta["level"] = {r[0]: r[1] for r in lvl_rows}
-                _con.close()
             except Exception as exc:
                 _logger.warning("_load_jm_metadata background worker failed: %s", exc)
+            finally:
+                try:
+                    _con.close()
+                except Exception:
+                    pass
 
             # Post result back to main thread — QTimer.singleShot is thread-safe.
             QTimer.singleShot(0, lambda m=meta: self._on_jm_metadata_loaded(m))
@@ -7684,6 +7739,64 @@ class MainWindow(QMainWindow):
         if self._hw_profile_filter_timer is not None:
             self._hw_profile_filter_timer.stop()
 
+    def _on_apply_profiles_clicked(self) -> None:
+        """Apply the currently-ticked profiles to the loaded events, IN PLACE.
+
+        Fully manual: profiles do NOT auto-apply on toggle.  The user ticks the
+        profiles they want and clicks Apply once — so selecting several profiles
+        no longer fires a filter pass per tick.  Works in BOTH modes WITHOUT
+        re-parsing:
+          • Juggernaut: apply_filter() on the in-memory Arrow model.
+          • Normal:     set_advanced_filter() on the view proxy.
+        This is the fix for "some systems re-parse on every profile" — those
+        systems run normal mode, which previously applied profiles only at parse
+        time (so changing a profile meant a full re-parse).  Profiles are stacked
+        ON TOP of any active Advanced Filter cfg (same slot), so applying a
+        profile never wipes the advanced filter and vice-versa.
+        """
+        fc = self._build_filter_config(base=getattr(self, "_adv_filter_cfg", None))
+
+        if self._hw_model is not None:
+            # Juggernaut — filter the in-memory Arrow table (no re-parse).
+            self._show_hw_loading_dialog(
+                heading="Please Wait — Applying Profiles",
+                detail="Filtering events…",
+            )
+            self._hw_model.apply_filter(fc)
+            for _fp, _st in self._file_tabs.items():
+                if _fp.startswith("__chain__"):
+                    continue
+                try:
+                    _st.model.apply_filter(fc)
+                except Exception:
+                    # Log, don't swallow: a per-file-tab that fails to filter is
+                    # a real problem the user should see, not hidden.
+                    logger.warning(
+                        "Apply Profiles: failed to filter JM tab %r", _fp, exc_info=True
+                    )
+        else:
+            # Normal mode — apply live to the view proxy (no re-parse).
+            _proxy = getattr(self, "_active_proxy", None) or getattr(self, "_proxy_model", None)
+            if _proxy is None:
+                QMessageBox.information(
+                    self, "No Events",
+                    "Parse some logs first, then click Apply Profiles.",
+                )
+                return
+            _proxy.set_advanced_filter(fc)
+            for _fp, _st in self._file_tabs.items():
+                if _fp.startswith("__chain__"):
+                    continue
+                try:
+                    _st.proxy.set_advanced_filter(fc)
+                except Exception:
+                    logger.warning(
+                        "Apply Profiles: failed to filter normal-mode tab %r", _fp, exc_info=True
+                    )
+
+        self._update_adv_filter_badge()
+        self._update_count_label()
+
     def _on_hw_profile_filter_changed(self) -> None:
         """Re-apply the profile selection as a SQL filter in Juggernaut mode.
 
@@ -7702,6 +7815,15 @@ class MainWindow(QMainWindow):
         # Stack profiles on top of the last-applied Advanced Filter cfg.
         # When neither is active, _build_filter_config returns empty_filter().
         fc = self._build_filter_config(base=getattr(self, "_adv_filter_cfg", None))
+        # Show the "Please Wait" blocker immediately on a profile toggle —
+        # bypassing the 150 ms busy-timer threshold used by other filter ops.
+        # Profile toggles are explicit user actions and the user expects
+        # immediate visual feedback (same UX as the parse-time blocker).
+        # busy_finished from the model will close the dialog automatically.
+        self._show_hw_loading_dialog(
+            heading="Please Wait — Applying Profile",
+            detail="Filtering events…",
+        )
         self._hw_model.apply_filter(fc)
         # Mirror to per-file JM tabs so they stay in sync with the live filter.
         for _fp, _st in self._file_tabs.items():
@@ -8287,6 +8409,24 @@ class MainWindow(QMainWindow):
     ) -> None:
         elapsed = time.monotonic() - self._parse_start_ts
 
+        # ── Parse-integrity check (normal mode) — same standard as Juggernaut ─
+        # engine.state.warnings carries per-file "N record(s) could not be
+        # parsed" messages; unparsed evidence must be visible to the examiner.
+        try:
+            _pw = [w for w in getattr(self._worker, "parse_warnings", [])
+                   if ("could not be parsed" in w or "ABORTED" in w
+                       or "TRUNCATED" in w)]
+            if _pw:
+                QMessageBox.warning(
+                    self, "Parse Integrity Warning",
+                    "Some evidence did NOT fully load — results may be "
+                    "incomplete:\n\n"
+                    + "\n".join(_pw[:15])
+                    + ("\n…" if len(_pw) > 15 else ""),
+                )
+        except Exception:
+            logger.warning("Parse-integrity warning check failed", exc_info=True)
+
         self._events         = events
         self._close_logon_sessions_dlg()   # close + invalidate session browser cache
         self._close_ra_dlg(clear_filter=True)  # M1: close + clear RA filter + kill worker
@@ -8618,14 +8758,14 @@ class MainWindow(QMainWindow):
         cfg = dlg.get_filter_config()
 
         # ── Stack the dialog cfg ON TOP of any active profile selection ──
-        # In JM mode both the profile filter and the dialog filter are applied
-        # via the same `apply_filter()` slot on the live model.  Without this
-        # stacking step, opening the Advanced Filter would silently wipe an
-        # active profile (and toggling a profile would wipe the Advanced
-        # Filter).  In normal mode profiles are baked into the events at parse
-        # time, so the proxy still receives only the dialog cfg — but using
-        # the helper keeps both paths symmetric.
-        cfg_effective = self._build_filter_config(base=cfg) if self._hw_model is not None else cfg
+        # Both the profile filter and the dialog filter are applied via the same
+        # slot (apply_filter in JM, set_advanced_filter in normal).  Stacking
+        # them means opening the Advanced Filter never wipes a live-applied
+        # profile (and vice-versa) — in EITHER mode, now that profiles are
+        # applied live (see _on_apply_profiles_clicked).  ``_adv_filter_cfg``
+        # still stores only the raw dialog cfg so a later profile Apply can
+        # re-stack cleanly.
+        cfg_effective = self._build_filter_config(base=cfg)
 
         # In separate-tabs mode ask which files to target before committing cfg
         if self._view_mode == "separate":
@@ -8643,7 +8783,7 @@ class MainWindow(QMainWindow):
                         if is_jm:
                             self._hw_model.apply_filter(cfg_effective)
                         else:
-                            self._proxy_model.set_advanced_filter(cfg)
+                            self._proxy_model.set_advanced_filter(cfg_effective)
                         continue
                     state = self._file_tabs.get(fp)
                     if state is None:
@@ -8651,7 +8791,7 @@ class MainWindow(QMainWindow):
                     if is_jm:
                         state.model.apply_filter(cfg_effective)
                     else:
-                        state.proxy.set_advanced_filter(cfg)
+                        state.proxy.set_advanced_filter(cfg_effective)
                 self._update_adv_filter_badge()
                 self._update_count_label()
                 return
@@ -8663,7 +8803,7 @@ class MainWindow(QMainWindow):
             self._update_adv_filter_badge()
             self._update_count_label()
             return
-        self._active_proxy.set_advanced_filter(cfg)
+        self._active_proxy.set_advanced_filter(cfg_effective)
         self._update_adv_filter_badge()
         self._update_count_label()
 
@@ -11527,6 +11667,13 @@ class MainWindow(QMainWindow):
             where_sql, params = _export_model._combined_where()
             sort_col  = _export_model._sort_col
             direction = "ASC" if _export_model._sort_asc else "DESC"
+            # ALWAYS append a unique (source_file, record_id) tiebreaker:
+            #  1. same-timestamp rows export in deterministic, reproducible order;
+            #  2. the HTML/XML path paginates with LIMIT/OFFSET — without a
+            #     total order, ties spanning a batch boundary can be DUPLICATED
+            #     or SKIPPED between batches (rows silently lost from exports).
+            order_sql = (f"{sort_col} {direction}, "
+                         f"source_file {direction}, record_id {direction}")
 
             # Open a temporary in-memory DuckDB connection on the Arrow table.
             # This gives us streaming SQL access without needing _hw_con.
@@ -11539,12 +11686,33 @@ class MainWindow(QMainWindow):
             if ext in ("csv", "json"):
                 import csv as _csv
                 import json as _json
-                cursor = _exp_con.execute(
-                    f"SELECT * FROM events "
-                    f"WHERE {where_sql} "
-                    f"ORDER BY {sort_col} {direction}",
-                    params,
-                )
+                # The Arrow table excludes event_data_json (memory); without
+                # re-attaching it, CSV/JSON exports would silently omit ALL
+                # EventData in Juggernaut mode — incomplete forensic records.
+                # A 1:1 composite-key LEFT JOIN back to the Parquet shards adds
+                # event_data_json while preserving streaming (no full-set buffer)
+                # and the exact filtered/ordered row set (no dup, no loss).
+                _shard_paths = self._hw_model._get_shard_paths()
+                if _shard_paths:
+                    cursor = _exp_con.execute(
+                        f"SELECT e.* EXCLUDE (ed_values), p.ed_json_full AS event_data_json "
+                        f"FROM events e "
+                        f"LEFT JOIN (SELECT record_id AS _jrid, "
+                        f"           source_file AS _jsf, "
+                        f"           event_data_json AS ed_json_full "
+                        f"           FROM parquet_scan({_shard_paths})) p "
+                        f"  ON e.record_id = p._jrid AND e.source_file = p._jsf "
+                        f"WHERE {where_sql} "
+                        f"ORDER BY {order_sql}",
+                        params,
+                    )
+                else:
+                    cursor = _exp_con.execute(
+                        f"SELECT * EXCLUDE (ed_values) FROM events "
+                        f"WHERE {where_sql} "
+                        f"ORDER BY {order_sql}",
+                        params,
+                    )
                 col_names = [d[0].strip() for d in cursor.description]
                 if ext == "csv":
                     with open(path, "w", newline="", encoding="utf-8") as _f:
@@ -11602,9 +11770,9 @@ class MainWindow(QMainWindow):
             while len(events) < export_row_limit:
                 batch_limit = min(BATCH, export_row_limit - len(events))
                 cursor = _exp_con.execute(
-                    f"SELECT * FROM events "
+                    f"SELECT * EXCLUDE (ed_values) FROM events "
                     f"WHERE {where_sql} "
-                    f"ORDER BY {sort_col} {direction} "
+                    f"ORDER BY {order_sql} "
                     f"LIMIT {batch_limit} OFFSET {offset}",
                     params,
                 )

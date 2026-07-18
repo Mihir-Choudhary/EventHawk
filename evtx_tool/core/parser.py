@@ -9,6 +9,7 @@ Worker-safe: all functions are module-level and picklable for ProcessPoolExecuto
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Generator, Iterator
 
@@ -135,15 +136,52 @@ def _extract_from_json(data: dict, record_id: int, timestamp: str, source_file: 
 
 # ── Public parsing interface ──────────────────────────────────────────────────
 
+def check_evtx_truncation(filepath: str) -> "str | None":
+    """Detect a truncated EVTX acquisition from header-vs-size mismatch.
+
+    The file header (offset 0x2A) declares the chunk count.  A DIRTY log's
+    header count may be STALE-LOW (fewer than the chunks actually present) —
+    that is normal for live-copied files and is NOT flagged.  But a header
+    count HIGHER than the file size can hold means the file was cut short
+    (interrupted copy, imaging error, partial carve) — records the header
+    promises are physically absent.
+
+    Returns a human-readable warning string, or None if the file looks intact.
+    Never raises.
+    """
+    try:
+        size = os.path.getsize(filepath)
+        with open(filepath, "rb") as fh:
+            hdr = fh.read(48)
+    except OSError:
+        return None   # unreadable files are reported elsewhere (open_error)
+    if len(hdr) < 44 or hdr[:8] != b"ElfFile\x00":
+        return None   # unopenable/garbage files are reported elsewhere
+    import struct as _struct
+    hdr_chunks = _struct.unpack_from("<H", hdr, 0x2A)[0]
+    size_chunks = max(0, (size - 4096) // 65536)
+    if hdr_chunks > size_chunks:
+        return (
+            f"file appears TRUNCATED — header declares {hdr_chunks} chunk(s) "
+            f"but the file only contains {size_chunks} (acquisition may be incomplete)"
+        )
+    return None
+
+
 def iter_events(filepath: str) -> Generator[dict, None, None]:
     """Parse an EVTX file using pyevtx-rs. Yields event dicts."""
     parser = _RustParser(filepath)
+    skipped = 0
     for record in parser.records_json():
         try:
             data = fast_loads(record["data"])
             yield _extract_from_json(data, record["event_record_id"], record["timestamp"], filepath)
         except Exception as exc:
+            skipped += 1
             logger.debug("Skipping malformed record %s in %s: %s", record.get("event_record_id"), filepath, exc)
+    if skipped:
+        # Surface at WARNING — an unparsed-record count is a forensic finding.
+        logger.warning("%s: %d record(s) could not be parsed and were skipped", filepath, skipped)
 
 
 def event_to_text(event: dict) -> str:

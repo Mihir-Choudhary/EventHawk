@@ -85,6 +85,25 @@ def _setup_gui_logging() -> None:
     if not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
         root.addHandler(handler)
 
+    # ── Layer 1b: console handler ────────────────────────────────────────
+    # Also stream WARNING+ to the terminal the GUI was launched from, so
+    # problems (e.g. a filter/profile wiring failure) are visible immediately
+    # instead of only landing in eventhawk_gui.log.  Previously the GUI logged
+    # to file only, which is why some failures looked completely silent.
+    if not any(
+        isinstance(h, logging.StreamHandler)
+        and not isinstance(h, RotatingFileHandler)
+        and getattr(h, "stream", None) in (sys.stderr, sys.stdout)
+        for h in root.handlers
+    ):
+        _console = logging.StreamHandler(sys.stderr)
+        _console.setLevel(logging.WARNING)
+        _console.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        root.addHandler(_console)
+
     # ── Layer 2: startup / shutdown markers ──────────────────────────────
     # Logged at WARNING so they always land in the file regardless of level.
     # Provides pid, Python version, and OS context when reading a crash log.

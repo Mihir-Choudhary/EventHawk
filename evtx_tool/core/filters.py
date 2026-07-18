@@ -22,9 +22,86 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Callable
 
 from evtx_tool.core._json_compat import fast_loads, fast_dumps
+
+
+# ── Values-only searchable-text extraction ────────────────────────────────────
+# Text search is VALUES-ONLY (like Event Viewer / Timeline Explorer / Sigma):
+# it matches the actual data values an examiner types (a user, IP, SID, path,
+# command) — NOT field names.  A single shared extractor is used by BOTH the
+# normal-mode search and the Juggernaut ``ed_values`` column so the same query
+# returns the same events in either mode, and so search reaches EVERY value in
+# the EventData/UserData (including nested and named <Data Name=…> elements),
+# not just the handful of pre-extracted metadata columns.
+
+def _walk_searchable_values(obj, out: list) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            # '#attributes' holds field-name labels (e.g. <Data Name="X">), not
+            # data values — skip it so search stays values-only.  '#text' IS the
+            # element's value and is recursed into normally.
+            if k == "#attributes":
+                continue
+            _walk_searchable_values(v, out)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            _walk_searchable_values(v, out)
+    elif obj is not None:
+        out.append(str(obj))
+
+
+def flatten_searchable_values(event_data) -> list[str]:
+    """Return every scalar VALUE in *event_data* (recursively; field names
+    excluded).  Shared by normal-mode search and the JM ed_values column."""
+    out: list[str] = []
+    _walk_searchable_values(event_data, out)
+    return out
+
+
+# ── Flattened field map for field-CONDITIONS (nested-aware) ───────────────────
+# Field conditions (Advanced filter / profile "conditions") look a field up by
+# NAME.  EventData can nest fields inside a container element (e.g.
+# {"RmSessionEvent": {"RmSessionId": 0}}) or use named <Data Name="X"> elements.
+# This flattens all of that into one {name: value} map so a condition on a
+# nested field name still resolves.  The SAME function feeds normal-mode
+# _conditions_pass and the JM ed_flat_json column, so conditions behave
+# identically in both modes and never miss a nested field.
+
+def _flatten_fields_into(obj, flat: dict) -> None:
+    if not isinstance(obj, dict):
+        return
+    for k, v in obj.items():
+        if isinstance(k, str) and (k.startswith("#") or k.startswith("@")):
+            continue  # XML metadata (#text/#attributes/@…), not a field
+        if k == "Data" and isinstance(v, list):
+            # Named-Data list: [{"#attributes":{"Name":X}, "#text":val}, …]
+            for item in v:
+                if isinstance(item, dict):
+                    nm = (item.get("#attributes") or {}).get("Name")
+                    if nm:
+                        flat[str(nm)] = item.get("#text", "")
+                    else:
+                        _flatten_fields_into(item, flat)
+        elif isinstance(v, dict):
+            # Container element: hoist its #text (if any) under the container
+            # name, then recurse so the child fields become top-level entries.
+            txt = v.get("#text")
+            if txt is not None:
+                flat[k] = txt
+            _flatten_fields_into(v, flat)
+        else:
+            flat[k] = v
+
+
+def flatten_fields(event_data) -> dict:
+    """Flatten nested/named EventData into a flat {field_name: value} map for
+    field-condition lookups (parity across normal mode and Juggernaut mode)."""
+    flat: dict = {}
+    _flatten_fields_into(event_data, flat)
+    return flat
 
 
 # ── Event ID expression parser (ELE-style) ────────────────────────────────────
@@ -77,6 +154,16 @@ def parse_event_id_expression(expr: str) -> tuple[set[int], set[int]]:
         return ids
 
     return _parse_ids(include_part), _parse_ids(exclude_part)
+
+
+@lru_cache(maxsize=256)
+def _parse_eid_expr_cached(expr: str) -> "tuple[frozenset, frozenset]":
+    """Memoised parse for the per-event filter path.  passes_filter() runs once
+    per event, so re-parsing an expression like "1-65535" (a 65k-element set)
+    for every event was O(events x range).  Returns frozensets (immutable) so a
+    caller can never corrupt the shared cache entry."""
+    inc, exc = parse_event_id_expression(expr)
+    return frozenset(inc), frozenset(exc)
 
 
 def validate_event_id_expression(expr: str) -> list[str]:
@@ -170,6 +257,45 @@ def merge_filters(base: dict, override: dict) -> dict:
 
 # ── Timestamp parsing (fast, no external deps) ────────────────────────────────
 
+def _keywords_int(event: dict) -> int:
+    """Parse the event Keywords hex string to int (0 on failure)."""
+    try:
+        return int(str(event.get("keywords", "") or "0"), 16)
+    except (ValueError, TypeError):
+        return 0
+
+
+# Keywords bits for audit outcome (top nibble at hex position 5 of the 64-bit
+# value): bit 53 = Audit Success, bit 52 = Audit Failure.  Matches JM
+# (filter_sql.py) and the normal-mode view (models.py) exactly.
+_AUDIT_SUCCESS_BIT = 0x0020000000000000
+_AUDIT_FAILURE_BIT = 0x0010000000000000
+
+
+def _level_passes(event: dict, levels) -> bool:
+    """True if the event matches ANY selected level.  Accepts level ints,
+    numeric strings, level NAME strings (the filter dialog emits names), and the
+    keyword-based "Audit Success" / "Audit Failure" outcomes — so parse-time /
+    CLI level filtering matches JM and the GUI view (was int-only, which
+    silently returned nothing for name-string and audit-outcome levels)."""
+    ev_name = event.get("level_name", "")
+    ev_int  = event.get("level", 4)
+    audit_names: set[str] = set()
+    for lv in levels:
+        if lv == ev_name or lv == ev_int:
+            return True
+        if isinstance(lv, str):
+            ls = lv.strip()
+            if ls.isdigit() and int(ls) == ev_int:
+                return True
+            audit_names.add(ls.lower())
+    if "audit success" in audit_names and (_keywords_int(event) & _AUDIT_SUCCESS_BIT):
+        return True
+    if "audit failure" in audit_names and (_keywords_int(event) & _AUDIT_FAILURE_BIT):
+        return True
+    return False
+
+
 def _parse_ts(ts_str: str | None) -> datetime | None:
     if not ts_str:
         return None
@@ -186,6 +312,112 @@ def _parse_ts(ts_str: str | None) -> datetime | None:
             return datetime.strptime(ts_clean, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         except ValueError:
             return None
+
+
+def _date_mode(fc: dict) -> str:
+    """Match filter_sql.py: derive the date-comparison mode from the dialog's
+    date/time/separate/specific-day flags.  Defaults to full-range 'range' when
+    no flags are set (the common date_from/date_to case), preserving prior
+    behaviour."""
+    date_en = bool(fc.get("date_enabled"))
+    time_en = bool(fc.get("time_enabled"))
+    sep_en  = bool(fc.get("separately_enabled"))
+    spec_en = bool(fc.get("specific_day_enabled"))
+    if spec_en or (date_en and time_en and not sep_en):
+        return "range"
+    if date_en and time_en and sep_en:
+        return "separate"
+    if date_en and not time_en:
+        return "date_only"
+    if time_en and not date_en:
+        return "time_only"
+    return "range"
+
+
+def _date_in_range(event: dict, fc: dict) -> bool:
+    """True if the event's timestamp is inside the date/time bounds, honouring
+    the sub-mode (range / date_only / time_only / separate).  Undatable events
+    return False.  Mirrors filter_sql.py's SUBSTRING comparisons using datetime
+    parts, so parse-time / CLI date filtering matches JM and the GUI view
+    (which previously only did full-range comparison)."""
+    df = fc.get("date_from") or ""
+    dt = fc.get("date_to") or ""
+    ets = _parse_ts(event.get("timestamp"))
+    if ets is None:
+        return False
+    mode = _date_mode(fc)
+    if mode == "date_only":
+        ed = ets.date()
+        if len(df) >= 10:
+            fd = _parse_ts(df[:10] + "T00:00:00")
+            if fd and ed < fd.date():
+                return False
+        if len(dt) >= 10:
+            td = _parse_ts(dt[:10] + "T00:00:00")
+            if td and ed > td.date():
+                return False
+        return True
+    if mode == "time_only":
+        et = ets.time()
+        tf = df[11:19] if len(df) >= 19 else "00:00:00"
+        tt = dt[11:19] if len(dt) >= 19 else "23:59:59"
+        ff = _parse_ts("2000-01-01T" + tf)
+        ftt = _parse_ts("2000-01-01T" + tt)
+        if ff and et < ff.time():
+            return False
+        if ftt and et > ftt.time():
+            return False
+        return True
+    if mode == "separate":
+        ed, et = ets.date(), ets.time()
+        if len(df) >= 10:
+            fd = _parse_ts(df[:10] + "T00:00:00")
+            if fd and ed < fd.date():
+                return False
+        if len(dt) >= 10:
+            td = _parse_ts(dt[:10] + "T00:00:00")
+            if td and ed > td.date():
+                return False
+        if len(df) >= 19:
+            ff = _parse_ts("2000-01-01T" + df[11:19])
+            if ff and et < ff.time():
+                return False
+        if len(dt) >= 19:
+            ftt = _parse_ts("2000-01-01T" + dt[11:19])
+            if ftt and et > ftt.time():
+                return False
+        return True
+    # "range" — full second-granularity comparison
+    if df:
+        fts = _parse_ts(df)
+        if fts and ets < fts:
+            return False
+    if dt:
+        tts = _parse_ts(dt)
+        if tts and ets > tts:
+            return False
+    return True
+
+
+def _relative_passes(event: dict, fc: dict) -> bool:
+    """Handle relative_days / relative_hours ("last N days/hours from now").
+    Was ignored at parse time / CLI while JM honoured it.  Returns True when no
+    relative filter is set."""
+    try:
+        rel_days = int(fc.get("relative_days", 0) or 0)
+    except (TypeError, ValueError):
+        rel_days = 0
+    try:
+        rel_hours = int(fc.get("relative_hours", 0) or 0)
+    except (TypeError, ValueError):
+        rel_hours = 0
+    if rel_days <= 0 and rel_hours <= 0:
+        return True
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=rel_days * 24 + rel_hours)
+    ets = _parse_ts(event.get("timestamp"))
+    recent = ets is not None and ets >= cutoff
+    return (not recent) if fc.get("relative_exclude") else recent
 
 
 # ── Core filter predicate ─────────────────────────────────────────────────────
@@ -249,6 +481,10 @@ def _conditions_pass(event: dict, conditions: "list[dict]", cs: bool) -> bool:
     ed = event.get("event_data")
     if not isinstance(ed, dict):
         ed = {}
+    # Nested-aware field map so a condition on a field nested inside a container
+    # (e.g. RmSessionId under RmSessionEvent) still resolves — identical to the
+    # JM ed_flat_json column, so field conditions match in both modes.
+    ed_flat = flatten_fields(ed)
 
     _low = (lambda s: s) if cs else str.lower
 
@@ -261,10 +497,14 @@ def _conditions_pass(event: dict, conditions: "list[dict]", cs: bool) -> bool:
         cv = _low(str(raw_val or ""))
 
         # Build candidate values for this field — primary + dual-source.
+        # Use an explicit None check (not ``primary or ""``): a real field value
+        # of 0 / False / "" is falsy but must still be matchable (e.g. a
+        # condition "RmSessionId equals 0"), and JM (json_extract_string)
+        # preserves it — so normal mode must too.
         primary = event.get(name)
         if primary is None:
-            primary = ed.get(name)
-        candidates: list[str] = [_low(str(primary or ""))]
+            primary = ed_flat.get(name)
+        candidates: list[str] = [_low(str(primary) if primary is not None else "")]
         dual = _PARSE_TIME_DUAL_SOURCE.get(name)
         if dual is not None:
             candidates.append(_low(str(event.get(dual, "") or "")))
@@ -419,33 +659,68 @@ def passes_filter(event: dict, fc: dict) -> bool:
         if event["event_id"] in fc["exclude_event_ids"]:
             return False
 
-    # Level filter (use truthiness so empty list [] means "no filter")
+    # Event ID expression (ELE-style ranges/exclusions, e.g. "1-19,100!10,255").
+    # The advanced-filter dialog stores its event-ID input here; JM honours it —
+    # normal mode must too, or the filter is silently ignored (all events pass).
+    expr = fc.get("event_id_expr")
+    if isinstance(expr, str) and expr:  # str guard: a malformed non-str config is skipped, not crashed
+        inc_ids, exc_ids = _parse_eid_expr_cached(expr)  # memoised — see helper
+        eid = event["event_id"]
+        if inc_ids:
+            in_inc = eid in inc_ids
+            if fc.get("event_id_exclude", False):
+                if in_inc:
+                    return False
+            elif not in_inc:
+                return False
+        if exc_ids and eid in exc_ids:
+            return False
+
+    # Level filter (use truthiness so empty list [] means "no filter").
+    # Handles level ints, name strings, and Audit Success/Failure keywords.
     if fc.get("levels"):
-        if event.get("level", 4) not in fc["levels"]:
+        if not _level_passes(event, fc["levels"]):
             return False
 
-    # Source/Provider/Channel filter
+    # Source/Provider/Channel filter (honors source_exclude — parity with
+    # filter_sql.py / models.py view; previously exclude was silently ignored)
     if fc.get("sources"):
-        provider = event.get("provider", "").lower()
-        channel = event.get("channel", "").lower()
-        if not any(s.lower() in provider or s.lower() in channel for s in fc["sources"]):
+        provider = (event.get("provider", "") or "").lower()
+        channel = (event.get("channel", "") or "").lower()
+        hit = any(s.lower() in provider or s.lower() in channel for s in fc["sources"])
+        if fc.get("source_exclude"):
+            if hit:
+                return False
+        elif not hit:
             return False
 
-    # Date range filter
-    if fc.get("date_from") or fc.get("date_to"):
-        event_ts = _parse_ts(event.get("timestamp"))
-        if event_ts is None:
-            return False  # exclude undatable events when date filter active
-        if fc.get("date_from"):
-            from_ts = _parse_ts(fc["date_from"])
-            if from_ts and event_ts < from_ts:
+    # Category (channel-name) filter (honors category_exclude). Distinct from
+    # task_categories (numeric Task). Set by the advanced dialog and by
+    # build_combined_filter() from profile channels — was entirely unhandled
+    # here, so profile/CLI channel restrictions leaked through.
+    if fc.get("categories"):
+        channel = (event.get("channel", "") or "").lower()
+        hit = any(str(c).lower() in channel for c in fc["categories"])
+        if fc.get("category_exclude"):
+            if hit:
                 return False
-        if fc.get("date_to"):
-            to_ts = _parse_ts(fc["date_to"])
-            if to_ts and event_ts > to_ts:
-                return False
+        elif not hit:
+            return False
 
-    # User/SID filter
+    # Date/time filter (honors date_exclude and the date/time/separate sub-modes)
+    if fc.get("date_from") or fc.get("date_to"):
+        in_range = _date_in_range(event, fc)
+        if fc.get("date_exclude"):
+            if in_range:
+                return False  # exclude events inside the range; undatable pass
+        elif not in_range:
+            return False       # include mode: undatable events excluded
+
+    # Relative time filter ("last N days/hours")
+    if not _relative_passes(event, fc):
+        return False
+
+    # User/SID filter (honors user_exclude)
     if fc.get("users"):
         ed = event.get("event_data", {}) or {}
         user_str = " ".join(filter(None, [
@@ -456,26 +731,43 @@ def passes_filter(event: dict, fc: dict) -> bool:
             str(ed.get("UserName", "") or ""),
             str(event.get("user_id", "") or ""),
         ])).lower()
-        if not any(u.lower() in user_str for u in fc["users"]):
+        hit = any(u.lower() in user_str for u in fc["users"])
+        if fc.get("user_exclude"):
+            if hit:
+                return False
+        elif not hit:
             return False
 
-    # Computer filter
+    # Computer filter (honors computer_exclude)
     if fc.get("computers"):
-        computer = event.get("computer", "").lower()
-        if not any(c.lower() in computer for c in fc["computers"]):
+        computer = (event.get("computer", "") or "").lower()
+        hit = any(c.lower() in computer for c in fc["computers"])
+        if fc.get("computer_exclude"):
+            if hit:
+                return False
+        elif not hit:
             return False
 
-    # Task category filter
+    # Task category filter (numeric Task; JM has no exclude for this field)
     if fc.get("task_categories"):
         if event.get("task", 0) not in fc["task_categories"]:
             return False
 
-    # Text search filter
-    # Perf fix #3: short-circuit on individual field values before flattening
+    # Text search filter (honors text_exclude, text_regex, case_sensitive)
     if fc.get("text_search"):
         terms: list[str] = fc["text_search"]
         mode: str = fc.get("search_mode", "AND").upper()
-        if not _text_search_matches(event, terms, mode):
+        matched = _text_search_matches(
+            event, terms, mode,
+            regex=bool(fc.get("text_regex", False)),
+            case_sensitive=bool(fc.get("case_sensitive", False)),
+        )
+        # text_exclude is ignored when mode == "NOT" (NOT already IS the
+        # exclusion) — matches filter_sql.py's `text_exclude and mode != "NOT"`.
+        if fc.get("text_exclude") and mode != "NOT":
+            if matched:
+                return False
+        elif not matched:
             return False
 
     # Custom conditions (profile-defined or advanced-dialog).  Without this
@@ -489,56 +781,64 @@ def passes_filter(event: dict, fc: dict) -> bool:
     return True
 
 
-def _text_search_matches(event: dict, terms: list[str], mode: str) -> bool:
-    """
-    Perf fix #3: search individual event_data values first, short-circuiting
-    when possible. Only falls back to full flattening when needed.
-    Same match semantics as the original _event_to_text approach.
-    """
-    lower_terms = [t.lower() for t in terms]
+def _text_search_matches(event: dict, terms: list[str], mode: str,
+                         regex: bool = False, case_sensitive: bool = False) -> bool:
+    """Values-only text-search match, honouring *regex* and *case_sensitive*.
 
-    # Collect all searchable text fragments (without joining them yet)
+    Scope matches Juggernaut mode's SEARCH_TEXT_EXPR_FULL (metadata columns +
+    the ed_values value blob — field NAMES excluded).  Previously this ignored
+    both the regex and case-sensitive flags (always a case-insensitive substring
+    match), so a regex search matched nothing and a case-sensitive search
+    matched case-insensitively — diverging from JM and the GUI view.
+    """
+    import re as _re
+
+    # Build the fragment list ONCE (raw case preserved).
     fragments: list[str] = [
         str(event.get("event_id", "")),
-        (event.get("channel", "") or "").lower(),
-        (event.get("provider", "") or "").lower(),
-        (event.get("computer", "") or "").lower(),
-        (event.get("level_name", "") or "").lower(),
-        (event.get("user_id", "") or "").lower(),
-        (event.get("timestamp", "") or "").lower(),
+        event.get("channel", "") or "",
+        event.get("provider", "") or "",
+        event.get("computer", "") or "",
+        event.get("level_name", "") or "",
+        event.get("user_id", "") or "",
+        event.get("source_file", "") or "",
     ]
     ed = event.get("event_data", {}) or {}
-    if isinstance(ed, dict):
-        for v in ed.values():
-            if v is not None:
-                fragments.append(str(v).lower())
+    if ed:
+        # Every EventData value (recursively, all nesting), field names excluded.
+        fragments.extend(flatten_searchable_values(ed))
 
-    if mode == "AND":
-        # Every term must appear in at least one fragment
-        for term in lower_terms:
-            found = False
-            for frag in fragments:
-                if term in frag:
-                    found = True
-                    break
-            if not found:
-                return False
-        return True
-    elif mode == "OR":
-        # Any term in any fragment = match
-        for term in lower_terms:
-            for frag in fragments:
-                if term in frag:
-                    return True
-        return False
-    elif mode == "NOT":
-        # No term should appear in any fragment
-        for term in lower_terms:
-            for frag in fragments:
-                if term in frag:
-                    return False
-        return True
-    return True
+    if not case_sensitive:
+        fragments = [f.lower() for f in fragments]
+
+    if regex:
+        flags = 0 if case_sensitive else _re.IGNORECASE
+        # Compile each term; an invalid pattern matches nothing (fail-closed,
+        # consistent with the dialog's regex validation rejecting bad patterns).
+        matchers = []
+        for t in terms:
+            try:
+                matchers.append(_re.compile(t if case_sensitive else t.lower(), flags))
+            except _re.error:
+                matchers.append(None)
+
+        def _term_hit(i: int) -> bool:
+            pat = matchers[i]
+            return pat is not None and any(pat.search(f) for f in fragments)
+    else:
+        _terms = terms if case_sensitive else [t.lower() for t in terms]
+
+        def _term_hit(i: int) -> bool:
+            t = _terms[i]
+            return any(t in f for f in fragments)
+
+    idxs = range(len(terms))
+    if mode == "OR":
+        return any(_term_hit(i) for i in idxs)
+    if mode == "NOT":
+        return not any(_term_hit(i) for i in idxs)
+    # AND (default): every term must hit some fragment
+    return all(_term_hit(i) for i in idxs)
 
 
 def _event_to_text(event: dict) -> str:
@@ -585,39 +885,70 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
         _exclude_ids = set(fc["exclude_event_ids"])
         checks.append(lambda ev, _ids=_exclude_ids: ev["event_id"] not in _ids)
 
-    # Level
-    if fc.get("levels"):
-        _levels = set(fc["levels"])
-        checks.append(lambda ev, _lvls=_levels: ev.get("level", 4) in _lvls)
-
-    # Source/Provider/Channel
-    if fc.get("sources"):
-        _sources_lower = [s.lower() for s in fc["sources"]]
-        def _check_source(ev, _srcs=_sources_lower):
-            prov = (ev.get("provider", "") or "").lower()
-            chan = (ev.get("channel", "") or "").lower()
-            return any(s in prov or s in chan for s in _srcs)
-        checks.append(_check_source)
-
-    # Date range
-    if fc.get("date_from") or fc.get("date_to"):
-        _from_ts = _parse_ts(fc.get("date_from")) if fc.get("date_from") else None
-        _to_ts = _parse_ts(fc.get("date_to")) if fc.get("date_to") else None
-        def _check_date(ev, _ft=_from_ts, _tt=_to_ts):
-            ets = _parse_ts(ev.get("timestamp"))
-            if ets is None:
-                return False
-            if _ft and ets < _ft:
-                return False
-            if _tt and ets > _tt:
+    # Event ID expression (ELE-style ranges/exclusions) — was silently ignored
+    # at parse time / CLI while JM honoured it.
+    _eid_expr = fc.get("event_id_expr")
+    if isinstance(_eid_expr, str) and _eid_expr:  # str guard (see passes_filter)
+        _inc_ids, _exc_ids = _parse_eid_expr_cached(_eid_expr)
+        _eid_excl = bool(fc.get("event_id_exclude", False))
+        def _check_eid_expr(ev, _inc=_inc_ids, _exc=_exc_ids, _ex=_eid_excl):
+            eid = ev["event_id"]
+            if _inc:
+                in_inc = eid in _inc
+                if _ex:
+                    if in_inc:
+                        return False
+                elif not in_inc:
+                    return False
+            if _exc and eid in _exc:
                 return False
             return True
+        checks.append(_check_eid_expr)
+
+    # Level (ints, name strings, and Audit Success/Failure keyword outcomes)
+    if fc.get("levels"):
+        _levels = list(fc["levels"])
+        checks.append(lambda ev, _lvls=_levels: _level_passes(ev, _lvls))
+
+    # Source/Provider/Channel (honors source_exclude)
+    if fc.get("sources"):
+        _sources_lower = [s.lower() for s in fc["sources"]]
+        _src_excl = bool(fc.get("source_exclude"))
+        def _check_source(ev, _srcs=_sources_lower, _ex=_src_excl):
+            prov = (ev.get("provider", "") or "").lower()
+            chan = (ev.get("channel", "") or "").lower()
+            hit = any(s in prov or s in chan for s in _srcs)
+            return (not hit) if _ex else hit
+        checks.append(_check_source)
+
+    # Category (channel-name) (honors category_exclude). Distinct from
+    # task_categories; set by the dialog and by profile channels.
+    if fc.get("categories"):
+        _cats_lower = [str(c).lower() for c in fc["categories"]]
+        _cat_excl = bool(fc.get("category_exclude"))
+        def _check_category(ev, _cats=_cats_lower, _ex=_cat_excl):
+            chan = (ev.get("channel", "") or "").lower()
+            hit = any(c in chan for c in _cats)
+            return (not hit) if _ex else hit
+        checks.append(_check_category)
+
+    # Date/time (honors date_exclude and the date/time/separate sub-modes)
+    if fc.get("date_from") or fc.get("date_to"):
+        _date_excl = bool(fc.get("date_exclude"))
+        def _check_date(ev, _fc=fc, _ex=_date_excl):
+            in_range = _date_in_range(ev, _fc)
+            return (not in_range) if _ex else in_range
         checks.append(_check_date)
 
-    # User/SID
+    # Relative time filter ("last N days/hours")
+    if (fc.get("relative_days") or fc.get("relative_hours")):
+        checks.append(lambda ev, _fc=fc: _relative_passes(ev, _fc))
+
+    # User/SID (honors user_exclude)
     if fc.get("users"):
         _users_lower = [u.lower() for u in fc["users"]]
-        def _check_user(ev, _usrs=_users_lower):
+        _usr_excl = bool(fc.get("user_exclude"))
+        def _check_user(ev, _usrs=_users_lower, _ex=_usr_excl):
             ed = ev.get("event_data", {}) or {}
             user_str = " ".join(filter(None, [
                 str(ed.get("SubjectUserName", "") or ""),
@@ -627,27 +958,37 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
                 str(ed.get("UserName", "") or ""),
                 str(ev.get("user_id", "") or ""),
             ])).lower()
-            return any(u in user_str for u in _usrs)
+            hit = any(u in user_str for u in _usrs)
+            return (not hit) if _ex else hit
         checks.append(_check_user)
 
-    # Computer
+    # Computer (honors computer_exclude)
     if fc.get("computers"):
         _comps_lower = [c.lower() for c in fc["computers"]]
-        def _check_computer(ev, _cs=_comps_lower):
+        _comp_excl = bool(fc.get("computer_exclude"))
+        def _check_computer(ev, _cs=_comps_lower, _ex=_comp_excl):
             comp = (ev.get("computer", "") or "").lower()
-            return any(c in comp for c in _cs)
+            hit = any(c in comp for c in _cs)
+            return (not hit) if _ex else hit
         checks.append(_check_computer)
 
-    # Task category
+    # Task category (numeric Task; JM has no exclude for this field)
     if fc.get("task_categories"):
         _tasks = set(fc["task_categories"])
         checks.append(lambda ev, _t=_tasks: ev.get("task", 0) in _t)
 
-    # Text search
+    # Text search (honors text_exclude, text_regex, case_sensitive)
     if fc.get("text_search"):
         _terms = fc["text_search"]
         _mode = fc.get("search_mode", "AND").upper()
-        checks.append(lambda ev, _t=_terms, _m=_mode: _text_search_matches(ev, _t, _m))
+        _txt_excl = bool(fc.get("text_exclude"))
+        _txt_rx = bool(fc.get("text_regex", False))
+        _txt_cs = bool(fc.get("case_sensitive", False))
+        def _check_text(ev, _t=_terms, _m=_mode, _ex=_txt_excl, _rx=_txt_rx, _cs=_txt_cs):
+            matched = _text_search_matches(ev, _t, _m, regex=_rx, case_sensitive=_cs)
+            # NOT mode already excludes — ignore text_exclude then (parity w/ JM).
+            return (not matched) if (_ex and _m != "NOT") else matched
+        checks.append(_check_text)
 
     # Custom conditions (profile-defined or advanced-dialog).  Closes the
     # parse-time leak where conditions like "DriverName != msmouse.inf" were

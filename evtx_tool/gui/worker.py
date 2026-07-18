@@ -69,6 +69,7 @@ class ParseWorker(QThread):
         self._max_workers   = max_workers
         self._stop_event    = threading.Event()
         self._engine        = None
+        self.parse_warnings: list[str] = []   # engine integrity warnings (read after finished)
 
     def run(self) -> None:
         try:
@@ -96,6 +97,10 @@ class ParseWorker(QThread):
 
         # ── 1. Parse ──────────────────────────────────────────────────────────
         events: list[dict] = engine.run(self._files, self._filter_config)
+        try:
+            self.parse_warnings = list(engine.state.warnings)
+        except Exception:
+            self.parse_warnings = []
 
         if self._stop_event.is_set():
             self.finished.emit(events, None, False, False, [])
@@ -103,7 +108,16 @@ class ParseWorker(QThread):
 
         # ── 2. Sort by timestamp ──────────────────────────────────────────────
         if events:
-            events.sort(key=lambda e: e.get("timestamp", ""))
+            # Multi-key: timestamp, then source_file, then record_id — makes
+            # same-timestamp ordering deterministic and reproducible across runs
+            # (worker completion order previously leaked into display order).
+            events.sort(
+                key=lambda e: (
+                    e.get("timestamp", "") or "",
+                    e.get("source_file", "") or "",
+                    e.get("record_id", 0) or 0,
+                )
+            )
 
         # ── 3. ATT&CK enrichment (fast O(n), mutates events in-place) ────────
         # FINDING-16: use enrich_and_summarize() — single O(n) pass that both

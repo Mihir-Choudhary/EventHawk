@@ -38,6 +38,7 @@ class HeavyweightParseWorker(QThread):
         self._filter_config = filter_config
         self._stop_event   = threading.Event()
         self._engine       = None
+        self.parse_stats: dict = {}   # per-source integrity counters (read after finished)
 
     def run(self) -> None:
         try:
@@ -62,6 +63,7 @@ class HeavyweightParseWorker(QThread):
             )
 
             result = self._engine.run(self._files, self._filter_config)
+            self.parse_stats = getattr(self._engine, "last_parse_stats", {}) or {}
             self._engine = None
 
             # ── Post-run verification ─────────────────────────────────────

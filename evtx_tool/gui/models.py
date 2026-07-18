@@ -1361,12 +1361,13 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 if _v is not None:
                     parts.append(str(_v))
             ed = ev.get("event_data", {}) or {}
-            if isinstance(ed, dict):
-                for v in ed.values():
-                    if v is not None:
-                        parts.append(_re.sub(r'\\\s+', r'\\', _ev_str(v)))
-            elif ed:
-                parts.append(_re.sub(r'\\\s+', r'\\', _ev_str(ed)))
+            if ed:
+                # Values-only: search every EventData VALUE (recursively), NOT
+                # field names — matches Juggernaut mode's ed_values search blob
+                # so the same text query returns the same events in both modes.
+                from evtx_tool.core.filters import flatten_searchable_values as _fsv
+                for _val in _fsv(ed):
+                    parts.append(_re.sub(r'\\\s+', r'\\', _val))
             desc_text = " ".join(parts)
             if not self._adv_case_sensitive:
                 desc_text = desc_text.lower()
@@ -1440,6 +1441,11 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             ed = ev.get("event_data") or {}
             if not isinstance(ed, dict):
                 ed = {}
+            # Nested-aware field map so conditions resolve fields nested inside a
+            # container element — identical to JM's ed_flat_json and normal-mode
+            # _conditions_pass, so conditions match across all three paths.
+            from evtx_tool.core.filters import flatten_fields as _flatten_fields
+            ed_flat = _flatten_fields(ed)
             # Lazy-imported once outside the condition loop
             from evtx_tool.core.heavyweight.filter_sql import _FIELD_DUAL_SOURCE
             for cond in self._adv_conditions:
@@ -1452,9 +1458,11 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 # whose PID lives in <Execution> rather than event_data.
                 candidates: list[str] = []
                 raw1 = ev.get(name)
-                raw2 = ed.get(name) if raw1 is None else None
+                raw2 = ed_flat.get(name) if raw1 is None else None
                 primary = raw1 if raw1 is not None else raw2
-                candidates.append(str(primary or ""))
+                # Explicit None check: a real value of 0/False/"" is falsy but
+                # must stay matchable (parity with JM json_extract_string).
+                candidates.append(str(primary) if primary is not None else "")
                 _dual = _FIELD_DUAL_SOURCE.get(name)
                 if _dual is not None:
                     # Append the top-level column value alongside the event_data form
@@ -1528,6 +1536,12 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                             return False
                     if not _any_match(_lt):
                         return False
+                else:
+                    # Unknown operator — fail CLOSED (drop the event), matching
+                    # filters.py._conditions_pass and JM's filter_sql.  Falling
+                    # through to `return True` here would silently pass every
+                    # event on a typo'd operator — a silent divergence.
+                    return False
 
         return True
 

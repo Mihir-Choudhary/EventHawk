@@ -42,6 +42,8 @@ from typing import Callable
 
 import orjson
 
+from evtx_tool.core.filters import flatten_searchable_values, flatten_fields
+
 logger = logging.getLogger(__name__)
 
 # ── Column order (22 non-PK columns, matches Arrow schema) ───────────────────
@@ -52,6 +54,7 @@ _COL_NAMES = (
     "process_id", "thread_id",
     "ed_subject_user", "ed_target_user", "ed_ip_address",
     "ed_logon_type", "ed_new_process", "event_data_json",
+    "qualifiers", "ed_subject_sid", "ed_target_sid", "ed_values", "ed_flat_json",
 )
 
 # ── Arrow schema (imported lazily to avoid hard dep at import time) ───────────
@@ -80,6 +83,11 @@ def _make_schema():
         ("ed_logon_type",   pa.string()),
         ("ed_new_process",  pa.string()),
         ("event_data_json", pa.string()),
+        ("qualifiers",      pa.int32()),   # classic-provider Qualifiers; NULL for manifest providers
+        ("ed_subject_sid",  pa.string()),  # SubjectUserSid — enables SID user-filter parity with normal mode
+        ("ed_target_sid",   pa.string()),  # TargetUserSid
+        ("ed_values",       pa.string()),  # all EventData VALUES (no field names) — values-only text search
+        ("ed_flat_json",    pa.string()),  # flattened {field:value} — nested-aware field-conditions (json_extract)
     ])
 
 
@@ -105,7 +113,8 @@ _LEVEL_MAP = {0: "LogAlways", 1: "Critical", 2: "Error", 3: "Warning",
               4: "Information", 5: "Verbose"}
 
 # ── Tier 5: EVTX file-header constants ───────────────────────────────────────
-_EVTX_FILE_HDR   = 128
+_EVTX_FILE_HDR   = 128       # size of the file-header *structure* (checksummed region + flags)
+_EVTX_HDR_BLOCK  = 4_096     # size of the header *block* — chunk 0 starts at this offset
 _EVTX_CHUNK_SZ   = 65_536
 _EVTX_MIN_SPLIT  = 8
 
@@ -172,16 +181,31 @@ def _gpu_log() -> None:
 
 # ── Tier 5: EVTX chunk splitter ──────────────────────────────────────────────
 
-def _split_evtx(filepath: str, n_parts: int, tmp_dir: str) -> list[str]:
+def _split_evtx(filepath: str, n_parts: int, tmp_dir: str, tag: str = "0") -> list[str]:
     """
     Split a large EVTX file into *n_parts* sub-files at chunk boundaries.
+
+    *tag* must be unique per source file within one engine run.  Sub-file
+    names previously were ``_hw_split_{i}_{pid}.evtx`` — identical for every
+    source file in the same run (same index range, same PID).  When multiple
+    >64 MB files were parsed together, each file's split OVERWROTE the
+    previous file's sub-files before any worker read them (all splitting
+    happens up front in run()'s task loop), so every task ended up parsing
+    the LAST file's chunks.  Symptom: N Security.evtx parsed together → only
+    the final file's events displayed, attributed to all N filenames.
 
     Returns a list of sub-file paths, or [filepath] when splitting is not
     worthwhile (too few chunks, or n_parts <= 1, or on any I/O error).
     """
     try:
         size = os.path.getsize(filepath)
-        n_chunks = (size - _EVTX_FILE_HDR) // _EVTX_CHUNK_SZ
+        # Chunks begin AFTER the 4096-byte header *block*, not the 128-byte
+        # header structure.  Using _EVTX_FILE_HDR here shifted every sub-file's
+        # data window 3 968 bytes left of the true chunk boundaries, truncating
+        # the last chunk of every shard and silently dropping its records
+        # (~50-70 records lost per split boundary — hit Security.evtx hardest
+        # since it is usually the only file large enough to be split).
+        n_chunks = (size - _EVTX_HDR_BLOCK) // _EVTX_CHUNK_SZ
         if n_chunks < _EVTX_MIN_SPLIT or n_parts <= 1:
             return [filepath]
 
@@ -189,7 +213,9 @@ def _split_evtx(filepath: str, n_parts: int, tmp_dir: str) -> list[str]:
         sub_files: list[str] = []
 
         with open(filepath, "rb") as src:
-            orig_hdr = bytearray(src.read(_EVTX_FILE_HDR))
+            # Copy the FULL 4096-byte header block so chunk 0 of each sub-file
+            # lands at offset 0x1000 where pyevtx-rs expects it.
+            orig_hdr = bytearray(src.read(_EVTX_HDR_BLOCK))
 
             for i in range(n_parts):
                 start  = i * per
@@ -205,10 +231,10 @@ def _split_evtx(filepath: str, n_parts: int, tmp_dir: str) -> list[str]:
                 crc = binascii.crc32(bytes(hdr[:120])) & 0xFFFFFFFF
                 struct.pack_into("<I", hdr, _HDR_CHECKSUM, crc)
 
-                tmp_path = os.path.join(tmp_dir, f"_hw_split_{i}_{os.getpid()}.evtx")
+                tmp_path = os.path.join(tmp_dir, f"_hw_split_{tag}_{i}_{os.getpid()}.evtx")
                 with open(tmp_path, "wb") as dst:
                     dst.write(hdr)
-                    src.seek(_EVTX_FILE_HDR + start * _EVTX_CHUNK_SZ)
+                    src.seek(_EVTX_HDR_BLOCK + start * _EVTX_CHUNK_SZ)
                     dst.write(src.read(n_this * _EVTX_CHUNK_SZ))
 
                 sub_files.append(tmp_path)
@@ -229,27 +255,28 @@ def _split_evtx(filepath: str, n_parts: int, tmp_dir: str) -> list[str]:
 
 # ── Tier 4: Fused extract-filter-convert ─────────────────────────────────────
 
-def _extract_and_filter(parsed: dict, source_file: str, _passes) -> tuple | None:
+def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | bool | None":
     """
     Single-pass extract → filter → row-tuple conversion.
 
-    Returns None if filtered out or on parse error.
+    Returns:
+      tuple — accepted row
+      False — valid event, rejected by the pre-filter
+      None  — parse/extract error (counted as a skipped record)
     """
     try:
         event  = parsed.get("Event", parsed)
         system = event.get("System") or {}
         ed_raw = event.get("EventData") or event.get("UserData") or {}
 
-        # ── Flatten EventData ONCE ────────────────────────────────────────────
-        ed_was_flat = True
-        flat_ed: dict = {}
-        if isinstance(ed_raw, dict):
-            for k, v in ed_raw.items():
-                if isinstance(v, dict):
-                    flat_ed.update(v)
-                    ed_was_flat = False
-                else:
-                    flat_ed[k] = v
+        # ── Flatten EventData ONCE (shared with normal mode) ──────────────────
+        # flatten_fields() hoists nested container fields + named <Data> to a
+        # flat {name: value} map.  Used for the pre-extracted ed_* columns AND
+        # (serialized) as ed_flat_json for field-conditions — the SAME function
+        # normal mode uses, so extraction and field-conditions match in both
+        # modes and reach nested fields.  event_data_json keeps the ORIGINAL
+        # nested shape (display/export fidelity); this is only the flat view.
+        flat_ed = flatten_fields(ed_raw)
 
         # ── Extract shared fields ONCE ────────────────────────────────────────
         eid      = _safe_int(system.get("EventID", 0))
@@ -270,6 +297,15 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> tuple | None
         else:
             provider_name = str(prov)
 
+        # ── Extract user_id BEFORE the pre-filter ─────────────────────────────
+        # Previously extracted after filtering with user_id="" passed to the
+        # filter dict — a user/SID filter matching only System.Security.UserID
+        # silently excluded events in JM that normal mode included.
+        sec     = system.get("Security") or {}
+        user_id = ""
+        if isinstance(sec, dict):
+            user_id = (sec.get("#attributes") or {}).get("UserID", "") or sec.get("UserID", "")
+
         # ── Pre-filter (reuse already-extracted values) ───────────────────────
         if _passes is not None:
             filter_dict = {
@@ -278,25 +314,45 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> tuple | None
                 "channel":    channel,
                 "provider":   provider_name,
                 "computer":   computer,
-                "user_id":    "",
+                "user_id":    user_id,
                 "task":       task_val,
                 "timestamp":  ts_str,
                 "event_data": flat_ed,
             }
             if not _passes(filter_dict):
-                return None
+                return False   # False = filtered out; None = parse error
 
         # ── Full row tuple (only for accepted events) ─────────────────────────
-        ts_db      = ts_str.replace("T", " ").replace("Z", "")[:19] if ts_str else "1970-01-01 00:00:00"
+        # Timestamp: keep FULL sub-second precision, normalized to a fixed-width
+        # 'YYYY-MM-DD HH:MM:SS.ffffff' (26 chars).  The old [:19] truncation
+        # destroyed microseconds — ~95% of Security events share a whole-second
+        # timestamp, making intra-second ordering non-deterministic and breaking
+        # logon-chain sequence reconstruction.  Fixed width keeps lexical string
+        # comparison == chronological comparison for both DuckDB and Arrow sorts.
+        # Missing timestamps are stored as NULL (previously a 1970-01-01 epoch
+        # sentinel that sorted to the top and looked like real data).
+        if ts_str:
+            ts_db = ts_str.replace("T", " ").replace("Z", "")[:26]
+            _n = len(ts_db)
+            if _n == 19:
+                ts_db += ".000000"          # no fraction present
+            elif 20 < _n < 26:
+                ts_db += "0" * (26 - _n)    # short fraction — zero-pad
+            # _n < 19 (malformed) is stored as-is; still sortable text
+        else:
+            ts_db = None
         level_name = _LEVEL_MAP.get(level, "Information")
         record_id  = _safe_int(system.get("EventRecordID"))
         keywords   = str(system.get("Keywords", "") or "")
         opcode_val = _safe_int(system.get("Opcode"))
 
-        sec     = system.get("Security") or {}
-        user_id = ""
-        if isinstance(sec, dict):
-            user_id = (sec.get("#attributes") or {}).get("UserID", "") or sec.get("UserID", "")
+        # Qualifiers (classic-provider events) — previously dropped in JM.
+        eid_raw    = system.get("EventID")
+        qualifiers = None
+        if isinstance(eid_raw, dict):
+            qualifiers = _safe_int(
+                (eid_raw.get("#attributes") or {}).get("Qualifiers"), 0
+            ) or None
 
         exe = system.get("Execution") or {}
         if isinstance(exe, dict):
@@ -311,10 +367,19 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> tuple | None
         if isinstance(corr, dict):
             corr_id = (corr.get("#attributes") or {}).get("ActivityID", "") or corr.get("ActivityID", "")
 
-        if flat_ed:
-            ed_json = orjson.dumps(ed_raw if ed_was_flat else flat_ed).decode()
+        # F3 fix: store the ORIGINAL EventData — nested structure preserved, only
+        # top-level '#'-prefixed XML-metadata keys stripped — IDENTICAL to normal
+        # mode's event_data (parser.py._extract_from_json).  Previously JM stored
+        # the FLATTENED dict for nested events, which dropped container elements
+        # (e.g. {"ServiceShutdown":{}} -> null) and diverged from normal mode in
+        # display, export, and field-conditions.  flat_ed is still used for the
+        # ed_* columns and ed_values walks ed_raw, so those are unaffected.
+        if isinstance(ed_raw, dict):
+            _ed_clean = {k: v for k, v in ed_raw.items()
+                         if not (isinstance(k, str) and k.startswith("#"))}
         else:
-            ed_json = None
+            _ed_clean = {}
+        ed_json = orjson.dumps(_ed_clean).decode() if _ed_clean else None
 
         return (
             record_id, eid, level, level_name, ts_db,
@@ -327,6 +392,18 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> tuple | None
             str(flat_ed.get("LogonType",       "") or ""),
             str(flat_ed.get("NewProcessName",  "") or ""),
             ed_json,
+            qualifiers,
+            str(flat_ed.get("SubjectUserSid", "") or ""),
+            str(flat_ed.get("TargetUserSid",  "") or ""),
+            # Values-only search blob: every EventData VALUE (no field names),
+            # from the RAW EventData so nested/named <Data> values are all
+            # captured.  Same extractor as normal mode → identical text-search
+            # scope in both modes; Parquet-only so the Arrow table stays lean.
+            " ".join(flatten_searchable_values(ed_raw)),
+            # Flattened {field: value} JSON for nested-aware field-conditions
+            # (json_extract).  Same flatten_fields() normal mode uses → field
+            # conditions resolve nested fields identically.  Parquet-only.
+            (orjson.dumps(flat_ed).decode() if flat_ed else None),
         )
     except Exception as exc:
         logger.debug("_extract_and_filter error: %s", exc)
@@ -348,11 +425,17 @@ def _write_parquet_batch(rows: list[tuple], out_path: str, schema) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    _TS_IDX = 5   # index of timestamp_utc in _COL_NAMES
+    # PRE-EXISTING BUG FIX: this was 5, which is 'channel' — shards were being
+    # sorted by CHANNEL, silently defeating the zone-map / k-way-merge
+    # optimization described above AND any timestamp tiebreaking.
+    _TS_IDX = _COL_NAMES.index("timestamp_utc")   # derived — can never drift again
 
     # Sort rows by timestamp_utc (None rows go last)
     try:
-        rows = sorted(rows, key=lambda r: (r[_TS_IDX] is None, r[_TS_IDX]))
+        rows = sorted(
+            rows,
+            key=lambda r: (r[_TS_IDX] is None, r[_TS_IDX] or "", r[0]),
+        )  # r[0]=record_id tiebreaker — deterministic order for same-timestamp rows
     except Exception:
         pass  # if sort fails (type mismatch) write unsorted — still correct
 
@@ -392,6 +475,7 @@ _MANIFEST_FILENAME = "parquet_manifest.json"
 # e.g. "Microsoft-Windows-Security-Auditing" (36 bytes) → 1-byte integer index.
 _DICT_COLS = frozenset({
     "level_name", "channel", "provider", "computer", "user_id", "source_file",
+    "ed_subject_sid", "ed_target_sid",
 })
 
 # Columns loaded into the Arrow table.  event_data_json is intentionally
@@ -405,6 +489,14 @@ _ARROW_COLS = [
     "process_id", "thread_id",
     "ed_subject_user", "ed_target_user", "ed_ip_address",
     "ed_logon_type", "ed_new_process",
+    # SIDs loaded so the user filter can match SubjectUserSid/TargetUserSid in
+    # Phase 1 (parity with normal mode).  Low cardinality → dict-encoded below.
+    "ed_subject_sid", "ed_target_sid",
+    # ed_values (values-only blob of ALL EventData values) loaded so the quick
+    # toolbar text search (Phase 1, Arrow) covers every data value — not just
+    # metadata + a few ed_* columns.  High cardinality (not dict-encoded); adds
+    # memory, but guarantees no value is ever missed by any search path.
+    "ed_values",
 ]
 
 
@@ -488,16 +580,18 @@ def _hw_worker_stream(
     Parse one EVTX (sub-)file and push tuple batches to *out_queue*.
 
     Queue message protocol:
-      ("TUPLES", src_basename, list_of_row_tuples)  — parsed rows
-      ("DONE",   src_basename, None)                — sentinel: worker done
+      ("TUPLES", src_path, list_of_row_tuples)  — parsed rows (src = full source path)
+      ("DONE",   src_path, stats_dict)          — sentinel: per-file integrity counters
     """
     from evtx import PyEvtxParser          # type: ignore[import]
     from evtx_tool.core.filters import compile_filter
 
     fpath = task["filepath"]
-    # Use original_file when present so split shards (_hw_split_N_PID.evtx)
-    # are recorded in the DB under the user's actual filename (e.g. Security.evtx).
-    src   = task.get("original_file") or os.path.basename(fpath)
+    # Use original_file when present so split shards (_hw_split_N_PID.evtx) are
+    # recorded under the real source path.  Full path (not basename) is stored
+    # so same-named files from different directories keep distinct identities —
+    # bookmarks, per-file tabs, and missing-record-ID analysis all key on this.
+    src   = task.get("original_file") or fpath
 
     _passes = None
     if task.get("filter_config"):
@@ -510,70 +604,153 @@ def _hw_worker_stream(
         parser = PyEvtxParser(fpath)
     except Exception as exc:
         logger.warning("Cannot open EVTX %s: %s", fpath, exc)
-        out_queue.put(("DONE", src, None))
+        out_queue.put(("DONE", src, {
+            "iterated": 0, "json_errors": 0, "extract_errors": 0,
+            "filtered": 0, "rows": 0, "open_error": str(exc),
+        }))
         return
 
     # ── Diagnostic counters ───────────────────────────────────────────────
     n_iterated       = 0
     n_json_errors    = 0
-    n_extract_nones  = 0
+    n_extract_nones  = 0   # parse/extract ERRORS only (skipped records)
+    n_filtered       = 0   # valid events rejected by the pre-filter
     n_rows           = 0
     first_json_err   = None
     first_extract_err = None
 
     rows: list[tuple] = []
+    stream_error = None
+    from evtx_tool.core.chunk_salvage import IdRuns
+    emitted = IdRuns()   # record IDs seen (for salvage de-dup + expected-count)
+
+    def _process(record) -> int:
+        """Process one raw record into rows[]. Returns 1 if a row was produced.
+
+        Shared by the primary iterator and the chunk-salvage pass so both apply
+        identical extraction/filter logic and identical counters.
+        """
+        nonlocal n_json_errors, n_extract_nones, n_filtered, first_json_err, first_extract_err
+        rid = record.get("event_record_id")
+        if rid is not None:
+            emitted.add(rid)
+        try:
+            parsed = orjson.loads(record["data"])
+        except Exception as exc:
+            n_json_errors += 1
+            if first_json_err is None:
+                first_json_err = str(exc)
+                logger.warning(
+                    "[%s] First JSON parse error (record #%d): %s — data[:200]=%s",
+                    src, n_iterated, exc, str(record.get("data", ""))[:200],
+                )
+            return 0
+
+        row = _extract_and_filter(parsed, src, _passes)
+        if row is False:            # valid event, rejected by pre-filter
+            n_filtered += 1
+            return 0
+        if row is None:             # parse/extract error — a SKIPPED record
+            n_extract_nones += 1
+            if first_extract_err is None:
+                top_keys = list(parsed.keys())[:5] if isinstance(parsed, dict) else type(parsed).__name__
+                first_extract_err = f"top_keys={top_keys}"
+                logger.warning(
+                    "[%s] First _extract_and_filter returned None (record #%d): %s",
+                    src, n_iterated, first_extract_err,
+                )
+            return 0
+
+        rows.append(row)
+        return 1
+
     try:
         for record in parser.records_json():
             if stop_event.is_set():
                 break
             n_iterated += 1
-
-            try:
-                parsed = orjson.loads(record["data"])
-            except Exception as exc:
-                n_json_errors += 1
-                if first_json_err is None:
-                    first_json_err = str(exc)
-                    logger.warning(
-                        "[%s] First JSON parse error (record #%d): %s — data[:200]=%s",
-                        src, n_iterated, exc, str(record.get("data", ""))[:200],
-                    )
-                continue
-
-            row = _extract_and_filter(parsed, src, _passes)
-            if row is None:
-                n_extract_nones += 1
-                if first_extract_err is None:
-                    top_keys = list(parsed.keys())[:5] if isinstance(parsed, dict) else type(parsed).__name__
-                    first_extract_err = f"top_keys={top_keys}"
-                    logger.warning(
-                        "[%s] First _extract_and_filter returned None (record #%d): %s",
-                        src, n_iterated, first_extract_err,
-                    )
-                continue
-
-            rows.append(row)
-            n_rows += 1
+            n_rows += _process(record)
 
             if len(rows) >= _WORKER_PUSH_SIZE:
                 out_queue.put(("TUPLES", src, rows))
                 rows = []
 
-        # Flush remaining rows
-        if rows:
-            out_queue.put(("TUPLES", src, rows))
+        # NOTE: the tail batch is flushed once, after the finally block, by the
+        # single "Flush any rows still buffered" site below — covering both the
+        # primary loop and the salvage pass.  Do NOT flush here as well, or the
+        # last partial batch is emitted twice (rows is not cleared on this path).
 
     except Exception as exc:
+        stream_error = str(exc)
         logger.warning("Parse error in %s (partial results): %s", src, exc)
     finally:
         del parser   # release Rust file handle immediately; do not rely on GC timing
-        log_fn = logger.warning if n_rows == 0 and n_iterated > 0 else logger.info
-        log_fn(
-            "[%s] Worker summary: iterated=%d, json_errors=%d, "
-            "extract_nones=%d, rows_produced=%d",
-            src, n_iterated, n_json_errors, n_extract_nones, n_rows,
-        )
-        out_queue.put(("DONE", src, None))
+
+    # ── Chunk-isolated salvage after an abort ─────────────────────────────────
+    # ONLY for unsplit files.  A split sub-file (_hw_split_*) is one slice of a
+    # larger file: its chunk headers still carry the ORIGINAL file's record-ID
+    # ranges, so per-sub-file expected/salvage accounting would be wrong, and
+    # the split path ALREADY gives chunk isolation (a bad chunk only aborts its
+    # own sub-file, the others are independent).  is_split marks these tasks.
+    is_split = bool(task.get("is_split"))
+    n_salvaged = 0
+    salvage_unrec = 0
+    if stream_error and not is_split:
+        try:
+            from evtx_tool.core.chunk_salvage import salvage_records_json
+            gen = salvage_records_json(fpath, already_emitted=emitted)
+            while True:
+                try:
+                    rec = next(gen)
+                except StopIteration as _stop:
+                    _ss = _stop.value or {}
+                    salvage_unrec = _ss.get("chunks_unrecoverable", 0)
+                    break
+                if stop_event.is_set():
+                    break
+                n_iterated += 1
+                produced = _process(rec)
+                n_rows += produced
+                n_salvaged += produced
+                if len(rows) >= _WORKER_PUSH_SIZE:
+                    out_queue.put(("TUPLES", src, rows))
+                    rows = []
+        except Exception as exc:
+            logger.warning("[%s] Salvage pass failed: %s", src, exc)
+
+    # Flush any rows still buffered (from primary or salvage)
+    if rows:
+        out_queue.put(("TUPLES", src, rows))
+
+    # ── Expected-vs-actual accounting (detects silent single-record skips) ────
+    # Also unsplit-only, for the same header-range reason.
+    missing_vs_expected = 0
+    if not is_split:
+        try:
+            from evtx_tool.core.chunk_salvage import expected_record_count
+            _expected, _dmg = expected_record_count(fpath)
+            if _expected > 0 and emitted.total() < _expected:
+                missing_vs_expected = _expected - emitted.total()
+        except Exception:
+            pass
+
+    log_fn = logger.warning if n_rows == 0 and n_iterated > 0 else logger.info
+    log_fn(
+        "[%s] Worker summary: iterated=%d, json_errors=%d, "
+        "extract_errors=%d, filtered=%d, rows_produced=%d, salvaged=%d",
+        src, n_iterated, n_json_errors, n_extract_nones, n_filtered, n_rows, n_salvaged,
+    )
+    out_queue.put(("DONE", src, {
+        "iterated":       n_iterated,
+        "json_errors":    n_json_errors,
+        "extract_errors": n_extract_nones,
+        "filtered":       n_filtered,
+        "rows":           n_rows,
+        "stream_error":   stream_error,
+        "salvaged":       n_salvaged,
+        "salvage_unrecoverable": salvage_unrec,
+        "missing_vs_expected":   missing_vs_expected,
+    }))
 
 
 # ── Engine ────────────────────────────────────────────────────────────────────
@@ -603,6 +780,7 @@ class HeavyweightEngine:
         self._on_progress = on_progress
         self._stop        = threading.Event()
         self._tmp_dir: str | None = None   # temp dir for EVTX chunk splits
+        self.last_parse_stats: dict = {}   # per-source integrity counters from last run()
         atexit.register(self._atexit_cleanup)
 
     def stop(self) -> None:
@@ -688,22 +866,39 @@ class HeavyweightEngine:
 
         tmp_sub_files: list[str] = []
         all_tasks:     list[dict] = []
+        # Acquisition-integrity pre-check results, merged into parse_stats after
+        # the run so truncated-but-parseable files are still flagged.
+        truncation_flags: dict[str, str] = {}
 
-        for fp in files:
+        for file_idx, fp in enumerate(files):
+            try:
+                from evtx_tool.core.parser import check_evtx_truncation
+                _trunc = check_evtx_truncation(fp)
+                if _trunc:
+                    truncation_flags[fp] = _trunc
+                    logger.warning("Parse integrity: %s: %s", os.path.basename(fp), _trunc)
+            except Exception:
+                pass
             try:
                 size_mb = os.path.getsize(fp) / (1024 * 1024)
             except OSError:
                 size_mb = 0.0
 
             if size_mb > 64 and n_workers > 1:
-                subs = _split_evtx(fp, n_workers, tmp_dir)
+                # tag=file_idx keeps sub-file names unique per source file —
+                # without it, every large file's split overwrites the previous
+                # one's sub-files (same index range + same PID in one run).
+                subs = _split_evtx(fp, n_workers, tmp_dir, tag=str(file_idx))
                 for s in subs:
                     all_tasks.append({
                         "filepath": s,
                         "filter_config": filter_config,
-                        # Keep the original filename so source_file in the DB always
-                        # shows "Security.evtx", not "_hw_split_3_31312.evtx".
-                        "original_file": os.path.basename(fp),
+                        "is_split": True,   # sub-file: skip salvage/expected accounting
+                        # Keep the original FULL path (not basename) so two
+                        # same-named files from different directories (e.g.
+                        # host1/Security.evtx + host2/Security.evtx) never merge
+                        # identities — display layers basename() for readability.
+                        "original_file": fp,
                     })
                     if s != fp:
                         tmp_sub_files.append(s)
@@ -721,6 +916,7 @@ class HeavyweightEngine:
         if total_tasks == 0:
             logger.warning("No EVTX tasks to process — returning empty parquet dir")
             self._tmp_dir = None
+            self.last_parse_stats = {}   # don't leak a previous run's stats
             return pq_dir
 
         # ── Streaming thread pool ─────────────────────────────────────────────
@@ -748,9 +944,15 @@ class HeavyweightEngine:
         total_events = 0
         done_tasks   = 0
         t0           = time.monotonic()
+        # Per-source parse integrity stats (split shards of one file are summed).
+        # Persisted to parse_stats.json so the examiner can document how many
+        # records were iterated / skipped / filtered — a skipped-record count
+        # is itself a forensic finding and must never be silent.
+        parse_stats: dict[str, dict] = {}
+        write_lost_rows = 0   # rows dropped because a Parquet shard failed to write
 
         def _flush_shard():
-            nonlocal shard_idx
+            nonlocal shard_idx, write_lost_rows
             if not accum_rows:
                 return
             shard_path = os.path.join(pq_dir, f"shard_{shard_idx:05d}.parquet")
@@ -763,6 +965,9 @@ class HeavyweightEngine:
                     os.remove(shard_path)
                 except OSError:
                     pass
+                # These rows parsed successfully but did NOT reach the DB — that
+                # is a data-loss event and must be surfaced, not swallowed.
+                write_lost_rows += len(accum_rows)
             shard_idx += 1
             accum_rows.clear()
 
@@ -777,6 +982,18 @@ class HeavyweightEngine:
 
                 if kind == "DONE":
                     done_tasks += 1
+                    if isinstance(data, dict):
+                        agg = parse_stats.setdefault(src, {
+                            "iterated": 0, "json_errors": 0,
+                            "extract_errors": 0, "filtered": 0, "rows": 0,
+                        })
+                        for _k in ("iterated", "json_errors", "extract_errors",
+                                   "filtered", "rows", "salvaged",
+                                   "salvage_unrecoverable", "missing_vs_expected"):
+                            agg[_k] = agg.get(_k, 0) + data.get(_k, 0)
+                        for _ek in ("stream_error", "open_error"):
+                            if data.get(_ek):
+                                agg[_ek] = data[_ek]
 
                     next_task = next(task_iter, None)
                     if next_task is not None:
@@ -835,6 +1052,46 @@ class HeavyweightEngine:
             total_events / max(elapsed, 0.001),
             len(parquet_files),
         )
+
+
+        # ── Persist parse-integrity stats (ALWAYS — especially on total failure) ──
+        for _fp, _tmsg in truncation_flags.items():
+            parse_stats.setdefault(_fp, {
+                "iterated": 0, "json_errors": 0, "extract_errors": 0,
+                "filtered": 0, "rows": 0,
+            })["truncation"] = _tmsg
+        self.last_parse_stats = parse_stats
+        if write_lost_rows:
+            # Record shard-write loss as a synthetic top-level entry so it can
+            # never be mistaken for a per-file parse count yet is impossible to miss.
+            parse_stats["__shard_write_loss__"] = {
+                "iterated": 0, "json_errors": 0, "extract_errors": 0,
+                "filtered": 0, "rows": 0, "rows_lost_to_write_failure": write_lost_rows,
+            }
+        total_skipped = sum(
+            v.get("json_errors", 0) + v.get("extract_errors", 0)
+            for v in parse_stats.values()
+        )
+        stream_errors = [
+            f"{os.path.basename(k)}: {v['stream_error']}"
+            for k, v in parse_stats.items() if v.get("stream_error")
+        ]
+        open_errors = [
+            f"{os.path.basename(k)}: {v['open_error']}"
+            for k, v in parse_stats.items() if v.get("open_error")
+        ]
+        if total_skipped or stream_errors or open_errors or write_lost_rows:
+            logger.warning(
+                "Parse integrity: skipped=%d, write_lost=%d, stream_errors=%s, open_errors=%s "
+                "— see parse_stats.json. These counts are themselves forensic findings.",
+                total_skipped, write_lost_rows, stream_errors or "none", open_errors or "none",
+            )
+        try:
+            import json as _json2
+            with open(os.path.join(pq_dir, "parse_stats.json"), "w", encoding="utf-8") as _sf:
+                _json2.dump(parse_stats, _sf, indent=2)
+        except Exception as exc:
+            logger.warning("parse_stats.json write failed: %s", exc)
 
         if not parquet_files:
             logger.warning("No Parquet shards written — parquet_dir is empty: %s", pq_dir)

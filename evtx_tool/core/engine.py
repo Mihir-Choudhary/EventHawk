@@ -77,28 +77,95 @@ def _worker_parse_file(task: dict) -> dict:
         parser = PyEvtxParser(filepath)
         matching: list[dict] = []
         total = 0
+        skipped = 0
+        stream_error = None
 
         # Perf fix #10: compile filter once per file instead of checking
         # fc.get() on every event. The callable embeds only active conditions.
         _passes = _compile_filter(filter_config)
 
-        for record in parser.records_json():
-            total += 1
+        from evtx_tool.core.chunk_salvage import IdRuns
+        emitted = IdRuns()   # track record IDs so a salvage pass never dupes
+
+        # The record loop gets its OWN try so a mid-file iterator abort (e.g.
+        # one corrupt chunk — pyevtx-rs stops the whole iteration) returns the
+        # PARTIAL results already parsed instead of discarding everything.
+        # Previously the outer except returned events=[]: one bad chunk at
+        # position 179/180 threw away 99% of perfectly good records.
+        try:
+            for record in parser.records_json():
+                total += 1
+                try:
+                    emitted.add(record["event_record_id"])
+                    data = fast_loads(record["data"])
+                    event = _extract_event_inline(
+                        data, record["event_record_id"], record["timestamp"], filepath
+                    )
+                    if _passes(event):
+                        matching.append(event)
+                except Exception:
+                    skipped += 1  # malformed record — MUST be counted, never silent
+        except Exception as exc:
+            stream_error = str(exc)
+
+        # ── Chunk-isolated salvage ────────────────────────────────────────────
+        # If the primary pass aborted mid-file, recover every remaining pristine
+        # chunk one-by-one (each EVTX chunk is self-contained).  Matches the
+        # chunk-isolation behaviour of EvtxECmd / libevtx / Chainsaw --skip-errors,
+        # which the pyevtx-rs binding otherwise lacks.
+        salvaged = 0
+        salvage_unrecoverable = 0
+        if stream_error:
             try:
-                data = fast_loads(record["data"])
-                event = _extract_event_inline(
-                    data, record["event_record_id"], record["timestamp"], filepath
-                )
-                if _passes(event):
-                    matching.append(event)
-            except Exception:
-                pass  # skip malformed records
+                from evtx_tool.core.chunk_salvage import salvage_records_json
+                gen = salvage_records_json(filepath, already_emitted=emitted)
+                while True:
+                    try:
+                        record = next(gen)
+                    except StopIteration as _stop:
+                        _sstats = _stop.value or {}
+                        salvage_unrecoverable = _sstats.get("chunks_unrecoverable", 0)
+                        break
+                    total += 1
+                    salvaged += 1
+                    try:
+                        data = fast_loads(record["data"])
+                        event = _extract_event_inline(
+                            data, record["event_record_id"], record["timestamp"], filepath
+                        )
+                        if _passes(event):
+                            matching.append(event)
+                    except Exception:
+                        skipped += 1
+            except Exception as exc:
+                logger.warning("Salvage pass failed for %s: %s", filepath, exc)
+
+        # ── Expected-vs-actual accounting (catches SILENT single-record skips) ─
+        # Chunk headers declare each chunk's record-ID range; their sum is what
+        # the file itself says it holds.  A live log's active chunk can only be
+        # stale-LOW, so (iterated + salvaged) < expected reliably means records
+        # physically present were skipped by the parser (e.g. one corrupt record
+        # inside an otherwise-valid chunk — invisible to every per-record hook).
+        missing_vs_expected = 0
+        try:
+            from evtx_tool.core.chunk_salvage import expected_record_count
+            _expected, _dmg_chunks = expected_record_count(filepath)
+            _got = emitted.total() + salvaged
+            if _expected > 0 and _got < _expected:
+                missing_vs_expected = _expected - _got
+        except Exception:
+            pass
 
         return {
             "filepath": filepath,
             "events": matching,
             "total_records": total,
             "matched_records": len(matching),
+            "skipped_records": skipped,
+            "stream_error": stream_error,
+            "salvaged_records": salvaged,
+            "salvage_unrecoverable_chunks": salvage_unrecoverable,
+            "missing_vs_expected": missing_vs_expected,
             "error": None,
         }
 
@@ -108,6 +175,7 @@ def _worker_parse_file(task: dict) -> dict:
             "events": [],
             "total_records": 0,
             "matched_records": 0,
+            "skipped_records": 0,
             "error": str(exc),
         }
 
@@ -403,6 +471,16 @@ class ProcessingEngine:
             )
 
         def _submit_file(executor: ProcessPoolExecutor, filepath: str) -> Future:
+            # Acquisition-integrity pre-check: header-declared chunks vs file size.
+            try:
+                from evtx_tool.core.parser import check_evtx_truncation
+                _trunc = check_evtx_truncation(filepath)
+                if _trunc:
+                    _tmsg = f"{os.path.basename(filepath)}: {_trunc}"
+                    self.state.append_warning(_tmsg)
+                    logger.warning("Parse integrity: %s", _tmsg)
+            except Exception:
+                pass
             task = {
                 "filepath": filepath,
                 "filter_config": filter_config,
@@ -557,6 +635,40 @@ class ProcessingEngine:
 
         events: list[dict] = result.get("events", [])
         total_rec: int = result.get("total_records", 0)
+        skipped_rec: int = result.get("skipped_records", 0)
+        _stream_err = result.get("stream_error")
+        _salvaged = result.get("salvaged_records", 0)
+        _salvage_unrec = result.get("salvage_unrecoverable_chunks", 0)
+        _missing_exp = result.get("missing_vs_expected", 0)
+        _fname = os.path.basename(result.get("filepath", "?"))
+        if _stream_err:
+            _recovered = (
+                f" — RECOVERED {_salvaged:,} record(s) via chunk-isolated salvage"
+                + (f", {_salvage_unrec} chunk(s) unrecoverable"
+                   if _salvage_unrec else "")
+                if _salvaged or _salvage_unrec else ""
+            )
+            _msg = (
+                f"{_fname}: parse aborted mid-file ({_stream_err}){_recovered}"
+            )
+            self.state.append_warning(_msg)
+            logger.warning("Parse integrity: %s", _msg)
+        if _missing_exp:
+            _msg2 = (
+                f"{_fname}: {_missing_exp:,} record(s) declared in chunk headers "
+                f"were not parsed (likely individually corrupt records the parser "
+                f"skipped silently) — see Missing Record IDs for the exact gaps"
+            )
+            self.state.append_warning(_msg2)
+            logger.warning("Parse integrity: %s", _msg2)
+        if skipped_rec:
+            # A skipped-record count is itself a forensic finding — never silent.
+            _msg = (
+                f"{os.path.basename(result.get('filepath', '?'))}: "
+                f"{skipped_rec} record(s) could not be parsed and were skipped"
+            )
+            self.state.append_warning(_msg)
+            logger.warning("Parse integrity: %s", _msg)
 
         with self._events_lock:
             self._all_events.extend(events)
