@@ -247,7 +247,8 @@ class ColumnFilterPopup(QDialog):
         21: "provider",        # Provider
     }
 
-    def __init__(self, col_index: int, values: dict, parent=None):
+    def __init__(self, col_index: int, values: dict, parent=None,
+                 search_provider=None):
         """
         Parameters
         ----------
@@ -255,10 +256,24 @@ class ColumnFilterPopup(QDialog):
             Column index (matches COLUMNS list).
         values : dict
             ``{display_value: count}`` — from metadata or live data.
+        search_provider : callable | None
+            ``search_provider(term: str, callback: Callable[[dict], None])``.
+            When provided, typing in the search box triggers a debounced query
+            of the FULL underlying dataset (not just the top-1000 values shown
+            initially).  Matching values returned via ``callback`` are merged
+            into the checkbox list so a rare value (e.g. a specific
+            correlation_id outside the top-1000) can still be found & selected.
         """
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self._col = col_index
         self._all_values = values
+        self._search_provider = search_provider
+        self._pending_search_term = ""
+        # Set once a full-dataset search has merged values into the list.  After
+        # a merge the *unchecked* set is no longer a complete "I deselected a
+        # few" list (it excludes the untruncated tail), so the exclude-on-
+        # unchecked branch in _apply() becomes unsafe — see _apply().
+        self._search_merged = False
         self.setMinimumWidth(220)
         self.setMaximumHeight(400)
         self._build_ui()
@@ -272,8 +287,17 @@ class ColumnFilterPopup(QDialog):
         # Search / filter input
         self._inp_search = QLineEdit()
         self._inp_search.setPlaceholderText("Search…")
-        self._inp_search.textChanged.connect(self._filter_list)
+        self._inp_search.textChanged.connect(self._on_search_changed)
         root.addWidget(self._inp_search)
+
+        # Debounce timer for the full-dataset re-query (only used when a
+        # search_provider was supplied).  Keystrokes filter the in-memory list
+        # instantly; the (potentially expensive) full-dataset query fires only
+        # after the user pauses typing.
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(350)
+        self._search_debounce.timeout.connect(self._run_full_search)
 
         # Sort buttons
         sort_row = QHBoxLayout()
@@ -403,6 +427,79 @@ class ColumnFilterPopup(QDialog):
             for chk in self._checkboxes:
                 chk.setChecked(True)
 
+    def _on_search_changed(self, text: str) -> None:
+        """Handle every keystroke in the search box.
+
+        1. Immediately filter the already-loaded checkboxes in memory (fast).
+        2. If a full-dataset ``search_provider`` is available and the term is
+           non-trivial, (re)start the debounce timer so the underlying dataset
+           is queried once the user pauses — surfacing values outside the
+           initial top-1000.
+        """
+        self._filter_list(text)
+        if not self._search_provider:
+            return
+        term = text.strip()
+        if term:
+            self._pending_search_term = term
+            self._search_debounce.start()
+        else:
+            self._search_debounce.stop()
+
+    def _run_full_search(self) -> None:
+        """Debounce fired → query the full dataset for the pending term."""
+        if not self._search_provider:
+            return
+        term = self._pending_search_term
+        if not term:
+            return
+        try:
+            self._search_provider(
+                term,
+                lambda vals, t=term: self._merge_search_results(t, vals),
+            )
+        except Exception:
+            logger.exception("column-filter full-dataset search failed")
+
+    def _merge_search_results(self, term: str, values: dict) -> None:
+        """Merge full-dataset search hits into the checkbox list.
+
+        Called (on the GUI thread) when the search worker finishes.  New
+        values — ones not already present in the initial top-1000 — are added
+        as checkboxes, then ``_filter_list`` is re-run so the existing
+        auto-check-exact-match logic selects the value the user searched for.
+
+        A stale-result guard drops results whose term no longer matches the
+        current search box text (the user typed something else meanwhile).
+        """
+        if self._inp_search.text().strip() != term:
+            return
+        if not values:
+            return
+        existing = {chk.property("filter_value") for chk in self._checkboxes}
+        added = False
+        for val, count in sorted(values.items(), key=lambda kv: (-kv[1], str(kv[0]))):
+            sval = str(val)
+            if sval in existing:
+                continue
+            display = sval if sval else "(empty)"
+            chk = QCheckBox(f"{display}  ({count})")
+            chk.setChecked(False)
+            chk.setProperty("filter_value", sval)
+            self._checkboxes.append(chk)
+            # Insert before the trailing stretch item added in _build_ui.
+            self._list_layout.insertWidget(self._list_layout.count() - 1, chk)
+            existing.add(sval)
+            added = True
+        if added:
+            # Mark the list as merged so _apply() stops trusting the unchecked
+            # set as a complete "deselect a few" list (it now omits the
+            # untruncated tail that was never loaded).
+            self._search_merged = True
+            # Re-apply visibility + auto-check so a newly-merged exact match
+            # becomes checked, ready for the user to click OK.
+            self._filter_list(self._inp_search.text())
+
     def _check_all(self) -> None:
         for chk in self._checkboxes:
             if chk.isVisible():
@@ -460,11 +557,19 @@ class ColumnFilterPopup(QDialog):
             # would need a fragile sentinel to behave like "match nothing" in
             # heavyweight_model's int-type quick-filter path).
             self.filterApplied.emit(self._col, "exclude", unchecked)
-        elif len(checked) <= len(unchecked):
+        elif len(checked) <= len(unchecked) or self._search_merged:
             # Include list is smaller → emit include.  Also fixes the truncation
             # bug for the common "pick one value to keep" case: untruncated
             # values are correctly excluded because they're absent from the
             # include list, matching what the user sees in the popup.
+            #
+            # _search_merged forces this branch even when checked is the LARGER
+            # side: after a full-dataset search merged extra values in, the
+            # unchecked set no longer describes the whole tail (the untruncated
+            # values that were never loaded are neither checked nor unchecked),
+            # so emitting exclude-on-unchecked would let that tail slip through
+            # the filter.  Include-on-checked stays correct because it names
+            # exactly the values to keep.
             self.filterApplied.emit(self._col, "include", checked)
         else:
             # Exclude list is smaller → emit exclude.  Efficient + correct when
@@ -7955,11 +8060,16 @@ class MainWindow(QMainWindow):
         self._col_value_workers = [w for w in self._col_value_workers if w.isRunning()]
         self._col_value_workers.append(worker)
 
-    def _start_col_value_worker(self, logical_index: int, col_key: str) -> None:
-        """Start async ColValueWorker for Juggernaut Mode column filter popup."""
-        from evtx_tool.gui.jm_col_worker import ColValueWorker, build_cascade_where
-        if self._hw_model is None:
-            return
+    def _build_col_cascade_where(self, col_key: str):
+        """Build the (where_sql, where_params) that scopes a JM column popup to
+        the current view: active file tab + cascading quick filters (excluding
+        this column) + advanced/session base filter.
+
+        Shared by the initial popup worker and the full-dataset search worker so
+        both count values against exactly the same visible slice.
+        """
+        from evtx_tool.gui.jm_col_worker import build_cascade_where
+        from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
         # If a per-file tab is active, scope GROUP BY to that file only.
         active_fp = getattr(self, "_active_file_tab", None)
         file_state = self._file_tabs.get(active_fp) if active_fp else None
@@ -7967,10 +8077,6 @@ class MainWindow(QMainWindow):
             where_sql, where_params = "source_file = ?", [active_fp]
         else:
             where_sql, where_params = None, None
-        # Cascading filter: build WHERE clause from active quick filters on the
-        # JM model, excluding the current column, so the popup only reflects the
-        # current view.
-        from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
         _am      = self._active_table.model()
         _jm_src  = _am if isinstance(_am, _ATM) else self._hw_model
         cascade_sql, cascade_params = build_cascade_where(
@@ -7981,13 +8087,62 @@ class MainWindow(QMainWindow):
             where_params = list(where_params or []) + cascade_params
         elif cascade_sql:
             where_sql, where_params = cascade_sql, cascade_params
-
         # Also fold in the advanced-filter and session-filter WHERE so the
         # popup counts reflect the full active view, not just quick filters.
         base_sql, base_params = _jm_src.get_cascade_base_where()
         if base_sql:
             where_sql    = f"({where_sql}) AND ({base_sql})" if where_sql else base_sql
             where_params = list(where_params or []) + base_params
+        return where_sql, where_params
+
+    def _track_col_worker(self, worker) -> None:
+        """Keep a reference so the worker isn't GC'd before it finishes,
+        pruning already-finished workers to prevent unbounded accumulation."""
+        if not hasattr(self, "_col_value_workers"):
+            self._col_value_workers = []
+        self._col_value_workers = [w for w in self._col_value_workers if w.isRunning()]
+        self._col_value_workers.append(worker)
+
+    def _make_col_search_provider(self, col_key: str):
+        """Return a ``search_provider(term, callback)`` for the popup that queries
+        the FULL dataset for values matching *term*, scoped to the current view.
+
+        JM mode reuses ``ColValueWorker`` (DuckDB LIKE over the Arrow table);
+        normal mode reuses ``NormalColValueWorker`` over the popup's visible
+        events.  Both cap at the top-1000 *matching* values, so a rare value
+        outside the default top-1000 becomes reachable via search.
+        """
+        def provider(term: str, callback) -> None:
+            try:
+                if self._hw_model is not None:
+                    from evtx_tool.gui.jm_col_worker import ColValueWorker
+                    where_sql, where_params = self._build_col_cascade_where(col_key)
+                    worker = ColValueWorker(
+                        self._hw_model._full_table, col_key,
+                        where_sql=where_sql, where_params=where_params,
+                        search_term=term, parent=self,
+                    )
+                else:
+                    from evtx_tool.gui.jm_col_worker import NormalColValueWorker
+                    visible_events = self._active_proxy.collect_source_events_for_popup(col_key)
+                    if not visible_events:
+                        return
+                    worker = NormalColValueWorker(
+                        visible_events, col_key, search_term=term, parent=self,
+                    )
+                worker.finished.connect(lambda vals: callback(vals))
+                worker.start()
+                self._track_col_worker(worker)
+            except Exception:
+                logger.exception("column-filter search provider failed (col=%s)", col_key)
+        return provider
+
+    def _start_col_value_worker(self, logical_index: int, col_key: str) -> None:
+        """Start async ColValueWorker for Juggernaut Mode column filter popup."""
+        from evtx_tool.gui.jm_col_worker import ColValueWorker
+        if self._hw_model is None:
+            return
+        where_sql, where_params = self._build_col_cascade_where(col_key)
 
         worker = ColValueWorker(
             self._hw_model._full_table, col_key,
@@ -8000,12 +8155,7 @@ class MainWindow(QMainWindow):
             )
         )
         worker.start()
-        # Keep a reference so the worker isn't GC'd before it finishes
-        if not hasattr(self, "_col_value_workers"):
-            self._col_value_workers = []
-        # Prune finished workers from the list to prevent accumulation
-        self._col_value_workers = [w for w in self._col_value_workers if w.isRunning()]
-        self._col_value_workers.append(worker)
+        self._track_col_worker(worker)
 
     def _show_col_filter_popup(self, logical_index: int, values: dict) -> None:
         """Create and show the column filter popup with the given value counts."""
@@ -8017,7 +8167,17 @@ class MainWindow(QMainWindow):
         section_x = hdr.sectionPosition(logical_index) - hdr.offset()
         global_pos = hdr.mapToGlobal(QPoint(section_x, hdr.height()))
 
-        popup = ColumnFilterPopup(logical_index, values, parent=self)
+        # Give the popup a full-dataset search hook so typing in its search box
+        # can surface values outside the initial top-1000 (e.g. a rare
+        # correlation_id) and let the user select them.
+        _popup_col_key0 = ColumnFilterPopup.FILTERABLE.get(logical_index, "")
+        _search_provider = (
+            self._make_col_search_provider(_popup_col_key0)
+            if _popup_col_key0 else None
+        )
+        popup = ColumnFilterPopup(
+            logical_index, values, parent=self, search_provider=_search_provider
+        )
 
         # Bug 7 fix: derive pre-uncheck state from the active tab's actual quick filters
         # rather than the global _col_filters (which is shared across tabs).

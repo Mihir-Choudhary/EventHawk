@@ -221,11 +221,16 @@ class NormalColValueWorker(QThread):
         events: list,
         col_key: str,
         cascade_filters: list[dict] | None = None,
+        search_term: str = "",
         parent=None,
     ):
         super().__init__(parent)
         self._events  = events
         self._col_key = col_key
+        # When set, only values whose (lower-cased) string contains this term
+        # are counted — used by the popup's "search the full dataset" path so a
+        # rare value outside the default top-1000 can still be found & selected.
+        self._search_term = (search_term or "").strip().lower()
         # Pre-build O(1) lookup sets from cascade_filters —
         # mirrors filterAcceptsRow Layer 4 logic in the proxy model.
         self._cascade_excludes: dict[str, set[str]] = {}
@@ -301,6 +306,11 @@ class NormalColValueWorker(QThread):
                     if raw is None:
                         continue
                     s = str(raw)
+                # Full-dataset search filter: skip values that don't contain the
+                # search term (case-insensitive substring), so the top-1000 cap
+                # is applied to MATCHING values rather than all distinct values.
+                if self._search_term and self._search_term not in s.lower():
+                    continue
                 if s:
                     counts[s] = counts.get(s, 0) + 1
             top = dict(sorted(counts.items(), key=lambda x: -x[1])[:1000])
@@ -325,12 +335,18 @@ class ColValueWorker(QThread):
     def __init__(self, arrow_table: "pa.Table", col_key: str,
                  where_sql: "str | None" = None,
                  where_params: "list | None" = None,
+                 search_term: str = "",
                  parent=None):
         super().__init__(parent)
         self._table        = arrow_table
         self._col_key      = col_key
         self._where_sql    = where_sql
         self._where_params = list(where_params or [])
+        # When set, an extra LIKE clause restricts the GROUP BY to values that
+        # contain this term, so the top-1000 cap applies to MATCHING values —
+        # letting the popup's search surface rare values (e.g. a specific
+        # correlation_id) that fall outside the default top-1000.
+        self._search_term  = (search_term or "").strip().lower()
 
     def run(self) -> None:
         # resolve_col_expr handles timestamp_date specially — its expression
@@ -344,12 +360,27 @@ class ColValueWorker(QThread):
             con = duckdb.connect()
             con.register("events", self._table)
             try:
-                base = f"({self._where_sql}) AND " if self._where_sql else ""
+                clauses: list[str] = []
+                params:  list      = list(self._where_params)
+                if self._where_sql:
+                    clauses.append(f"({self._where_sql})")
+                clauses.append(f"{expr} IS NOT NULL")
+                if self._search_term:
+                    # Escape LIKE metacharacters so the user's literal text is
+                    # matched verbatim (a correlation_id may contain '_').
+                    esc = (self._search_term.replace("\\", "\\\\")
+                                            .replace("%", "\\%")
+                                            .replace("_", "\\_"))
+                    clauses.append(
+                        f"LOWER(CAST({expr} AS VARCHAR)) LIKE ? ESCAPE '\\'"
+                    )
+                    params.append(f"%{esc}%")
+                where = " AND ".join(clauses)
                 rows = con.execute(
                     f"SELECT {expr}, COUNT(*) FROM events "
-                    f"WHERE {base}{expr} IS NOT NULL "
+                    f"WHERE {where} "
                     f"GROUP BY {expr} ORDER BY COUNT(*) DESC LIMIT 1000",
-                    self._where_params,
+                    params,
                 ).fetchall()
                 self.finished.emit(
                     {(str(r[0]) if r[0] is not None else ""): r[1] for r in rows}
