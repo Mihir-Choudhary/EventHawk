@@ -1713,7 +1713,14 @@ class _LogonSessionDialog(QDialog):
             s_clean = _norm(start)
             e_clean = _norm(end)
             td      = datetime.strptime(e_clean, fmt) - datetime.strptime(s_clean, fmt)
-            total   = int(abs(td.total_seconds()))
+            secs    = td.total_seconds()
+            # A negative span (logoff before logon) means clock skew or a reused
+            # LogonId — surface it instead of hiding the sign with abs() and
+            # showing a plausible-looking positive duration (mirrors the WiFi
+            # session builder's out-of-order handling).
+            if secs < 0:
+                return "⚠ Out-of-order"
+            total   = int(secs)
             h, rem  = divmod(total, 3600)
             m, sec  = divmod(rem, 60)
             if h > 0:
@@ -2648,6 +2655,12 @@ class _WifiHistoryDialog(QDialog):
                 # a genuine session "Unavailable".
                 _is_dup = False
                 for p in open_list:
+                    # A failed attempt (8004) and a successful connect (8001)
+                    # are NEVER the same session — never collapse them, or a
+                    # real connect that follows a failed retry to the same AP
+                    # would be silently dropped.
+                    if p["connect_eid"] != sess["connect_eid"]:
+                        continue
                     if p["ssid"] != sess["ssid"]:
                         continue
                     if p["bssid"] and sess["bssid"] and p["bssid"] != sess["bssid"]:
@@ -12250,12 +12263,22 @@ class MainWindow(QMainWindow):
         if getattr(self, "_ps_worker", None) is not None and self._ps_worker.isRunning():
             return
 
-        evtx_files = self._collect_files()
-        if not evtx_files:
-            QMessageBox.information(
-                self, "No Files",
-                "Add EVTX files to the file list first, then click PowerShell History."
+        evtx_files, _unresolved = self._collect_files_report()
+        if _unresolved:
+            # Same never-silent handling as the main parse: name any entry that
+            # matched no .evtx rather than just saying "No Files".
+            QMessageBox.warning(
+                self, "Some paths matched no EVTX files",
+                "These entries did not resolve to any .evtx file and were "
+                "skipped:\n\n" + "\n".join(_unresolved[:15])
+                + ("\n…" if len(_unresolved) > 15 else ""),
             )
+        if not evtx_files:
+            if self._file_list.count() == 0:
+                QMessageBox.information(
+                    self, "No Files",
+                    "Add EVTX files to the file list first, then click PowerShell History."
+                )
             return
 
         output_dir = QFileDialog.getExistingDirectory(
