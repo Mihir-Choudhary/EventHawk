@@ -7110,6 +7110,11 @@ class MainWindow(QMainWindow):
 
     def _add_path(self, path: str) -> None:
         """Add a single path to the file list widget (dedup)."""
+        # Strip argv artifacts (surrounding quotes / whitespace) at the door so
+        # a directly-passed path is stored the same way a dialog-picked one is.
+        path = self._normalize_path(path)
+        if not path:
+            return
         existing = [self._file_list.item(i).data(Qt.ItemDataRole.UserRole)
                     for i in range(self._file_list.count())]
         if path in existing:
@@ -7132,26 +7137,61 @@ class MainWindow(QMainWindow):
         if d:
             self._add_path(d)
 
-    def _collect_files(self) -> list[str]:
-        """Recursively collect .evtx files from all entries in the file list."""
-        paths = [self._file_list.item(i).data(Qt.ItemDataRole.UserRole)
-                 for i in range(self._file_list.count())]
+    @staticmethod
+    def _normalize_path(p: str) -> str:
+        """Clean a path that may carry argv artifacts before filesystem checks.
+
+        Strips surrounding whitespace and a single layer of surrounding quotes
+        (a directly-passed path, e.g. via a shell or "Open with", can arrive
+        wrapped in quotes or with a trailing space).  Does NOT alter the inner
+        characters — in particular a ``%4`` in an EVTX channel filename is left
+        intact; if a shell/batch layer already stripped it upstream, that damage
+        happened before we ever saw the path (see _collect_files_report's
+        unresolved reporting, which surfaces such a path instead of dropping it).
+        """
+        if not p:
+            return ""
+        p = str(p).strip()
+        if len(p) >= 2 and p[0] == p[-1] and p[0] in ('"', "'"):
+            p = p[1:-1].strip()
+        return os.path.expanduser(p)
+
+    def _collect_files_report(self) -> tuple[list[str], list[str]]:
+        """Collect .evtx files from the list, and report entries that matched none.
+
+        Returns ``(files, unresolved)`` where *unresolved* holds the raw list
+        entries that resolved to ZERO .evtx files (a bad/mangled path or an
+        empty directory).  Surfacing these is what stops a directly-passed file
+        from failing silently: previously such an entry was dropped without a
+        trace, so the parse looked like it simply "did nothing".
+        """
         files: list[str] = []
         seen: set[str] = set()
-        for p in paths:
-            pp = Path(p)
+        unresolved: list[str] = []
+        for i in range(self._file_list.count()):
+            raw = self._file_list.item(i).data(Qt.ItemDataRole.UserRole)
+            pp = Path(self._normalize_path(raw))
+            matched = 0
             if pp.is_dir():
                 for f in sorted(pp.rglob("*.evtx")):
+                    matched += 1
                     s = str(f)
                     if s not in seen:
                         seen.add(s)
                         files.append(s)
             elif pp.is_file() and pp.suffix.lower() == ".evtx":
+                matched = 1
                 s = str(pp)
                 if s not in seen:
                     seen.add(s)
                     files.append(s)
-        return files
+            if matched == 0:
+                unresolved.append(str(raw))
+        return files, unresolved
+
+    def _collect_files(self) -> list[str]:
+        """Recursively collect .evtx files from all entries in the file list."""
+        return self._collect_files_report()[0]
 
     # ── Volume validation (Safety Gate) ──────────────────────────────────
 
@@ -8518,9 +8558,35 @@ class MainWindow(QMainWindow):
     # =========================================================================
 
     def _on_parse_clicked(self) -> None:
-        files = self._collect_files()
+        files, unresolved = self._collect_files_report()
+
+        # Never fail silently on a path that resolved to no .evtx file.  A file
+        # passed directly can fail while the same file inside a folder works —
+        # e.g. a WLAN/Operational name containing "%4" mangled by a shell/batch
+        # layer before it reached us, or an argv artifact.  Surface the exact
+        # entry so the user knows WHICH path was skipped and why.
+        if unresolved:
+            _hint = ""
+            if any("%4" in u or "%" in u for u in unresolved):
+                _hint = (
+                    "\n\nA name containing '%4' (common in WLAN/*/Operational "
+                    "logs) can be mangled when passed directly through a shell "
+                    "or batch launcher.  Try adding the containing FOLDER "
+                    "instead — that reads the real filename from disk."
+                )
+            QMessageBox.warning(
+                self, "Some paths matched no EVTX files",
+                "These entries did not resolve to any .evtx file and were "
+                "skipped:\n\n"
+                + "\n".join(unresolved[:15])
+                + ("\n…" if len(unresolved) > 15 else "")
+                + _hint,
+            )
+
         if not files:
-            QMessageBox.warning(self, "No Files", "Add EVTX files or a directory first.")
+            if self._file_list.count() == 0:
+                QMessageBox.warning(self, "No Files", "Add EVTX files or a directory first.")
+            # else: the unresolved dialog above already explained why.
             return
 
         # ── Volume safety gate ───────────────────────────────────────────
