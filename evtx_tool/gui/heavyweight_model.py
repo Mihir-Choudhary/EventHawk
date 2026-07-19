@@ -197,7 +197,13 @@ class _FilterThread(QThread):
             }
             con2.close()
         except Exception as exc:
-            logger.warning("Condition post-filter error: %s — using metadata-only result", exc)
+            # Same fail-open hazard as the main filter loop: the user's field
+            # conditions are silently DROPPED and the metadata-only (over-
+            # inclusive) result is shown.  Make it loud — results are unreliable.
+            logger.error(
+                "Condition post-filter FAILED (%s) — conditions NOT applied; "
+                "showing metadata-only (over-inclusive) result, UNRELIABLE", exc,
+            )
             return self._full_table.take(row_ids)
 
         # Phase 3 — keep only row_ids whose (record_id, source_file) passed conditions
@@ -300,9 +306,11 @@ class _FilterThread(QThread):
             }
             con2.close()
         except Exception as exc:
-            logger.warning(
-                "Full-text Phase 2 Parquet scan failed: %s — "
-                "returning metadata-only result",
+            # Fail-open: the full-text term is silently DROPPED and the
+            # metadata-only (over-inclusive) result is shown.  Make it loud.
+            logger.error(
+                "Full-text Phase 2 Parquet scan FAILED (%s) — text search NOT "
+                "applied; showing metadata-only (over-inclusive) result, UNRELIABLE",
                 exc,
             )
             return self._full_table.take(row_ids)
