@@ -8576,13 +8576,19 @@ class MainWindow(QMainWindow):
             _pw = [w for w in getattr(self._worker, "parse_warnings", [])
                    if ("could not be parsed" in w or "ABORTED" in w
                        or "TRUNCATED" in w)]
-            if _pw:
+            # Engine-level errors on a PARTIAL success (some events came through,
+            # but a file/pool error also occurred) must be visible too — they
+            # are strictly more severe than the integrity warnings above.  The
+            # no-events case is already routed to the error dialog by ParseWorker.
+            _pe = list(getattr(self._worker, "parse_errors", []))
+            if _pw or _pe:
+                _lines = _pe + _pw
                 QMessageBox.warning(
                     self, "Parse Integrity Warning",
                     "Some evidence did NOT fully load — results may be "
                     "incomplete:\n\n"
-                    + "\n".join(_pw[:15])
-                    + ("\n…" if len(_pw) > 15 else ""),
+                    + "\n".join(_lines[:15])
+                    + ("\n…" if len(_lines) > 15 else ""),
                 )
         except Exception:
             logger.warning("Parse-integrity warning check failed", exc_info=True)

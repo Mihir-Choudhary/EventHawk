@@ -70,6 +70,7 @@ class ParseWorker(QThread):
         self._stop_event    = threading.Event()
         self._engine        = None
         self.parse_warnings: list[str] = []   # engine integrity warnings (read after finished)
+        self.parse_errors: list[str] = []     # engine fatal errors (surfaced via error signal)
 
     def run(self) -> None:
         try:
@@ -101,9 +102,32 @@ class ParseWorker(QThread):
             self.parse_warnings = list(engine.state.warnings)
         except Exception:
             self.parse_warnings = []
+        try:
+            self.parse_errors = list(engine.state.errors)
+        except Exception:
+            self.parse_errors = []
 
         if self._stop_event.is_set():
             self.finished.emit(events, None, False, False, [])
+            return
+
+        # ── Hard engine failure → surface it, don't emit an empty result ─────
+        # The engine reports a fatal condition (e.g. "ProcessPool permanently
+        # broken" — seen when the app is launched via a windowed pythonw.exe
+        # with no console and the normal-mode ProcessPoolExecutor can't spawn
+        # workers) by populating state.errors and returning []. Previously the
+        # worker forwarded only state.warnings and emitted finished([]), so a
+        # failed parse was indistinguishable from "0 matching events": no
+        # dialog, no crash, nothing — exactly the silent failure users hit on a
+        # single small file (the first time the normal-mode path is exercised).
+        # Route real errors to error() so _on_parse_error shows a dialog.
+        if self.parse_errors and not events:
+            self.error.emit(
+                "Parsing failed — no events were produced.\n\n"
+                + "\n".join(self.parse_errors[:15])
+                + ("\n…" if len(self.parse_errors) > 15 else "")
+                + "\n\nSee eventhawk_gui.log for details."
+            )
             return
 
         # ── 2. Sort by timestamp ──────────────────────────────────────────────
