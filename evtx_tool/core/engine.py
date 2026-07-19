@@ -115,6 +115,7 @@ def _worker_parse_file(task: dict) -> dict:
         # which the pyevtx-rs binding otherwise lacks.
         salvaged = 0
         salvage_unrecoverable = 0
+        salvage_error = None   # forwarded to the parent so it lands in the log FILE
         if stream_error:
             try:
                 from evtx_tool.core.chunk_salvage import salvage_records_json
@@ -138,6 +139,11 @@ def _worker_parse_file(task: dict) -> dict:
                     except Exception:
                         skipped += 1
             except Exception as exc:
+                # This runs in a WORKER PROCESS — its own logger has no file/
+                # console handler, so log locally (surfaces on the child's
+                # stderr) AND forward the message so the parent re-logs it into
+                # the shared log file + terminal.
+                salvage_error = str(exc)
                 logger.warning("Salvage pass failed for %s: %s", filepath, exc)
 
         # ── Expected-vs-actual accounting (catches SILENT single-record skips) ─
@@ -165,6 +171,7 @@ def _worker_parse_file(task: dict) -> dict:
             "stream_error": stream_error,
             "salvaged_records": salvaged,
             "salvage_unrecoverable_chunks": salvage_unrecoverable,
+            "salvage_error": salvage_error,
             "missing_vs_expected": missing_vs_expected,
             "error": None,
         }
@@ -641,6 +648,13 @@ class ProcessingEngine:
         _salvage_unrec = result.get("salvage_unrecoverable_chunks", 0)
         _missing_exp = result.get("missing_vs_expected", 0)
         _fname = os.path.basename(result.get("filepath", "?"))
+        # Re-log a worker-process salvage failure here in the PARENT so it
+        # reaches the shared log file + terminal (the child's own logger has
+        # no handlers attached).
+        _salvage_err = result.get("salvage_error")
+        if _salvage_err:
+            logger.warning("Parse integrity: %s: salvage pass failed: %s",
+                           _fname, _salvage_err)
         if _stream_err:
             _recovered = (
                 f" — RECOVERED {_salvaged:,} record(s) via chunk-isolated salvage"
