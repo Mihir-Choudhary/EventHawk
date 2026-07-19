@@ -269,11 +269,6 @@ class ColumnFilterPopup(QDialog):
         self._all_values = values
         self._search_provider = search_provider
         self._pending_search_term = ""
-        # Set once a full-dataset search has merged values into the list.  After
-        # a merge the *unchecked* set is no longer a complete "I deselected a
-        # few" list (it excludes the untruncated tail), so the exclude-on-
-        # unchecked branch in _apply() becomes unsafe — see _apply().
-        self._search_merged = False
         self.setMinimumWidth(220)
         self.setMaximumHeight(400)
         self._build_ui()
@@ -492,12 +487,10 @@ class ColumnFilterPopup(QDialog):
             existing.add(sval)
             added = True
         if added:
-            # Mark the list as merged so _apply() stops trusting the unchecked
-            # set as a complete "deselect a few" list (it now omits the
-            # untruncated tail that was never loaded).
-            self._search_merged = True
             # Re-apply visibility + auto-check so a newly-merged exact match
-            # becomes checked, ready for the user to click OK.
+            # becomes checked, ready for the user to click OK.  _apply() keys
+            # off the LIVE search text (not a merge flag) to decide include vs
+            # exclude, so nothing extra needs to be recorded here.
             self._filter_list(self._inp_search.text())
 
     def _check_all(self) -> None:
@@ -557,19 +550,26 @@ class ColumnFilterPopup(QDialog):
             # would need a fragile sentinel to behave like "match nothing" in
             # heavyweight_model's int-type quick-filter path).
             self.filterApplied.emit(self._col, "exclude", unchecked)
-        elif len(checked) <= len(unchecked) or self._search_merged:
+        elif len(checked) <= len(unchecked) or self._inp_search.text().strip():
             # Include list is smaller → emit include.  Also fixes the truncation
             # bug for the common "pick one value to keep" case: untruncated
             # values are correctly excluded because they're absent from the
             # include list, matching what the user sees in the popup.
             #
-            # _search_merged forces this branch even when checked is the LARGER
-            # side: after a full-dataset search merged extra values in, the
+            # An ACTIVE search term also forces this branch even when checked is
+            # the LARGER side.  With a search term the checked set is a
+            # search-scoped selection ("keep the values matching what I typed"),
+            # and a full-dataset search may have merged extra rows in — so the
             # unchecked set no longer describes the whole tail (the untruncated
-            # values that were never loaded are neither checked nor unchecked),
-            # so emitting exclude-on-unchecked would let that tail slip through
-            # the filter.  Include-on-checked stays correct because it names
-            # exactly the values to keep.
+            # values that were never loaded are neither checked nor unchecked).
+            # Emitting exclude-on-unchecked there would let that tail slip
+            # through; include-on-checked names exactly the values to keep.
+            #
+            # Note this is deliberately gated on the LIVE search text, not a
+            # sticky "a merge happened" flag: once the user CLEARS the search
+            # and goes back to unchecking a few values, exclude-on-unchecked is
+            # correct again (the tail should pass), so the smaller-side
+            # heuristic below must be allowed to choose exclude.
             self.filterApplied.emit(self._col, "include", checked)
         else:
             # Exclude list is smaller → emit exclude.  Efficient + correct when
