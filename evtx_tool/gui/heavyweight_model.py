@@ -354,16 +354,36 @@ class _FilterThread(QThread):
                     # Fetch only row_ids matching the filter, then take() from full_table.
                     # take() preserves dictionary encoding and shares underlying string buffers —
                     # avoids materialising a 1.7 GB unencoded copy via SELECT *.
+                    #
+                    # Use fetch_arrow_table() (Arrow C-interface) rather than
+                    # fetchnumpy(): modern pyarrow (14+) makes numpy an OPTIONAL
+                    # dependency, so a box can have pyarrow+duckdb (Juggernaut
+                    # active) but no numpy.  fetchnumpy() then raised
+                    # "No module named 'numpy'", which the except below turned
+                    # into result=self._full_table — silently showing EVERY
+                    # event for any filtered view (per-file tabs, quick filters,
+                    # advanced filters).  fetch_arrow_table()["row_id"] returns a
+                    # ChunkedArray that Table.take() accepts directly, with no
+                    # numpy involved.
                     row_ids = con.execute(
                         f"SELECT row_id FROM events WHERE {where_sql}", params
-                    ).fetchnumpy()["row_id"]
+                    ).fetch_arrow_table()["row_id"]
                     result = self._full_table.take(row_ids)
                 else:
                     # Two-phase: metadata via Arrow + conditions via Parquet.
                     result = self._apply_with_conditions(con, where_sql, params, conditions_cfg)
             except Exception as exc:
-                logger.warning("Filter thread error: %s", exc)
-                result = self._full_table   # on error, show all rows
+                # NOTE: this fallback shows the FULL table (fail-open).  That is
+                # a forensic-integrity hazard — a filtered view silently showing
+                # every event — so make the failure loud rather than a debug
+                # aside.  The fallback semantics are intentionally left unchanged
+                # here (over-inclusion is noticeable; fail-closed would hide
+                # evidence); changing them is a separate, deliberate decision.
+                logger.error(
+                    "Filter thread FAILED (%s) — showing ALL rows unfiltered; "
+                    "results are UNRELIABLE for where=%r", exc, where_sql,
+                )
+                result = self._full_table   # on error, show all rows (see note)
 
             try:
                 self.done.emit(result, gen)
