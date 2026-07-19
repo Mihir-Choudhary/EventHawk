@@ -125,6 +125,63 @@ def set_tz_config(
     _tz_state["custom_offset_min"] = custom_offset_min
 
 
+# ── Timestamp fractional-second precision ──────────────────────────────────────
+# Analyst-selectable display precision for timestamps.  0 = whole seconds (the
+# default — byte-identical to the historical behaviour), 3 = milliseconds,
+# 6 = microseconds.  The underlying event timestamp is stored at full precision
+# everywhere (parser/engine keep the raw SystemTime; the Juggernaut Arrow column
+# keeps 26-char strings), so this is a pure display concern — no re-parse needed.
+# Shared module-level state so apply_tz() (used by BOTH the normal table and the
+# Juggernaut table) honours it for every model instance.
+
+_ts_precision: dict = {"digits": 0}   # 0 | 3 | 6
+
+
+def set_ts_precision(digits: int) -> None:
+    """Set the global timestamp display precision (fractional-second digits)."""
+    _ts_precision["digits"] = digits if digits in (0, 3, 6) else 0
+
+
+def get_ts_precision() -> int:
+    """Return the current timestamp display precision (0, 3, or 6)."""
+    return _ts_precision["digits"]
+
+
+def _frac_suffix(microsecond: int, digits: int) -> str:
+    """Render the fractional-second suffix, e.g. '.898000' at 6 digits.
+
+    Empty string at digits==0 (so the seconds-only path is byte-identical to the
+    historical output — no trailing dot).  Zero-pads shorter fractions to the
+    requested width and truncates (never rounds) longer ones.
+    """
+    if not digits:
+        return ""
+    try:
+        micros = 0 if microsecond is None else max(0, min(999999, int(microsecond)))
+    except (ValueError, TypeError):
+        micros = 0
+    return "." + f"{micros:06d}"[:digits]
+
+
+def _micros_from_raw(raw_ts: str) -> int:
+    """Extract the microsecond value from a raw ISO timestamp string.
+
+    Used only by apply_tz's parse-failure fallback (the main path reads
+    datetime.microsecond directly).  Right-pads a short fraction to 6 digits so
+    '.898' → 898000, matching fromisoformat's interpretation on the main path.
+    """
+    s = str(raw_ts or "")
+    i = s.find(".")
+    if i == -1:
+        return 0
+    j = i + 1
+    digs = ""
+    while j < len(s) and s[j].isdigit() and len(digs) < 6:
+        digs += s[j]
+        j += 1
+    return int(digs.ljust(6, "0")) if digs else 0
+
+
 def apply_tz(raw_ts: str) -> str:
     """
     Convert a raw ISO-8601/UTC event timestamp to a display string in the
@@ -161,10 +218,15 @@ def apply_tz(raw_ts: str) -> str:
             dt_out = dt.astimezone(tz)
         else:
             dt_out = dt
-        return dt_out.strftime("%Y-%m-%d %H:%M:%S")
+        return dt_out.strftime("%Y-%m-%d %H:%M:%S") + _frac_suffix(
+            dt_out.microsecond, _ts_precision["digits"]
+        )
     except Exception:
         # Never crash the UI — return stripped raw value
-        return raw_ts.replace("T", " ").replace("Z", "")[:19]
+        return (
+            raw_ts.replace("T", " ").replace("Z", "")[:19]
+            + _frac_suffix(_micros_from_raw(raw_ts), _ts_precision["digits"])
+        )
 
 
 class EventTableModel(QAbstractTableModel):

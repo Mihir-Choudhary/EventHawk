@@ -43,7 +43,7 @@ from PySide6.QtCore import QDateTime
 
 from .models import (
     EventTableModel, EventFilterProxyModel, COLUMNS, COL_DEFAULT_COUNT,
-    COL_RECORD_ID, set_tz_config, apply_tz,
+    COL_RECORD_ID, set_tz_config, apply_tz, set_ts_precision, get_ts_precision,
 )
 from .worker import ParseWorker, AnalysisWorker
 from evtx_tool.analysis.analysis_runner import AnalysisRunner
@@ -1348,13 +1348,17 @@ class _DurationItem(QTableWidgetItem):
     """Sort by total seconds so '2h 05m 30s' > '5m 10s' > '30s' > 'Active' > '?'."""
 
     @staticmethod
-    def _secs(text: str) -> int:
+    def _secs(text: str) -> float:
         if not text or text in ("?", "Active", "(wall clock)"):
-            return -1
+            return -1.0
         import re as _re
-        total = 0
-        for n, unit in _re.findall(r"(\d+)\s*([hms])", text):
-            n = int(n)
+        total = 0.0
+        # Accept a fractional seconds component (e.g. '05.382194s') so the
+        # millisecond/microsecond precision display sorts correctly.  The plain
+        # '\d+' form used to grab '382194s' out of '5.382194s' and sort a 5-second
+        # session as ~4.4 days — this float-aware pattern fixes that.
+        for n, unit in _re.findall(r"(\d+(?:\.\d+)?)\s*([hms])", text):
+            n = float(n)
             if unit == "h":   total += n * 3600
             elif unit == "m": total += n * 60
             else:             total += n
@@ -2492,6 +2496,91 @@ class _WifiHistoryDialog(QDialog):
         return ts.rstrip("Z").replace("T", " ").split(".")[0][:19]
 
     @staticmethod
+    def _norm_ts_full(raw_ts: object) -> str:
+        """Full-precision timestamp 'YYYY-MM-DD HH:MM:SS.ffffff' (fraction padded to 6).
+
+        Runs in PARALLEL to _norm_ts — the second-precision _norm_ts value still
+        drives all the fragile pairing / dedup / 11001+11006 enrichment logic
+        (kept byte-identical), while this full value feeds ONLY the display and
+        the precise-duration formatting the analyst opts into.  Padding to a
+        fixed 6-digit fraction keeps the string fixed-width so any lexicographic
+        comparison stays chronologically correct.
+        """
+        ts = str(raw_ts or "").strip()
+        if not ts:
+            return ""
+        ts = ts.rstrip("Z").replace("T", " ")
+        head, dot, frac = ts.partition(".")
+        head = head[:19]
+        if not dot:
+            return head + ".000000"
+        frac = "".join(c for c in frac if c.isdigit())[:6].ljust(6, "0")
+        return head + "." + frac
+
+    @staticmethod
+    def _fmt_disp_ts(ts: str, digits: int) -> str:
+        """Format a stored timestamp for a table cell at the given precision.
+
+        Accepts either a full-precision '...SS.ffffff' or a bare '...SS' string.
+        digits==0 returns the seconds-only head (byte-identical to the historical
+        display); 3/6 truncate/zero-pad the fraction.
+        """
+        ts = str(ts or "")
+        if not ts:
+            return ""
+        head, dot, frac = ts.partition(".")
+        if not digits:
+            return head
+        frac = (frac + "000000")[:digits]
+        return head + "." + frac
+
+    @staticmethod
+    def _fmt_dur_precise(c_full: str, d_full: str, digits: int):
+        """Recompute a session duration from full-precision endpoints, with a
+        fractional-seconds component.  Returns a label string, or None if the
+        endpoints can't be parsed (caller then falls back to the stored label).
+
+        Only used when the analyst selects millisecond/microsecond precision; the
+        stored second-precision `duration`/`duration_secs` (and the LONG_SESSION
+        threshold that keys off it) are never recomputed here.
+        """
+        try:
+            fmt = "%Y-%m-%d %H:%M:%S.%f"
+            total = (datetime.strptime(d_full, fmt)
+                     - datetime.strptime(c_full, fmt)).total_seconds()
+        except (ValueError, TypeError):
+            return None
+        if total < 0:
+            # This helper is only invoked for sessions the authoritative
+            # second-precision pairing already accepted as forward
+            # (duration_secs >= 0), so a negative here is always a sub-second
+            # inversion within one second — Windows event timestamps can be
+            # written out of order below ~1 s (clock granularity ~1-15 ms).  We
+            # must NOT re-adjudicate ordering in a display-only formatter: a
+            # genuine >=1 s inversion already carries "⚠ Out-of-order" from
+            # _calc_duration and never reaches here.  Clamp the jitter to zero so
+            # the label stays consistent with the seconds view (0s → 0.000000s).
+            total = 0.0
+        # Derive the whole-second and fractional parts from ONE microsecond
+        # total so a fraction that rounds up at the display width carries into
+        # the seconds instead of being dropped (computing int(total) and the
+        # fraction separately printed 5.9996s as "5.000s").  round() to µs first
+        # absorbs float-representation noise; the display fraction is then
+        # TRUNCATED — matching how _frac_suffix truncates timestamp fractions and
+        # the analyst's "truncate longer" choice.
+        total_us = int(round(total * 1_000_000))
+        whole, us = divmod(total_us, 1_000_000)
+        h, rem = divmod(whole, 3600)
+        m, sec = divmod(rem, 60)
+        frac_str = f"{us:06d}"[:digits]
+        sec_str = f"{sec:02d}.{frac_str}"
+        if h > 0:
+            return f"{h}h {m:02d}m {sec_str}s"
+        if m > 0:
+            return f"{m}m {sec_str}s"
+        return f"{sec}.{frac_str}s"
+
+    @staticmethod
     def _decode_reason(code: int) -> str:
         """Decode a WLAN disconnect/failure reason code to a human-readable string.
 
@@ -2535,6 +2624,7 @@ class _WifiHistoryDialog(QDialog):
         _ni     = _WifiHistoryDialog._norm_iface
         _nb     = _WifiHistoryDialog._norm_bssid
         _nts    = _WifiHistoryDialog._norm_ts
+        _ntsf   = _WifiHistoryDialog._norm_ts_full   # parallel full-precision ts
 
         # Collect and categorise WLAN events
         connect_ev:   list[dict] = []
@@ -2557,7 +2647,9 @@ class _WifiHistoryDialog(QDialog):
             if eid not in REL:
                 continue
             ed = _ex(ev)
-            ts = _nts(ev.get("timestamp") or ev.get("Timestamp") or ev.get("TimeCreated") or "")
+            _raw_ts = ev.get("timestamp") or ev.get("Timestamp") or ev.get("TimeCreated") or ""
+            ts = _nts(_raw_ts)
+            ts_full = _ntsf(_raw_ts)     # full precision, display/duration only
             # Medium/High fix: use source_file as fallback when computer is blank
             # so events from different EVTX files are still separated even if the
             # Computer field is absent.  When both are empty we accept the residual
@@ -2566,7 +2658,7 @@ class _WifiHistoryDialog(QDialog):
                 ev.get("computer") or ev.get("Computer") or
                 ev.get("source_file") or ev.get("SourceFile") or ""
             ).lower()
-            entry = {"eid": eid, "ts": ts, "ed": ed, "computer": computer}
+            entry = {"eid": eid, "ts": ts, "ts_full": ts_full, "ed": ed, "computer": computer}
 
             if eid in (8001, 8004):
                 connect_ev.append(entry)
@@ -2594,6 +2686,7 @@ class _WifiHistoryDialog(QDialog):
             eid      = w["eid"]
             ed       = w["ed"]
             ts       = w["ts"]
+            ts_full  = w["ts_full"]
             computer = w["computer"]
 
             iface_raw = ed.get("InterfaceGuid", "") or ed.get("InterfaceGUID", "")
@@ -2623,7 +2716,9 @@ class _WifiHistoryDialog(QDialog):
                     # enrichment can constrain by host in merged datasets.
                     "computer":          computer,
                     "connect_ts":        ts,
+                    "connect_ts_full":   ts_full,
                     "disconnect_ts":     "",
+                    "disconnect_ts_full": "",
                     "duration":          "Active",
                     "duration_secs":     -1.0,
                     "auth":              auth,
@@ -2705,6 +2800,7 @@ class _WifiHistoryDialog(QDialog):
                     reason_str = _WifiHistoryDialog._decode_reason(reason_int)
                     dur_label, dur_secs    = _WifiHistoryDialog._calc_duration(sess["connect_ts"], ts)
                     sess["disconnect_ts"]  = ts
+                    sess["disconnect_ts_full"] = ts_full
                     sess["duration"]       = dur_label
                     sess["duration_secs"]  = dur_secs
                     sess["disconnect_reason"] = reason_str
@@ -2987,6 +3083,11 @@ class _WifiHistoryDialog(QDialog):
         self._tbl.setSortingEnabled(False)
         self._tbl.setRowCount(len(sessions))
 
+        # Fractional-second display precision (0/3/6).  At 0 the connect/disconnect
+        # cells fall back to the seconds-only stored value (byte-identical to the
+        # historical display); at 3/6 they use the parallel full-precision fields.
+        digits = get_ts_precision()
+
         col_failed   = QColor("#fde8e0")   # pale red   — EID 8004 failed
         col_authfail = QColor("#fff8dc")   # pale yellow — auth failures
         col_open     = QColor("#fff3cd")   # amber      — open network
@@ -3009,14 +3110,30 @@ class _WifiHistoryDialog(QDialog):
                 if s["channel"] else s["frequency_band"]
             )
 
+            # Connect/disconnect at the selected precision; duration recomputed
+            # with sub-second detail only when the analyst opted in AND the value
+            # is a real computed span (never for Unavailable/Active/Out-of-order).
+            _conn_disp = self._fmt_disp_ts(s.get("connect_ts_full") or s["connect_ts"], digits)
+            _disc_disp = (
+                self._fmt_disp_ts(s.get("disconnect_ts_full") or s["disconnect_ts"], digits)
+                if s["disconnect_ts"] else "Active"
+            )
+            _dur_disp = s["duration"]
+            if digits and s["duration_secs"] >= 0 and s.get("connect_ts_full") and s.get("disconnect_ts_full"):
+                _precise = _WifiHistoryDialog._fmt_dur_precise(
+                    s["connect_ts_full"], s["disconnect_ts_full"], digits
+                )
+                if _precise is not None:
+                    _dur_disp = _precise
+
             cells = [
                 s["ssid"],
                 s["bssid"],
                 s["oui_vendor"],
                 s["adapter"],
-                s["connect_ts"],
-                s["disconnect_ts"] if s["disconnect_ts"] else "Active",
-                s["duration"],
+                _conn_disp,
+                _disc_disp,
+                _dur_disp,
                 s["security_grade"],
                 band_ch,
                 s["phy_label"],
@@ -5835,6 +5952,33 @@ class MainWindow(QMainWindow):
         tz_act = mb.addAction("Time zone")
         tz_act.setToolTip("Configure how event timestamps are displayed")
         tz_act.triggered.connect(self._on_timezone_action)
+
+        # ── Timestamp precision ────────────────────────────────────────────
+        # Fractional-second precision for displayed timestamps.  Off (Seconds)
+        # by default; the underlying value is stored at full precision so this
+        # is display-only and applies live with no re-parse.
+        from PySide6.QtGui import QActionGroup
+        prec_menu = mb.addMenu("Precision")
+        prec_menu.setToolTip(
+            "Fractional-second precision for displayed timestamps "
+            "(connect/disconnect times and WiFi session durations)"
+        )
+        try:
+            _saved_prec = int(QSettings("EventHawk", "GUI").value("ts_precision_digits", 0) or 0)
+        except (ValueError, TypeError):
+            _saved_prec = 0
+        if _saved_prec not in (0, 3, 6):
+            _saved_prec = 0
+        set_ts_precision(_saved_prec)
+        self._prec_group = QActionGroup(self)
+        self._prec_group.setExclusive(True)
+        for _label, _d in (("Seconds", 0), ("Milliseconds", 3), ("Microseconds", 6)):
+            _act = prec_menu.addAction(_label)
+            _act.setCheckable(True)
+            _act.setChecked(_d == _saved_prec)
+            _act.setData(_d)
+            self._prec_group.addAction(_act)
+            _act.triggered.connect(lambda _checked=False, dd=_d: self._on_ts_precision_changed(dd))
 
         # ── PowerShell History ─────────────────────────────────────────────
         self._act_ps_extract = mb.addAction("PowerShell History")
@@ -12729,6 +12873,54 @@ class MainWindow(QMainWindow):
             ),
         }
         self._set_status(f"Timezone: {_labels.get(self._tz_mode, self._tz_mode)}")
+
+    def _on_ts_precision_changed(self, digits: int) -> None:
+        """Apply a new timestamp display precision (0/3/6) and refresh all views.
+
+        Display-only: unlike the timezone change this does not touch filters or
+        date bounds (precision never shifts which events match), so it just
+        updates the shared module state, persists it, and re-renders the live
+        models.  The WiFi History dialog reads the precision when it repopulates.
+        """
+        set_ts_precision(digits)
+        try:
+            QSettings("EventHawk", "GUI").setValue("ts_precision_digits", int(digits))
+        except Exception:
+            pass
+
+        # Refresh merged model
+        try:
+            self._event_model.layoutChanged.emit()
+        except Exception:
+            pass
+
+        # Refresh every per-file tab model
+        for _state in self._file_tabs.values():
+            try:
+                _state.model.layoutChanged.emit()
+            except Exception:
+                pass
+
+        # Refresh Juggernaut Mode model if active
+        if getattr(self, "_hw_model", None) is not None:
+            try:
+                self._hw_model.layoutChanged.emit()
+            except Exception:
+                pass
+
+        # Re-render detail panel if a row is currently selected
+        try:
+            _proxy = self._active_proxy
+            _sel = self._active_table.selectionModel().selectedRows()
+            if _sel:
+                _ev = _proxy.get_source_event(_sel[0].row())
+                if _ev:
+                    self._render_event_detail(_ev)
+        except Exception:
+            pass
+
+        _plabels = {0: "Seconds", 3: "Milliseconds", 6: "Microseconds"}
+        self._set_status(f"Timestamp precision: {_plabels.get(digits, 'Seconds')}")
 
 
 
