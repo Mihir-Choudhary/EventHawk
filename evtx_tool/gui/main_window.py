@@ -2630,12 +2630,58 @@ class _WifiHistoryDialog(QDialog):
                     "connect_eid":       eid,
                     "anomaly_flags":     [],
                 }
-                pending.setdefault(pkey, []).append(sess)
+                # A new connect on an interface that STILL has an open session
+                # means Windows never logged the previous session's disconnect
+                # (8003).  Close the stale session as UNAVAILABLE rather than
+                # (a) leaving it falsely "Active", or (b) letting a later
+                # disconnect pair with this stale connect — the FIFO pairing bug
+                # that produced absurd 36–40 h (and apparently "future")
+                # durations by fabricating a span across two unrelated sessions.
+                # This is the #4/#5 fix: when one side of the pair is missing we
+                # flag the duration as unavailable instead of computing one.
+                open_list = pending.setdefault(pkey, [])
+                # Windows sometimes logs EID 8001 twice for ONE connection
+                # (adapter + profile manager), a few seconds apart.  Treat a
+                # near-duplicate (same SSID, same BSSID when both known, within
+                # 5 s) as the SAME session — keep the existing open entry and
+                # ignore this one — so the supersede below does not falsely mark
+                # a genuine session "Unavailable".
+                _is_dup = False
+                for p in open_list:
+                    if p["ssid"] != sess["ssid"]:
+                        continue
+                    if p["bssid"] and sess["bssid"] and p["bssid"] != sess["bssid"]:
+                        continue
+                    try:
+                        _f = "%Y-%m-%d %H:%M:%S"
+                        if abs((datetime.strptime(sess["connect_ts"], _f)
+                                - datetime.strptime(p["connect_ts"], _f)).total_seconds()) <= 5:
+                            _is_dup = True
+                            break
+                    except Exception:
+                        if sess["connect_ts"] == p["connect_ts"]:
+                            _is_dup = True
+                            break
+                if not _is_dup:
+                    for prev in open_list:
+                        if prev["connect_eid"] == 8004:
+                            prev["duration"] = "Failed (no close)"
+                        else:
+                            prev["duration"] = "Unavailable (no disconnect logged)"
+                            prev["anomaly_flags"].append("no_disconnect")
+                        prev["duration_secs"] = -1.0
+                        sessions.append(prev)
+                    open_list.clear()
+                    open_list.append(sess)
+                # else: duplicate 8001 for the same connection — ignore
 
             elif eid in (8002, 8003):
                 open_list = pending.get(pkey, [])
                 if open_list:
-                    sess = open_list.pop(0)
+                    # After supersede there is at most one open session, but pop
+                    # the MOST RECENT (LIFO) so a disconnect always closes the
+                    # latest connect on this interface, never a stale one.
+                    sess = open_list.pop()
                     if not open_list:
                         del pending[pkey]
                     reason_raw = ed.get("ReasonCode", "") or ed.get("Reason", "")
@@ -2733,7 +2779,9 @@ class _WifiHistoryDialog(QDialog):
 
         # Compute anomaly flags
         for sess in sessions:
-            flags: list[str] = []
+            # Preserve flags already set during pairing (e.g. "no_disconnect")
+            # instead of overwriting them with a fresh list.
+            flags: list[str] = list(sess.get("anomaly_flags") or [])
             if sess["connect_eid"] == 8004:
                 flags.append("FAILED_ATTEMPT")  # Medium fix: surface 8004 as anomaly
             if sess["security_grade"] == "OPEN":
@@ -2742,6 +2790,13 @@ class _WifiHistoryDialog(QDialog):
                 flags.append("WEP")
             if sess["duration_secs"] >= 0 and sess["duration_secs"] < 60 and sess["disconnect_ts"]:
                 flags.append("SHORT_SESSION")
+            if sess["duration_secs"] >= 24 * 3600:
+                # A very long computed session may be genuine (a desktop left
+                # connected) OR a mis-pairing across a gap where BOTH the real
+                # disconnect and a later connect went unlogged — event merging
+                # cannot distinguish the two, so surface it for the analyst to
+                # verify rather than trusting the span silently (issue #5).
+                flags.append("LONG_SESSION")
             if sess["auth_failures"] > 0:
                 flags.append("AUTH_FAILURES")
             if sess["connect_ts"]:
