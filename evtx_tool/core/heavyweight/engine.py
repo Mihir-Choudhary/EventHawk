@@ -568,6 +568,24 @@ def load_arrow_table(parquet_dir: str) -> "pa.Table":
     return combined
 
 
+def empty_arrow_table() -> "pa.Table":
+    """Return a 0-row Arrow table with the same schema ``load_arrow_table``
+    produces (the ``_ARROW_COLS`` subset plus the ``row_id`` uint32 column).
+
+    Used when a Juggernaut run completes with **zero shards** — a filter that
+    matched nothing, or every file failing — in which case the engine writes no
+    manifest and ``load_arrow_table`` would raise ``FileNotFoundError``.  The GUI
+    renders this empty table so a legitimate 0-event result shows as "0 events"
+    instead of a frozen window.  The ``row_id`` column is included so the
+    quick-filter ``SELECT row_id …`` path works against the empty table.
+    """
+    import pyarrow as pa
+    full = _make_schema()
+    fields = [full.field(n) for n in _ARROW_COLS if n in full.names]
+    fields.append(pa.field("row_id", pa.uint32()))
+    return pa.schema(fields).empty_table()
+
+
 
 # ── Tier 5: Streaming worker ──────────────────────────────────────────────────
 

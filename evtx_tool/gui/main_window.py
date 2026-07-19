@@ -7424,7 +7424,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_hw_finished(self, parquet_dir: str) -> None:
         """Juggernaut parse complete — load Arrow table and build ArrowTableModel."""
-        from evtx_tool.core.heavyweight.engine import load_arrow_table
+        from evtx_tool.core.heavyweight.engine import load_arrow_table, empty_arrow_table
         from evtx_tool.gui.heavyweight_model import ArrowTableModel
 
         self._hw_db_path = parquet_dir   # stored for cleanup (dir deletion)
@@ -7493,7 +7493,43 @@ class MainWindow(QMainWindow):
 
         # Load all events into an in-memory Arrow table (~114 MB for 6M rows).
         # ArrowTableModel's _FilterThread owns the single DuckDB connection.
-        arrow_table = load_arrow_table(parquet_dir)
+        #
+        # Discriminate a legitimate 0-event result from genuine corruption
+        # (the worker only emits finished() after run() returns cleanly — a
+        # crash would have gone to error()/_on_parse_error):
+        #   • manifest absent or empty  → engine completed with ZERO shards
+        #     (filter matched nothing, or every file failed; per-file problems,
+        #     if any, were already surfaced by the integrity dialog above).
+        #     load_arrow_table() would raise FileNotFoundError here and, being
+        #     an unguarded Qt slot, freeze the GUI (stuck loading overlay, parse
+        #     button never re-enabled).  Render an empty table so the UI shows
+        #     "0 events" and falls through the normal reset tail below instead.
+        #   • manifest present but the load/model build raises → real corruption
+        #     (missing shard file, unreadable parquet) → surface an error dialog.
+        # Check the manifest by content, not by catching FileNotFoundError —
+        # that exception also fires on the missing-shard corruption case, which
+        # must NOT be silently treated as "0 events".
+        _manifest_path = os.path.join(parquet_dir, "parquet_manifest.json")
+        _zero_shards = True
+        if os.path.isfile(_manifest_path):
+            try:
+                import json as _json
+                with open(_manifest_path, encoding="utf-8") as _mf:
+                    _zero_shards = not _json.load(_mf)
+            except Exception:
+                _zero_shards = False  # present but unreadable → load-error path
+        if _zero_shards:
+            arrow_table = empty_arrow_table()
+        else:
+            try:
+                arrow_table = load_arrow_table(parquet_dir)
+            except Exception as exc:
+                logger.exception("Juggernaut load failed for %s", parquet_dir)
+                self._on_parse_error(
+                    "Juggernaut Mode could not load the parsed results:\n\n"
+                    f"{exc}\n\nSee eventhawk_gui.log for details."
+                )
+                return
         self._hw_model = ArrowTableModel(
             arrow_table, parquet_dir=parquet_dir, parent=self
         )
