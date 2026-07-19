@@ -2771,11 +2771,35 @@ class _WifiHistoryDialog(QDialog):
         # High fix: constrain by computer to prevent cross-host leakage.
         # Medium fix: also constrain by ProfileName/SSID when both sides have it
         # so failures from a neighbouring network on the same adapter are excluded.
+        # Bound a disconnect-less session's window at the NEXT connect on the
+        # same (computer, interface) — a superseded session ended when the next
+        # began.  Without this, a session with no logged disconnect (now common,
+        # since missing disconnects are flagged "Unavailable" rather than
+        # mis-paired) would use an open-ended window and count auth failures that
+        # belong to every LATER session on the same adapter.
+        _conn_ts_by_key: dict[tuple, list[str]] = {}
+        for _s in sessions:
+            _conn_ts_by_key.setdefault(
+                (_s["computer"], _s["interface_guid"]), []
+            ).append(_s["connect_ts"])
+        for _v in _conn_ts_by_key.values():
+            _v.sort()
+
+        def _session_end(_sess: dict) -> str:
+            if _sess["disconnect_ts"]:
+                return _sess["disconnect_ts"]
+            for _ts in _conn_ts_by_key.get(
+                (_sess["computer"], _sess["interface_guid"]), []
+            ):
+                if _ts > _sess["connect_ts"]:
+                    return _ts
+            return "9999-12-31 23:59:59"
+
         for sess in sessions:
             iface    = sess["interface_guid"]
             computer = sess["computer"]
             conn_ts  = sess["connect_ts"]
-            disc_ts  = sess["disconnect_ts"] or "9999-12-31 23:59:59"
+            disc_ts  = _session_end(sess)
             count    = 0
             for af in auth_fail_ev:
                 # Host-scope guard
