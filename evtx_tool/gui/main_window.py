@@ -3501,13 +3501,14 @@ class _RemoteAssistanceDialog(QDialog):
 
     _HEADERS = [
         "Type", "Computer", "Start", "End", "Duration",
-        "User", "Remote Host", "Control", "Status", "Events", "Flags",
+        "User", "Remote Host", "Remote IP", "Control", "Status", "Events", "Flags",
     ]
 
     _TYPE_COLORS: dict[str, str] = {
         "Classic RA":  "#1e4d8c",
         "Remote Help": "#2e6820",
-        "RDP Session": "#7a5c1e",
+        "RDP Session": "#7a5c1e",     # inbound / destination-side (this host was accessed)
+        "RDP (Outbound)": "#0f6e6e",  # source-side (this host connected OUT to elsewhere)
         "Quick Assist":"#6b1e6b",
     }
 
@@ -3625,6 +3626,18 @@ class _RemoteAssistanceDialog(QDialog):
             261,  # RemoteConnectionManager: listener got connection
             1149, # RemoteConnectionManager: auth succeeded
         })
+        # SOURCE-SIDE / OUTBOUND RDP (SANS 508.2 "RDP Logs - Source System").
+        # TerminalServices-RDPClient/Operational is recorded on the system that
+        # INITIATED the connection and details everywhere it moved OUT to.
+        _RDPCLIENT_EIDS = frozenset({
+            1024,  # ClientActiveX trying to connect — Value = destination host name
+            1025,  # connection established
+            1026,  # disconnect — Value = disconnect reason code
+            1029,  # Base64(SHA256(username)) used for the connection
+            1102,  # multi-transport connection — Value = destination IP
+            1103,  # multi-transport established
+            1105,  # multi-transport disconnected
+        })
 
         def _parse_ts(ts: str):
             ts = str(ts or "").strip().rstrip("Z")
@@ -3720,6 +3733,23 @@ class _RemoteAssistanceDialog(QDialog):
                 if not sid:
                     return None
                 return "Remote Help", sid
+            # OUTBOUND / source-side RDP must be matched BEFORE the generic
+            # TerminalServices branch: the RDPClient channel name also contains
+            # "terminalservices", so it would otherwise be mislabeled a
+            # destination-side "RDP Session".
+            if "rdpclient" in chan:
+                if eid not in _RDPCLIENT_EIDS:
+                    return None
+                # RDPClient events carry no stable per-connection id, so bucket
+                # by (computer, time-proximity); "" => time-based grouping.
+                return "RDP (Outbound)", ""
+            # NOTE: RemoteDesktopServices-RdpCoreTS is the *destination*-side
+            # (server) stack — its EID 131 records an INBOUND connection attempt
+            # (the IP is the connecting client), so it is deliberately NOT treated
+            # as outbound; doing so would invert the direction on any host that
+            # merely received RDP.  The client-side log is TerminalServices-RDPClient
+            # (handled above).  RdpCoreTS could enrich the inbound "RDP Session"
+            # type in future, but needs sample data to verify its field names.
             if _TS_CHAN in chan:
                 # Gate on EIDs that are meaningful for session reconstruction;
                 # other TerminalServices operational events (diagnostics, licensing,
@@ -3737,6 +3767,21 @@ class _RemoteAssistanceDialog(QDialog):
                 if eid in (4778, 4779):
                     lid = (ed.get("TargetLogonId") or "").strip()
                     return "RDP Session", lid
+                if eid == 4648:
+                    # "A logon was attempted using explicit credentials" — the
+                    # SOURCE side of an outbound RDP (logged when NLA is enabled
+                    # on the destination).  Subject = user who ran the RDP client.
+                    # 4648 also fires for net use / runas /netonly / scheduled
+                    # tasks, which likewise carry a TargetServerName — so the RDP
+                    # discriminator is the Terminal Services SPN in TargetInfo
+                    # ("TERMSRV/<host>", per SANS 508.2).  Without it we skip.
+                    _tinfo = str(ed.get("TargetInfo") or "").strip().lower()
+                    if "termsrv" not in _tinfo:
+                        return None
+                    # Time-bucket (key="") so the 4648 unifies with the RDPClient
+                    # events of the same outbound connection — those carry no
+                    # matching logon id, so a SubjectLogonId key would split them.
+                    return "RDP (Outbound)", ""
                 if eid == 4688:
                     # Broaden: check NewProcessName AND CommandLine AND Application
                     # so renamed paths and alternate field names are also caught.
@@ -3816,6 +3861,7 @@ class _RemoteAssistanceDialog(QDialog):
                 "_events": [], "_start_dt": None, "_end_dt": None,
                 "_has_start": False, "_has_end": False,
                 "_control": ctrl_default, "_user": "", "_remote_host": "",
+                "_remote_ip": "", "_remote_acct": "",
                 "_user_norm": "", "_remote_norm": "",
             }
             all_buckets.append(b)
@@ -3964,10 +4010,21 @@ class _RemoteAssistanceDialog(QDialog):
 
             # User / remote host (first non-trivial value wins)
             # L3: _USER_BLOCK defined once above the loop.
-            user = (
-                ed.get("User") or ed.get("TargetUserName") or
-                ed.get("SubjectUserName") or str(ev.get("user_id") or "")
-            ).strip()
+            if type_label == "RDP (Outbound)":
+                # Source-side: the "User" is the LOCAL account that INITIATED the
+                # outbound connection (Subject), not the account used on the remote
+                # host — that remote account is captured separately as a flag.
+                user = (ed.get("SubjectUserName") or ed.get("User") or "").strip()
+                _racct = (ed.get("TargetUserName") or "").strip()
+                if (_racct and not _racct.endswith("$")
+                        and _racct.lower() not in _USER_BLOCK
+                        and not bucket.get("_remote_acct")):
+                    bucket["_remote_acct"] = _racct
+            else:
+                user = (
+                    ed.get("User") or ed.get("TargetUserName") or
+                    ed.get("SubjectUserName") or str(ev.get("user_id") or "")
+                ).strip()
             # Machine-account ("WORKSTATION01$") and domain-prefix strip:
             # "NT AUTHORITY\SYSTEM".lower() == "nt authority\\system" ≠ "system",
             # so strip any "DOMAIN\" prefix before blocklist matching (M3 fix).
@@ -3978,10 +4035,45 @@ class _RemoteAssistanceDialog(QDialog):
                     and not user.endswith("$") and not bucket["_user"]):
                 bucket["_user"] = user
                 bucket["_user_norm"] = _user_local
-            remote = (ed.get("IpAddress") or ed.get("Source") or "").strip()
-            if remote and remote not in ("-", "::1", "127.0.0.1") and not bucket["_remote_host"]:
-                bucket["_remote_host"] = remote
-                bucket["_remote_norm"] = _ev_remote_norm
+            # Peer extraction is DIRECTION-AWARE.  For inbound RDP/RA the peer is
+            # the SOURCE that connected in (IpAddress/Source).  For OUTBOUND RDP
+            # the peer is the DESTINATION we connected out to — RDPClient EID 1024
+            # carries the host name and 1102 the IP, both in the "Value" field;
+            # Security 4648 carries TargetServerName.  Host and IP are captured
+            # into separate fields so both surface in their own columns.
+            def _is_ipish(v: str) -> bool:
+                v = v.strip()
+                if not v or v in ("-", "::1", "127.0.0.1"):
+                    return False
+                return (v.count(".") == 3 and v.replace(".", "").isdigit()) or (":" in v and v.count(":") >= 2)
+
+            if type_label == "RDP (Outbound)":
+                _val = str(ed.get("Value") or "").strip()
+                _dest_host = ""
+                _dest_ip   = ""
+                if eid == 1024:                      # RDPClient: destination host name
+                    _dest_host = _val
+                elif eid == 1102:                    # RDPClient: destination IP
+                    _dest_ip = _val
+                _tsn = str(ed.get("TargetServerName") or "").strip()
+                if _tsn:
+                    _dest_host = _dest_host or _tsn
+                # If a "host" field actually holds an IP, file it as the IP.
+                if _dest_host and not _dest_ip and _is_ipish(_dest_host):
+                    _dest_ip, _dest_host = _dest_host, ""
+                if _dest_host and not bucket["_remote_host"]:
+                    bucket["_remote_host"] = _dest_host
+                    bucket["_remote_norm"] = _norm_remote_for_match(_dest_host)
+                if _dest_ip and not bucket["_remote_ip"]:
+                    bucket["_remote_ip"] = _dest_ip
+            else:
+                remote = (ed.get("IpAddress") or ed.get("Source") or "").strip()
+                if remote and remote not in ("-", "::1", "127.0.0.1"):
+                    if not bucket["_remote_host"]:
+                        bucket["_remote_host"] = remote
+                        bucket["_remote_norm"] = _ev_remote_norm
+                    if not bucket["_remote_ip"] and _is_ipish(remote):
+                        bucket["_remote_ip"] = remote
 
             # EID semantics
             if type_label == "Classic RA":
@@ -3998,6 +4090,11 @@ class _RemoteAssistanceDialog(QDialog):
                     bucket["_has_end"] = True
                 # No control assignment — Windows logs carry no explicit RDP
                 # "control granted" event; value stays "Unknown" (set in _new_bucket).
+            elif type_label == "RDP (Outbound)":
+                if eid in (1024, 1102, 4648):   # connection initiated / attempt
+                    bucket["_has_start"] = True
+                if eid in (1026, 1105):         # disconnected / transport closed
+                    bucket["_has_end"] = True
 
         # ── M2: merge TS-channel and Security-channel RDP buckets ────────────
         # TerminalServices events use a small integer SessionID as their explicit
@@ -4157,6 +4254,15 @@ class _RemoteAssistanceDialog(QDialog):
                     status = "Disconnected (no auth logged)"
                 else:
                     status = "Unknown"
+            elif type_label == "RDP (Outbound)":
+                if bkt["_has_start"] and bkt["_has_end"]:
+                    status = "Completed"
+                elif bkt["_has_start"]:
+                    status = "Outbound (no disconnect logged)"
+                elif bkt["_has_end"]:
+                    status = "Partial (no connect)"
+                else:
+                    status = "Detected"
             elif type_label == "Remote Help":
                 # L5: Remote Help EID semantics are not publicly documented.
                 # For now status is always "Detected"; future work can wire
@@ -4170,6 +4276,11 @@ class _RemoteAssistanceDialog(QDialog):
             flags: list[str] = []
             if type_label == "Classic RA" and bkt["_control"] == "Yes":
                 flags.append("CONTROL_GRANTED")
+            if bkt.get("_remote_acct"):
+                # Outbound RDP: the account used to authenticate ON the remote
+                # host (SANS "Account Whose Credentials Were Used" / the 4648
+                # target).  Surfaced so the source-side row shows both actors.
+                flags.append(f"REMOTE_ACCT:{bkt['_remote_acct']}")
             if dur_secs < 0 and start_dt and end_dt:
                 flags.append("OUT_OF_ORDER")
             if len(evs) == 1:
@@ -4213,6 +4324,7 @@ class _RemoteAssistanceDialog(QDialog):
                 "duration_secs": dur_secs,
                 "user":          bkt["_user"],
                 "remote_host":   bkt["_remote_host"],
+                "remote_ip":     bkt.get("_remote_ip", ""),
                 "control":       bkt["_control"],
                 "status":        status,
                 "event_count":   len(evs),
@@ -4244,7 +4356,8 @@ class _RemoteAssistanceDialog(QDialog):
         frow.addWidget(QLabel("Type:"))
         self._cmb_type = QComboBox()
         self._cmb_type.addItems(
-            ["All Types", "Classic RA", "Remote Help", "RDP Session", "Quick Assist"]
+            ["All Types", "Classic RA", "Remote Help", "RDP Session",
+             "RDP (Outbound)", "Quick Assist"]
         )
         frow.addWidget(self._cmb_type)
 
@@ -4338,7 +4451,7 @@ class _RemoteAssistanceDialog(QDialog):
                 continue
             if needle:
                 haystack = " ".join([
-                    s["computer"], s["user"], s["remote_host"],
+                    s["computer"], s["user"], s["remote_host"], s.get("remote_ip", ""),
                     s["session_key"], s["status"], ", ".join(s["flags"]),
                 ]).lower()
                 if needle not in haystack:
@@ -4373,6 +4486,7 @@ class _RemoteAssistanceDialog(QDialog):
                 s["duration"],
                 s["user"],
                 s["remote_host"],
+                s.get("remote_ip", ""),
                 s["control"],
                 s["status"],
                 str(s["event_count"]),
@@ -4380,7 +4494,7 @@ class _RemoteAssistanceDialog(QDialog):
             ]
             _COL_TYPE     = 0
             _COL_DURATION = 4
-            _COL_EVENTS   = 9
+            _COL_EVENTS   = 10
             for c, text in enumerate(cells):
                 if c == _COL_DURATION:
                     # Numeric sort: unknown/out-of-order durations (duration_secs < 0)
@@ -4521,6 +4635,7 @@ class _RemoteAssistanceDialog(QDialog):
                     lambda s: s["duration"],
                     lambda s: s["user"],
                     lambda s: s["remote_host"],
+                    lambda s: s.get("remote_ip", ""),
                     lambda s: s["control"],
                     lambda s: s["status"],
                     lambda s: s["event_count"],
@@ -4574,6 +4689,11 @@ class _RemoteAssistJMFetchWorker(QThread):
         "Microsoft-Windows-RemoteHelp/Operational",
         "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
         "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational",
+        # Source-side / OUTBOUND RDP (SANS 508.2 "RDP Logs - Source System").
+        # RdpCoreTS is intentionally excluded — it is the destination-side stack
+        # (its 131 records an inbound connection attempt), so treating it as
+        # outbound would invert the direction. See _classify note.
+        "Microsoft-Windows-TerminalServices-RDPClient/Operational",
     )
     # Security legs are handled inline in run() with per-leg SQL predicates
     # (LogonType=10 for 4624/4634, LIKE filter for 4688) rather than a simple
@@ -4694,6 +4814,8 @@ class _RemoteAssistJMFetchWorker(QThread):
             f"                )"
             f"            )"
             f"        ))"
+            f"    OR (channel = 'Security' AND event_id = 4648"
+            f"        AND lower(event_data_json) LIKE '%termsrv%')"
             f") "
             f"ORDER BY timestamp_utc "
             f"LIMIT 200001"
