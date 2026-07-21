@@ -1378,6 +1378,27 @@ class _IntItem(QTableWidgetItem):
             return self.text() < other.text()
 
 
+def _fmt_ts_precision(raw_ts: object, digits: int) -> str:
+    """Format a raw ISO/UTC timestamp for a session-browser cell at the given
+    fractional-second precision (0/3/6).  No timezone conversion — the session
+    browsers show raw UTC, matching their historical behaviour.
+
+    digits==0 returns the seconds-only 'YYYY-MM-DD HH:MM:SS' head, byte-identical
+    to the previous ``replace("T"," ").rstrip("Z")[:19]`` display.  3/6 truncate a
+    longer fraction and zero-pad a shorter one to the requested width.
+    """
+    ts = str(raw_ts or "").strip()
+    if not ts:
+        return ""
+    ts = ts.rstrip("Z").replace("T", " ")
+    head, _, frac = ts.partition(".")
+    head = head[:19]
+    if not digits:
+        return head
+    frac = ("".join(c for c in frac if c.isdigit()) + "000000")[:digits]
+    return head + "." + frac
+
+
 # ── Logon Session Browser dialog ──────────────────────────────────────────────
 
 class _LogonSessionDialog(QDialog):
@@ -1477,6 +1498,7 @@ class _LogonSessionDialog(QDialog):
                 "logoff":         None,
                 "first_seen_ts":  "",
                 "last_seen_ts":   "",
+                "last_seen_ts_raw": "",   # full-precision raw of the last-seen event (display only)
                 "related_keys":   set(),
                 "linked_lid_raw": "",   # TargetLinkedLogonId from 4624, resolved later
                 "linked_lid":     "",   # resolved sibling LogonId after post-pass
@@ -1492,6 +1514,16 @@ class _LogonSessionDialog(QDialog):
                     sess["first_seen_ts"] = ev_ts
                 if not sess["last_seen_ts"] or ev_ts > sess["last_seen_ts"]:
                     sess["last_seen_ts"] = ev_ts
+                    sess["last_seen_ts_raw"] = str(ev.get("timestamp", "") or "")
+                elif ev_ts == sess["last_seen_ts"]:
+                    # Same wall-clock second as the current last-seen: last_seen_ts
+                    # (second-granular) doesn't move, but the raw parallel must keep
+                    # the LATEST microsecond so a last-seen-branch End renders the
+                    # true final activity, not whichever same-second event arrived
+                    # first.  Fixed-width ISO strings compare chronologically.
+                    _raw = str(ev.get("timestamp", "") or "")
+                    if _raw > sess["last_seen_ts_raw"]:
+                        sess["last_seen_ts_raw"] = _raw
             rid = ev.get("_record_id")
             if rid is not None:
                 sess["related_keys"].add((str(ev.get("_source_file", "") or ""), rid))
@@ -1595,24 +1627,33 @@ class _LogonSessionDialog(QDialog):
                 scope_start_ts = _norm_ts(start_ts) or sess["first_seen_ts"]
 
                 next_start_ts = ""
+                next_start_ts_raw = ""       # full-precision raw parallel (display only)
                 for next_sess in sessions[idx + 1:]:
                     next_logon = next_sess.get("logon")
                     if next_logon:
                         next_start_ts = _norm_ts(next_logon.get("timestamp", ""))
                         if next_start_ts:
+                            next_start_ts_raw = str(next_logon.get("timestamp", "") or "")
                             break
 
                 explicit_end_ts = str(logoff_ev.get("timestamp", "") or "") if logoff_ev else ""
                 explicit_end_norm = _norm_ts(explicit_end_ts)
                 candidate_end = explicit_end_norm
+                candidate_end_full = explicit_end_ts            # raw matching explicit_end_norm
                 if sess["last_seen_ts"] and sess["last_seen_ts"] > candidate_end:
                     candidate_end = sess["last_seen_ts"]
+                    candidate_end_full = sess["last_seen_ts_raw"]
 
+                # Parallel full-precision end: tracks the raw source of whichever
+                # branch wins, so the display can honour µs/ms precision without
+                # the pairing logic (which stays on second-precision values).
                 if next_start_ts and (not candidate_end or candidate_end >= next_start_ts):
                     scope_end_ts = next_start_ts
+                    scope_end_ts_full = next_start_ts_raw
                     scope_end_inclusive = False
                 else:
                     scope_end_ts = candidate_end
+                    scope_end_ts_full = candidate_end_full
                     scope_end_inclusive = bool(scope_end_ts)
 
                 if scope_start_ts and scope_end_ts:
@@ -1642,6 +1683,7 @@ class _LogonSessionDialog(QDialog):
                     "initiation":          self._TYPE_INITIATION.get(logon_type, "") if logon_type else "",
                     "start_ts":            start_ts,
                     "end_ts":              scope_end_ts,
+                    "end_ts_full":         scope_end_ts_full,   # raw, display precision only
                     "scope_start_ts":      scope_start_ts,
                     "scope_end_ts":        scope_end_ts,
                     "scope_end_inclusive": scope_end_inclusive,
@@ -1884,8 +1926,17 @@ class _LogonSessionDialog(QDialog):
             elif not s["scope_end_ts"]:
                 row_bg = active_color
 
-            start_disp = s["start_ts"].replace("T", " ").rstrip("Z")[:19] if s["start_ts"] else ""
-            end_disp   = s["end_ts"].replace("T", " ").rstrip("Z")[:19] if s["end_ts"] else "Active"
+            # Start/End honour the selected fractional-second precision (Duration
+            # stays at seconds — logon sessions are long-form and its _calc_duration
+            # is left untouched).  end_ts_full carries the raw source so every End
+            # branch (explicit logoff / inferred next-logon / last-seen) can show
+            # real sub-second detail rather than fabricated zeros.
+            _digits = get_ts_precision()
+            start_disp = _fmt_ts_precision(s["start_ts"], _digits) if s["start_ts"] else ""
+            end_disp   = (
+                _fmt_ts_precision(s.get("end_ts_full") or s["end_ts"], _digits)
+                if s["end_ts"] else "Active"
+            )
 
             cells = [
                 s["user"],
