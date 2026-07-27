@@ -3502,6 +3502,11 @@ class _RemoteAssistanceDialog(QDialog):
     _HEADERS = [
         "Type", "Computer", "Start", "End", "Duration",
         "User", "Remote Host", "Remote IP", "Control", "Status", "Events", "Flags",
+        # Provenance: exactly which event proved the start/end, and which log
+        # file(s) the session was reconstructed from.  A duration is only as
+        # trustworthy as the two events it was measured between, so the analyst
+        # must be able to see them without opening the event list.
+        "Evidence", "Source Log",
     ]
 
     _TYPE_COLORS: dict[str, str] = {
@@ -3863,9 +3868,100 @@ class _RemoteAssistanceDialog(QDialog):
                 "_control": ctrl_default, "_user": "", "_remote_host": "",
                 "_remote_ip": "", "_remote_acct": "",
                 "_user_norm": "", "_remote_norm": "",
+                # Provenance: the actual event that proved the start (first one
+                # seen) and the end (last one seen), for the Evidence column.
+                "_start_ev": None, "_end_ev": None,
             }
             all_buckets.append(b)
             return b
+
+        # ── Outbound (source-side) RDP session state machine ─────────────────
+        # TerminalServices-RDPClient logs a strictly sequential state machine per
+        # outbound connection:
+        #     1024 (connecting to <dest>) → 1029/1025/1102/1103 → 1105 → 1026
+        # There is NO per-connection id in these events (verified against a real
+        # log: no Correlation ActivityID reuse, no session field), so the ONLY
+        # honest way to pair a disconnect with its connect is by the log's own
+        # sequencing.  Plain time-proximity bucketing is wrong here in both
+        # directions: a multi-hour session splits into two rows (the 1026 lands
+        # far outside the window), while two back-to-back sessions merge into one
+        # (a fresh 1024 seconds after the previous 1026 falls inside it).
+        #
+        # Rules:
+        #   * EID 1024 ALWAYS opens a new session — it is the per-connection
+        #     anchor, so two 1024s can never share a row.
+        #   * A disconnect attaches to the session that is currently open, which
+        #     is what makes a real duration measurable.
+        #   * If a 1024 arrives while a previous session is still open, we cannot
+        #     tell which of the two a later disconnect belongs to.  Both are
+        #     flagged and neither reports a duration — that is precisely the
+        #     "1024 from one session paired with 1026 from another" false
+        #     positive, which would otherwise invent an hours-long session.
+        _OB_TYPE           = "RDP (Outbound)"
+        _OB_CONNECT_ANCHOR = frozenset({1024})
+        _OB_END_EIDS       = frozenset({1026, 1105})
+        # 1105 and 1026 are emitted milliseconds apart for the SAME teardown;
+        # this grace window keeps the trailing one on the session it belongs to
+        # instead of spawning a phantom disconnect-only row.
+        _OB_TRAIL_SECS     = 120.0
+        ob_state: dict = {}   # computer → {"cur": bucket|None, "ended": bool}
+
+        def _outbound_bucket(computer_key: str, computer_disp: str,
+                             eid: int, dt) -> dict:
+            st  = ob_state.setdefault(computer_key, {"cur": None, "ended": False})
+            cur = st["cur"]
+
+            def _open(ambiguous: bool = False) -> dict:
+                b = _new_bucket(_OB_TYPE, computer_key, _next_syn(), computer_disp)
+                if ambiguous:
+                    b["_ob_ambiguous"] = True
+                st["cur"], st["ended"] = b, False
+                return b
+
+            if eid in _OB_END_EIDS:
+                if cur is not None:
+                    if not st["ended"]:
+                        st["ended"] = True          # this teardown closes it
+                        return cur
+                    _last = cur["_end_dt"]
+                    if (dt is not None and _last is not None
+                            and 0 <= (dt - _last).total_seconds() <= _OB_TRAIL_SECS):
+                        return cur                  # trailing 1026 after 1105
+                # Nothing open to close: a disconnect whose connect is not in the
+                # log (log rollover, or collection started mid-session).
+                b = _new_bucket(_OB_TYPE, computer_key, _next_syn(), computer_disp)
+                b["_ob_orphan_end"] = True
+                st["cur"], st["ended"] = b, True
+                return b
+
+            # Connect-side event (1024 / 1025 / 1029 / 1102 / 1103 / 4648).
+            if eid in _OB_CONNECT_ANCHOR:
+                if cur is not None and not st["ended"]:
+                    # A Security 4648 for the same connection is normally written
+                    # a moment BEFORE the RDPClient 1024, so it opens the session
+                    # first.  If the open session has no anchor of its own yet and
+                    # this 1024 is right behind it, they are the same connection —
+                    # adopt it rather than splitting one login into two rows.
+                    _last = cur["_end_dt"]
+                    if (not cur.get("_ob_anchored") and dt is not None
+                            and _last is not None
+                            and 0 <= (dt - _last).total_seconds() <= _OB_TRAIL_SECS):
+                        cur["_ob_anchored"] = True
+                        return cur
+                    # Otherwise a second connection opened while the first was
+                    # still running: neither can claim a later disconnect.
+                    cur["_ob_superseded"] = True
+                    b = _open(ambiguous=True)
+                    b["_ob_anchored"] = True
+                    return b
+                b = _open()
+                b["_ob_anchored"] = True
+                return b
+            if cur is None or st["ended"]:
+                # A connect-side event with no anchor ahead of it (e.g. a lone
+                # 4648, or the log starting mid-burst) begins its own session.
+                return _open()
+            return cur
 
         for ev in events_sorted:
             ed  = _extract_ed(ev)
@@ -3907,7 +4003,11 @@ class _RemoteAssistanceDialog(QDialog):
             )
 
             # ── Bucket selection ──────────────────────────────────────────
-            if explicit_key and explicit_key not in ("0x0", "0", "-1", ""):
+            if type_label == _OB_TYPE:
+                # Source-side RDP is reconstructed by the RDPClient state machine
+                # above, not by time proximity — see the rationale there.
+                bucket = _outbound_bucket(computer, computer_raw, eid, dt)
+            elif explicit_key and explicit_key not in ("0x0", "0", "-1", ""):
                 # H1 fix: maintain a list per explicit key so the same key
                 # value recycled weeks later (RDP SessionID, FQDN|user reuse)
                 # creates a new bucket instead of collapsing into the old one.
@@ -4075,26 +4175,37 @@ class _RemoteAssistanceDialog(QDialog):
                     if not bucket["_remote_ip"] and _is_ipish(remote):
                         bucket["_remote_ip"] = remote
 
-            # EID semantics
+            # EID semantics.  _mark_start/_mark_end also capture WHICH event
+            # carried the proof, so the Evidence column can name it: the first
+            # start event and the last end event define the measured span.
+            def _mark_start() -> None:
+                bucket["_has_start"] = True
+                if bucket["_start_ev"] is None:
+                    bucket["_start_ev"] = ev
+
+            def _mark_end() -> None:
+                bucket["_has_end"] = True
+                bucket["_end_ev"] = ev
+
             if type_label == "Classic RA":
                 if eid == 1:
-                    bucket["_has_start"] = True
+                    _mark_start()
                 elif eid == 2:
                     bucket["_control"] = "Yes"   # explicit control grant
                 elif eid == 3:
-                    bucket["_has_end"] = True
+                    _mark_end()
             elif type_label == "RDP Session":
                 if eid in (21, 1149, 4624, 4778):
-                    bucket["_has_start"] = True
+                    _mark_start()
                 if eid in (23, 24, 4634, 4779):
-                    bucket["_has_end"] = True
+                    _mark_end()
                 # No control assignment — Windows logs carry no explicit RDP
                 # "control granted" event; value stays "Unknown" (set in _new_bucket).
             elif type_label == "RDP (Outbound)":
                 if eid in (1024, 1102, 4648):   # connection initiated / attempt
-                    bucket["_has_start"] = True
+                    _mark_start()
                 if eid in (1026, 1105):         # disconnected / transport closed
-                    bucket["_has_end"] = True
+                    _mark_end()
 
         # ── M2: merge TS-channel and Security-channel RDP buckets ────────────
         # TerminalServices events use a small integer SessionID as their explicit
@@ -4200,6 +4311,25 @@ class _RemoteAssistanceDialog(QDialog):
                         ts_b["_has_start"] = True
                     if sec_b["_has_end"]:
                         ts_b["_has_end"]   = True
+                    # Evidence must follow the events it describes: keep the
+                    # EARLIEST start proof and the LATEST end proof of the two
+                    # buckets, so the Evidence column still names the events
+                    # that actually bound the merged span.
+                    def _ev_dt(_e):
+                        return _parse_ts(str((_e or {}).get("timestamp") or ""))
+
+                    for _fld, _keep_earliest in (("_start_ev", True), ("_end_ev", False)):
+                        _mine, _theirs = ts_b.get(_fld), sec_b.get(_fld)
+                        if _theirs is None:
+                            continue
+                        if _mine is None:
+                            ts_b[_fld] = _theirs
+                            continue
+                        _a, _b2 = _ev_dt(_mine), _ev_dt(_theirs)
+                        if _a is None or _b2 is None:
+                            continue
+                        if (_b2 < _a) if _keep_earliest else (_b2 > _a):
+                            ts_b[_fld] = _theirs
                     sec_b["_absorbed"] = True
 
         _merge_rdp_buckets(all_buckets)
@@ -4219,6 +4349,9 @@ class _RemoteAssistanceDialog(QDialog):
             end_ts     = _fmt_ts(end_dt)
 
             # Duration
+            _out_of_order = bool(
+                start_dt and end_dt and (end_dt - start_dt).total_seconds() < 0
+            )
             if start_dt and end_dt:
                 secs = (end_dt - start_dt).total_seconds()
                 if secs < 0:
@@ -4234,6 +4367,24 @@ class _RemoteAssistanceDialog(QDialog):
             if len(evs) == 1 and not (bkt["_has_start"] and bkt["_has_end"]):
                 # Single-point evidence cannot prove elapsed session duration.
                 dur_str, dur_secs = "?", -1.0
+            if type_label == "RDP (Outbound)":
+                # A source-side duration is only real when this session logged
+                # BOTH its own connect and its own disconnect and the pairing
+                # between them was never in doubt.  Otherwise the span would be
+                # measured between events that may belong to different
+                # connections — the exact way a short session gets reported as
+                # hours long — so we say we do not know instead of guessing.
+                # Start/End still show the real observed event timestamps, and
+                # the Evidence column names what bounded them.
+                _ob_proven = (
+                    bkt["_has_start"] and bkt["_has_end"]
+                    and not bkt.get("_ob_ambiguous")
+                    and not bkt.get("_ob_superseded")
+                    and not bkt.get("_ob_orphan_end")
+                    and not _out_of_order
+                )
+                if not _ob_proven:
+                    dur_str, dur_secs = "Unavailable", -1.0
 
             # Status
             if type_label == "Classic RA":
@@ -4256,7 +4407,10 @@ class _RemoteAssistanceDialog(QDialog):
                     status = "Unknown"
             elif type_label == "RDP (Outbound)":
                 if bkt["_has_start"] and bkt["_has_end"]:
-                    status = "Completed"
+                    # "Completed" alone would imply the connect and disconnect
+                    # provably belong together; say so only when they do.
+                    status = ("Completed" if _ob_proven
+                              else "Completed (pairing uncertain)")
                 elif bkt["_has_start"]:
                     status = "Outbound (no disconnect logged)"
                 elif bkt["_has_end"]:
@@ -4281,8 +4435,19 @@ class _RemoteAssistanceDialog(QDialog):
                 # host (SANS "Account Whose Credentials Were Used" / the 4648
                 # target).  Surfaced so the source-side row shows both actors.
                 flags.append(f"REMOTE_ACCT:{bkt['_remote_acct']}")
-            if dur_secs < 0 and start_dt and end_dt:
+            # Was: `dur_secs < 0 and start_dt and end_dt`, which mislabelled any
+            # session whose duration is merely UNKNOWN (also dur_secs = -1) as
+            # having out-of-order timestamps.  Test the ordering directly.
+            if _out_of_order:
                 flags.append("OUT_OF_ORDER")
+            if bkt.get("_ob_superseded"):
+                flags.append("NO_DISCONNECT_LOGGED")
+            if bkt.get("_ob_ambiguous"):
+                # Opened while a previous outbound connection was still open, so
+                # a later disconnect cannot be attributed to one of them.
+                flags.append("AMBIGUOUS_PAIRING")
+            if bkt.get("_ob_orphan_end"):
+                flags.append("DISCONNECT_ONLY")
             if len(evs) == 1:
                 flags.append("SINGLE_EVENT")
 
@@ -4314,6 +4479,49 @@ class _RemoteAssistanceDialog(QDialog):
             if _unfilterable_count > 0:
                 flags.append(f"UNFILTERABLE_EVENTS:{_unfilterable_count}")
 
+            # ── Provenance: Evidence + Source Log ─────────────────────────
+            # Name the exact events the Start/End columns rest on.  Where an
+            # event proves the boundary we cite it; where none exists we say so
+            # and cite the first/last event merely OBSERVED instead, so a
+            # last-seen timestamp is never mistaken for a real session end.
+            def _chan_short(e: dict) -> str:
+                ch = str(e.get("channel") or "").strip()
+                if not ch:
+                    return "?"
+                # "Microsoft-Windows-TerminalServices-RDPClient/Operational"
+                #   → "RDPClient";  "Security" → "Security"
+                return ch.rsplit("/", 1)[0].rsplit("-", 1)[-1] or ch
+
+            def _ev_label(e: "dict | None") -> str:
+                if not e:
+                    return "?"
+                return f"EID {e.get('event_id', '?')} ({_chan_short(e)})"
+
+            _evs_ordered = sorted(evs, key=lambda e: str(e.get("timestamp") or ""))
+            _start_ev = bkt.get("_start_ev")
+            _end_ev   = bkt.get("_end_ev")
+            if _start_ev is not None:
+                _start_txt = f"Start: {_ev_label(_start_ev)}"
+            else:
+                _start_txt = (
+                    f"Start: not logged (first seen {_ev_label(_evs_ordered[0])})"
+                )
+            if _end_ev is not None:
+                _end_txt = f"End: {_ev_label(_end_ev)}"
+            else:
+                _end_txt = (
+                    f"End: not logged (last seen {_ev_label(_evs_ordered[-1])})"
+                )
+            evidence = f"{_start_txt} · {_end_txt}"
+
+            import os as _os_ev
+            _srcs = sorted({
+                _os_ev.path.basename(str(e.get("source_file") or "").strip())
+                for e in evs
+                if str(e.get("source_file") or "").strip()
+            })
+            source_log = "; ".join(_srcs)
+
             sessions.append({
                 "type":          type_label,
                 "session_key":   bkt["_key"],
@@ -4331,6 +4539,8 @@ class _RemoteAssistanceDialog(QDialog):
                 "filterable_event_count": len(related_keys),
                 "unfilterable_event_count": _unfilterable_count,
                 "flags":         flags,
+                "evidence":      evidence,
+                "source_log":    source_log,
                 "related_keys":  related_keys,
             })
 
@@ -4366,6 +4576,10 @@ class _RemoteAssistanceDialog(QDialog):
         self._cmb_status.addItems([
             "All Statuses", "Completed", "Active / Ongoing",
             "Partial (no start)", "Disconnected (no auth logged)",
+            # Source-side (outbound) RDP statuses — previously produced by
+            # _build_sessions but missing here, so they could not be filtered.
+            "Completed (pairing uncertain)",
+            "Outbound (no disconnect logged)", "Partial (no connect)",
             "Detected", "Unknown",
         ])
         frow.addWidget(self._cmb_status)
@@ -4453,6 +4667,7 @@ class _RemoteAssistanceDialog(QDialog):
                 haystack = " ".join([
                     s["computer"], s["user"], s["remote_host"], s.get("remote_ip", ""),
                     s["session_key"], s["status"], ", ".join(s["flags"]),
+                    s.get("evidence", ""), s.get("source_log", ""),
                 ]).lower()
                 if needle not in haystack:
                     continue
@@ -4491,6 +4706,8 @@ class _RemoteAssistanceDialog(QDialog):
                 s["status"],
                 str(s["event_count"]),
                 ", ".join(s["flags"]),
+                s.get("evidence", ""),
+                s.get("source_log", ""),
             ]
             _COL_TYPE     = 0
             _COL_DURATION = 4
@@ -4640,6 +4857,8 @@ class _RemoteAssistanceDialog(QDialog):
                     lambda s: s["status"],
                     lambda s: s["event_count"],
                     lambda s: ", ".join(s["flags"]),
+                    lambda s: s.get("evidence", ""),
+                    lambda s: s.get("source_log", ""),
                 ]
                 assert len(_EXTRACTORS) == len(self._HEADERS), (
                     f"CSV extractors ({len(_EXTRACTORS)}) out of sync with "
