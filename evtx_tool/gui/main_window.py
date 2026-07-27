@@ -3539,6 +3539,10 @@ class _RemoteAssistanceDialog(QDialog):
                              "withheld rather than guessed.",
         "DISCONNECT_ONLY": "A disconnect with no matching connect in the log "
                            "(collection started mid-session, or the log rolled over).",
+        "LOCAL_CONSOLE": "Terminal Services logged this session with source "
+                         "Address 'LOCAL' — a console logon at the machine "
+                         "itself, NOT a remote connection. Do not count it as "
+                         "RDP access from elsewhere.",
         "END_INFERRED": "Ended by a multi-transport teardown (1105) that no "
                         "session disconnect (1026) ever confirmed — the session "
                         "may have continued past the End shown.",
@@ -3704,6 +3708,12 @@ class _RemoteAssistanceDialog(QDialog):
         def _fmt_ts(d) -> str:
             return d.strftime("%Y-%m-%d %H:%M:%S") if d else ""
 
+        def _ev_dt_of(e):
+            """Parsed timestamp of a proof event, or None."""
+            if not e:
+                return None
+            return _parse_ts(str(e.get("timestamp") or ""))
+
         def _fmt_ts_full(d) -> str:
             # Microsecond form, fed to _fmt_ts_precision() at display time so
             # this browser honours the Seconds/Milliseconds/Microseconds
@@ -3732,9 +3742,28 @@ class _RemoteAssistanceDialog(QDialog):
                 # L1: skip "Data" key itself; its contents are handled by
                 # Shape B/C below.  Including it here would inject the raw
                 # list/dict repr as a string field value.
-                for k, v in ed_raw.items():
-                    if not k.startswith("#") and not k.startswith("@") and k != "Data":
-                        result[k] = str(v or "")
+                #
+                # Shape A' — <UserData><EventXML>: TerminalServices-
+                # LocalSessionManager (EID 21/23/24/25, the canonical INBOUND
+                # RDP artifact) and RemoteAssistance put their payload in
+                # UserData, which parses to a NESTED dict
+                # {"EventXML": {"User": ..., "Address": ...}}.  Stringifying
+                # that wrapper left User and Address unreachable, so every
+                # inbound RDP session displayed a blank User and Remote IP.
+                # Descend into nested wrappers instead; outer keys win, so no
+                # existing flat field can be overwritten by a nested one.
+                def _flatten_into(dst: dict, src: dict, depth: int = 0) -> None:
+                    for _k, _v in src.items():
+                        if (_k.startswith("#") or _k.startswith("@")
+                                or _k == "Data"):
+                            continue
+                        if isinstance(_v, dict):
+                            if depth < 3:      # guard against pathological XML
+                                _flatten_into(dst, _v, depth + 1)
+                        elif not isinstance(_v, list):
+                            dst.setdefault(_k, str(_v or ""))
+
+                _flatten_into(result, ed_raw)
                 return result
             data = ed_raw.get("Data")
             if data is None:
@@ -3858,33 +3887,65 @@ class _RemoteAssistanceDialog(QDialog):
                 return None
             return None
 
-        def _dedup_records(evts: list[dict]) -> list[dict]:
+        import os as _os_mod   # local alias: this scope rebinds other names
+
+        def _ident(e: dict):
+            """Content identity of one physical record, or None if unknowable.
+
+            Deliberately EXCLUDES source_file.  Keying on the filename missed
+            the common real case: a collection folder holding "X.evtx",
+            "X - Copy.evtx", "X - Copy (2).evtx".  Those are the same records
+            under different names, and on the sample corpus they turned 7
+            outbound sessions into 70 rows, every duration "Unavailable".
+
+            EventRecordID is unique within a log, so a match on all of
+            host + channel + event id + exact timestamp + record id is the
+            same record seen twice.  Two genuinely distinct events cannot
+            collide: within one file the record id differs, and across hosts
+            the computer differs.
+            """
+            rid = str(e.get("record_id") or "").strip()
+            if not rid:
+                return None          # unidentifiable → never deduplicated
+            return (
+                str(e.get("computer") or "").strip().lower(),
+                str(e.get("channel") or "").strip().lower(),
+                str(e.get("event_id") or "").strip(),
+                str(e.get("timestamp") or "").strip(),
+                rid,
+            )
+
+        def _dedup_records(evts: list[dict]) -> tuple[list[dict], dict]:
             """Collapse repeats of the same physical record.
 
-            EventRecordID is unique within an .evtx, so (source_file,
-            record_id) identifies one record: a second copy is the same
-            evidence ingested twice (the file selected twice, a folder holding
-            a duplicate, overlapping exports) — not a second event.  Nothing
-            is hidden; only double-counting is.
+            A repeat is the same evidence ingested twice (file picked twice,
+            folder holding copies, overlapping exports) — not a second event.
+            Nothing is hidden: the dropped copies' file names are returned so
+            the Source Log column can still name every file the record was
+            found in, and only double-counting is removed.
 
             This matters most for outbound RDP, where every 1024 anchors a new
             session: an un-deduplicated repeat both invented a phantom session
             AND marked the real one AMBIGUOUS_PAIRING, discarding a duration
-            the log genuinely proves.  Records without both fields are always
-            kept — never drop an event we cannot positively identify.
+            the log genuinely proves.
             """
-            seen: set = set()
-            out: list[dict] = []
+            srcs: dict = {}          # identity → {source basenames}
+            out:  list[dict] = []
             for e in evts:
-                sf = str(e.get("source_file") or "").strip()
-                ri = str(e.get("record_id") or "").strip()
-                if sf and ri:
-                    key = (sf, ri)
-                    if key in seen:
-                        continue
-                    seen.add(key)
+                key  = _ident(e)
+                base = _os_mod.path.basename(
+                    str(e.get("source_file") or "").strip()
+                )
+                if key is None:
+                    out.append(e)
+                    continue
+                if key in srcs:
+                    if base:
+                        srcs[key].add(base)   # same record, another file
+                    continue
+                srcs[key] = {base} if base else set()
                 out.append(e)
-            return out
+            return out, srcs
 
         def _group_key(e: dict) -> str:
             # MUST derive the key exactly as the event loop below does.  If the
@@ -3903,8 +3964,9 @@ class _RemoteAssistanceDialog(QDialog):
         # Unparseable timestamps sort last so they cannot corrupt the ordering
         # of the events that do have a readable time.
         _TS_LAST = _dt.max
+        _events_unique, _dup_sources = _dedup_records(events)
         events_sorted: list[dict] = sorted(
-            _dedup_records(events),
+            _events_unique,
             key=lambda e: (
                 _group_key(e),
                 _parse_ts(str(e.get("timestamp") or "")) or _TS_LAST,
@@ -4298,7 +4360,18 @@ class _RemoteAssistanceDialog(QDialog):
                 if _dest_ip and not bucket["_remote_ip"]:
                     bucket["_remote_ip"] = _dest_ip
             else:
-                remote = (ed.get("IpAddress") or ed.get("Source") or "").strip()
+                # "Address" is what TerminalServices-LocalSessionManager calls
+                # the source — the canonical inbound RDP artifact.  Without it
+                # the Remote IP column was blank for every LSM-derived session.
+                remote = (ed.get("IpAddress") or ed.get("Source")
+                          or ed.get("Address") or "").strip()
+                if remote.upper() == "LOCAL":
+                    # LSM records console logons too, with Address "LOCAL".
+                    # That is not a remote connection: keep the row (it is real
+                    # session activity) but mark it so it is never counted as
+                    # RDP access from elsewhere.
+                    bucket["_local_console"] = True
+                    remote = ""
                 if remote and remote not in ("-", "::1", "127.0.0.1"):
                     if not bucket["_remote_host"]:
                         bucket["_remote_host"] = remote
@@ -4474,8 +4547,20 @@ class _RemoteAssistanceDialog(QDialog):
             if not evs:
                 continue
             type_label = bkt["_type"]
-            start_dt   = bkt["_start_dt"]
-            end_dt     = bkt["_end_dt"]
+            # Bound the session by the events that actually PROVE its start and
+            # end — the ones the Evidence column names — falling back to first/
+            # last seen when no such event exists (Evidence then says so).
+            #
+            # Using the bucket's min/max instead made Duration disagree with its
+            # own Evidence: an inbound session citing "Start: EID 21 · End: EID
+            # 23" was measured to the trailing 22/41/42 events that follow the
+            # logoff, reporting spans several seconds longer than the 21→23
+            # span it claimed to describe.  Outbound was unaffected (1024 and
+            # 1026 are already the first and last events), and stays identical.
+            _sp = _ev_dt_of(bkt.get("_start_ev"))
+            _ep = _ev_dt_of(bkt.get("_end_ev"))
+            start_dt   = _sp if _sp is not None else bkt["_start_dt"]
+            end_dt     = _ep if _ep is not None else bkt["_end_dt"]
             start_ts   = _fmt_ts(start_dt)
             end_ts     = _fmt_ts(end_dt)
 
@@ -4600,6 +4685,8 @@ class _RemoteAssistanceDialog(QDialog):
                 flags.append("END_INFERRED")
             if bkt.get("_undated"):
                 flags.append(f"UNDATED_EVENTS:{bkt['_undated']}")
+            if bkt.get("_local_console"):
+                flags.append("LOCAL_CONSOLE")
             if len(evs) == 1:
                 flags.append("SINGLE_EVENT")
 
@@ -4666,13 +4753,22 @@ class _RemoteAssistanceDialog(QDialog):
                 )
             evidence = f"{_start_txt} · {_end_txt}"
 
-            import os as _os_ev
-            _srcs = sorted({
-                _os_ev.path.basename(str(e.get("source_file") or "").strip())
-                for e in evs
-                if str(e.get("source_file") or "").strip()
-            })
-            source_log = "; ".join(_srcs)
+            # Every file each record was found in — including copies collapsed
+            # by _dedup_records, so a deduplicated row still discloses that the
+            # same evidence appeared under several file names.
+            _srcs: set = set()
+            for e in evs:
+                _k = _ident(e)
+                _extra = _dup_sources.get(_k) if _k is not None else None
+                if _extra:
+                    _srcs |= _extra
+                else:
+                    _b = _os_mod.path.basename(
+                        str(e.get("source_file") or "").strip()
+                    )
+                    if _b:
+                        _srcs.add(_b)
+            source_log = "; ".join(sorted(_srcs))
 
             sessions.append({
                 "type":          type_label,
