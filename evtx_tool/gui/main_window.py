@@ -3509,6 +3509,32 @@ class _RemoteAssistanceDialog(QDialog):
         "Evidence", "Source Log",
     ]
 
+    # Hover text for the Flags column.  Several of these exist purely to warn
+    # that a duration could not be proven; an unexplained token is a warning
+    # the analyst cannot act on.
+    _FLAG_HELP: dict[str, str] = {
+        "CONTROL_GRANTED": "The remote party was granted control of this desktop.",
+        "REMOTE_ACCT": "Account used to authenticate on the REMOTE host "
+                       "(Security 4648 target), distinct from the local user.",
+        "OUT_OF_ORDER": "The end event is timestamped BEFORE the start event — "
+                        "check for a clock change or timezone skew.",
+        "NO_DISCONNECT_LOGGED": "A new outbound connection opened while this one "
+                                "was still open, so no later disconnect can be "
+                                "attributed to it. Duration unknown.",
+        "AMBIGUOUS_PAIRING": "This connection began before the previous one closed, "
+                             "so a disconnect could belong to either. Duration "
+                             "withheld rather than guessed.",
+        "DISCONNECT_ONLY": "A disconnect with no matching connect in the log "
+                           "(collection started mid-session, or the log rolled over).",
+        "LONG_SPAN_VERIFY": "Connect and disconnect are more than 24h apart. The "
+                            "pairing is what the log shows, but corroborate against "
+                            "reboot/sleep events before relying on the duration.",
+        "SINGLE_EVENT": "Reconstructed from one event only — no elapsed time can "
+                        "be derived from a single point in time.",
+        "UNFILTERABLE_EVENTS": "Some events lack a record ID and cannot be included "
+                               "when filtering the main view to this session.",
+    }
+
     _TYPE_COLORS: dict[str, str] = {
         "Classic RA":  "#1e4d8c",
         "Remote Help": "#2e6820",
@@ -3807,10 +3833,56 @@ class _RemoteAssistanceDialog(QDialog):
                 return None
             return None
 
+        def _dedup_records(evts: list[dict]) -> list[dict]:
+            """Collapse repeats of the same physical record.
+
+            EventRecordID is unique within an .evtx, so (source_file,
+            record_id) identifies one record: a second copy is the same
+            evidence ingested twice (the file selected twice, a folder holding
+            a duplicate, overlapping exports) — not a second event.  Nothing
+            is hidden; only double-counting is.
+
+            This matters most for outbound RDP, where every 1024 anchors a new
+            session: an un-deduplicated repeat both invented a phantom session
+            AND marked the real one AMBIGUOUS_PAIRING, discarding a duration
+            the log genuinely proves.  Records without both fields are always
+            kept — never drop an event we cannot positively identify.
+            """
+            seen: set = set()
+            out: list[dict] = []
+            for e in evts:
+                sf = str(e.get("source_file") or "").strip()
+                ri = str(e.get("record_id") or "").strip()
+                if sf and ri:
+                    key = (sf, ri)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                out.append(e)
+            return out
+
+        def _group_key(e: dict) -> str:
+            # MUST derive the key exactly as the event loop below does.  If the
+            # two disagree (e.g. a Computer value with stray whitespace, which
+            # the loop strips and this did not), a host's events land in one
+            # bucket but arrive out of chronological order — and the outbound
+            # state machine, which pairs connects to disconnects by log order,
+            # then pairs the wrong ones.
+            return (str(e.get("computer") or "").strip().lower()
+                    or str(e.get("source_file") or "").strip().lower())
+
+        # Sort on the PARSED timestamp, not the raw string: string ordering
+        # breaks across the two timestamp shapes the two engines emit
+        # ("...T09:00:00Z" vs "... 09:00:00.123456") and puts a sub-second
+        # timestamp before the whole-second one in the same second ('.' < 'Z').
+        # Unparseable timestamps sort last so they cannot corrupt the ordering
+        # of the events that do have a readable time.
+        _TS_LAST = _dt.max
         events_sorted: list[dict] = sorted(
-            events,
+            _dedup_records(events),
             key=lambda e: (
-                str(e.get("computer") or e.get("source_file") or "").lower(),
+                _group_key(e),
+                _parse_ts(str(e.get("timestamp") or "")) or _TS_LAST,
                 str(e.get("timestamp") or ""),
             ),
         )
@@ -3904,6 +3976,10 @@ class _RemoteAssistanceDialog(QDialog):
         # this grace window keeps the trailing one on the session it belongs to
         # instead of spawning a phantom disconnect-only row.
         _OB_TRAIL_SECS     = 120.0
+        # Above this, a proven connect→disconnect span is still shown but gets
+        # LONG_SPAN_VERIFY (see the Duration block) — a prompt to corroborate
+        # against reboots/sleep, not a claim that the pairing is wrong.
+        _OB_LONG_SPAN_SECS = 24 * 3600.0
         ob_state: dict = {}   # computer → {"cur": bucket|None, "ended": bool}
 
         def _outbound_bucket(computer_key: str, computer_disp: str,
@@ -4348,7 +4424,11 @@ class _RemoteAssistanceDialog(QDialog):
             start_ts   = _fmt_ts(start_dt)
             end_ts     = _fmt_ts(end_dt)
 
-            # Duration
+            # Duration.  Reset every iteration: these are read again in the
+            # Status/Flags blocks below, and a value left over from a previous
+            # session would silently mislabel this one.
+            _ob_proven = False
+            _ob_long_span = False
             _out_of_order = bool(
                 start_dt and end_dt and (end_dt - start_dt).total_seconds() < 0
             )
@@ -4385,6 +4465,15 @@ class _RemoteAssistanceDialog(QDialog):
                 )
                 if not _ob_proven:
                     dur_str, dur_secs = "Unavailable", -1.0
+                # A proven pair spanning more than a day is what the log
+                # literally says, so the duration stands — but a workstation
+                # rarely holds one RDP connection open that long without a
+                # reboot or sleep in between, and a stale 1026 is exactly how a
+                # short session would come to look like days.  Flag it for
+                # corroboration rather than either hiding it or presenting it
+                # with the same confidence as a 6-minute session.
+                elif dur_secs > _OB_LONG_SPAN_SECS:
+                    _ob_long_span = True
 
             # Status
             if type_label == "Classic RA":
@@ -4448,6 +4537,8 @@ class _RemoteAssistanceDialog(QDialog):
                 flags.append("AMBIGUOUS_PAIRING")
             if bkt.get("_ob_orphan_end"):
                 flags.append("DISCONNECT_ONLY")
+            if _ob_long_span:
+                flags.append("LONG_SPAN_VERIFY")
             if len(evs) == 1:
                 flags.append("SINGLE_EVENT")
 
@@ -4712,6 +4803,8 @@ class _RemoteAssistanceDialog(QDialog):
             _COL_TYPE     = 0
             _COL_DURATION = 4
             _COL_EVENTS   = 10
+            _COL_FLAGS    = 11
+            _COL_EVIDENCE = 12
             for c, text in enumerate(cells):
                 if c == _COL_DURATION:
                     # Numeric sort: unknown/out-of-order durations (duration_secs < 0)
@@ -4727,6 +4820,17 @@ class _RemoteAssistanceDialog(QDialog):
                 else:
                     item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if c == _COL_FLAGS and s["flags"]:
+                    # These flags are the only warning an analyst gets that a
+                    # duration is not trustworthy, and nothing else in the UI
+                    # defines them — spell them out on hover.
+                    item.setToolTip("\n".join(
+                        f"{f}: {self._FLAG_HELP[f.split(':', 1)[0]]}"
+                        for f in s["flags"]
+                        if f.split(":", 1)[0] in self._FLAG_HELP
+                    ) or text)
+                elif c == _COL_EVIDENCE and text:
+                    item.setToolTip(text)   # long; the column elides it
                 if c == _COL_TYPE:
                     # Store the shown_sessions index for context-menu lookup.
                     item.setData(Qt.ItemDataRole.UserRole, orig_row)
