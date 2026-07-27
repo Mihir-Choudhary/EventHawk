@@ -1399,6 +1399,19 @@ def _fmt_ts_precision(raw_ts: object, digits: int) -> str:
     return head + "." + frac
 
 
+def _ts_disp(session: dict, which: str) -> str:
+    """Session Start/End for display, at the analyst's chosen precision.
+
+    Prefers the full-precision ``*_ts_full`` copy and falls back to the
+    second-truncated value, so a session dict built before those fields
+    existed still renders.
+    """
+    return _fmt_ts_precision(
+        session.get(f"{which}_ts_full") or session.get(f"{which}_ts") or "",
+        get_ts_precision(),
+    )
+
+
 # ── Logon Session Browser dialog ──────────────────────────────────────────────
 
 class _LogonSessionDialog(QDialog):
@@ -3526,6 +3539,12 @@ class _RemoteAssistanceDialog(QDialog):
                              "withheld rather than guessed.",
         "DISCONNECT_ONLY": "A disconnect with no matching connect in the log "
                            "(collection started mid-session, or the log rolled over).",
+        "END_INFERRED": "Ended by a multi-transport teardown (1105) that no "
+                        "session disconnect (1026) ever confirmed — the session "
+                        "may have continued past the End shown.",
+        "UNDATED_EVENTS": "Some events in this session have a timestamp that "
+                          "could not be parsed; they are included but cannot "
+                          "bound the Start/End.",
         "LONG_SPAN_VERIFY": "Connect and disconnect are more than 24h apart. The "
                             "pairing is what the log shows, but corroborate against "
                             "reboot/sleep events before relying on the duration.",
@@ -3684,6 +3703,12 @@ class _RemoteAssistanceDialog(QDialog):
 
         def _fmt_ts(d) -> str:
             return d.strftime("%Y-%m-%d %H:%M:%S") if d else ""
+
+        def _fmt_ts_full(d) -> str:
+            # Microsecond form, fed to _fmt_ts_precision() at display time so
+            # this browser honours the Seconds/Milliseconds/Microseconds
+            # setting like the Logon and WiFi browsers already do.
+            return d.strftime("%Y-%m-%d %H:%M:%S.%f") if d else ""
 
         def _extract_ed(event: dict) -> dict:
             ed_raw = event.get("event_data") or {}
@@ -3971,10 +3996,20 @@ class _RemoteAssistanceDialog(QDialog):
         #     positive, which would otherwise invent an hours-long session.
         _OB_TYPE           = "RDP (Outbound)"
         _OB_CONNECT_ANCHOR = frozenset({1024})
-        _OB_END_EIDS       = frozenset({1026, 1105})
-        # 1105 and 1026 are emitted milliseconds apart for the SAME teardown;
-        # this grace window keeps the trailing one on the session it belongs to
-        # instead of spawning a phantom disconnect-only row.
+        # 1026 ("disconnect", with a reason code) is the authoritative end of the
+        # RDP session.  1105 only says a MULTI-TRANSPORT (UDP side-channel)
+        # connection went away — normally emitted a fraction of a second before
+        # the 1026 of the same teardown, but it can also fire mid-session when
+        # the UDP transport drops and the session carries on over TCP.  Treating
+        # it as a hard end truncated such a session AND spawned a phantom
+        # disconnect-only row for the real 1026, so it is only a TENTATIVE end:
+        # a later 1026 with no intervening 1024 reclaims the session.
+        _OB_END_DEFINITIVE = frozenset({1026})
+        _OB_END_TENTATIVE  = frozenset({1105})
+        _OB_END_EIDS       = _OB_END_DEFINITIVE | _OB_END_TENTATIVE
+        # Grace window for adopting a Security 4648 into the 1024 that follows it
+        # (see the connect branch).  Deliberately NOT used to pair disconnects —
+        # that is decided by log semantics above, not by an arbitrary window.
         _OB_TRAIL_SECS     = 120.0
         # Above this, a proven connect→disconnect span is still shown but gets
         # LONG_SPAN_VERIFY (see the Duration block) — a prompt to corroborate
@@ -3998,15 +4033,28 @@ class _RemoteAssistanceDialog(QDialog):
                 if cur is not None:
                     if not st["ended"]:
                         st["ended"] = True          # this teardown closes it
+                        if eid not in _OB_END_DEFINITIVE:
+                            # Only the transport went away; the session may yet
+                            # prove it continued by logging its own 1026.
+                            cur["_ob_end_tentative"] = True
                         return cur
-                    _last = cur["_end_dt"]
-                    if (dt is not None and _last is not None
-                            and 0 <= (dt - _last).total_seconds() <= _OB_TRAIL_SECS):
-                        return cur                  # trailing 1026 after 1105
+                    if (eid in _OB_END_DEFINITIVE
+                            and cur.get("_ob_end_tentative")):
+                        # The real session teardown, after a transport-level
+                        # 1105 had provisionally closed it.  No 1024 intervened,
+                        # so this can only belong to that same connection —
+                        # regardless of how long the TCP session ran on.
+                        cur.pop("_ob_end_tentative", None)
+                        return cur
                 # Nothing open to close: a disconnect whose connect is not in the
                 # log (log rollover, or collection started mid-session).
                 b = _new_bucket(_OB_TYPE, computer_key, _next_syn(), computer_disp)
                 b["_ob_orphan_end"] = True
+                if eid not in _OB_END_DEFINITIVE:
+                    # Same rule as above: a 1105 only provisionally ends things,
+                    # so the 1026 of this same teardown joins this row rather
+                    # than becoming a second orphan for one disconnect.
+                    b["_ob_end_tentative"] = True
                 st["cur"], st["ended"] = b, True
                 return b
 
@@ -4183,6 +4231,13 @@ class _RemoteAssistanceDialog(QDialog):
                     bucket["_start_dt"] = dt
                 if bucket["_end_dt"] is None or dt > bucket["_end_dt"]:
                     bucket["_end_dt"] = dt
+            else:
+                # An event whose timestamp will not parse cannot be placed on
+                # the timeline, so it can neither bound this session nor be
+                # ruled out of it.  It is kept (never drop evidence) and
+                # counted, so the row can say so instead of implying the
+                # session covers it.
+                bucket["_undated"] = bucket.get("_undated", 0) + 1
 
             # User / remote host (first non-trivial value wins)
             # L3: _USER_BLOCK defined once above the loop.
@@ -4539,6 +4594,12 @@ class _RemoteAssistanceDialog(QDialog):
                 flags.append("DISCONNECT_ONLY")
             if _ob_long_span:
                 flags.append("LONG_SPAN_VERIFY")
+            if bkt.get("_ob_end_tentative"):
+                # Closed by a multi-transport 1105 that no 1026 ever confirmed:
+                # the session may have continued past the timestamp shown.
+                flags.append("END_INFERRED")
+            if bkt.get("_undated"):
+                flags.append(f"UNDATED_EVENTS:{bkt['_undated']}")
             if len(evs) == 1:
                 flags.append("SINGLE_EVENT")
 
@@ -4619,6 +4680,13 @@ class _RemoteAssistanceDialog(QDialog):
                 "computer":      bkt.get("_computer_display") or bkt["_computer"],
                 "start_ts":      start_ts,
                 "end_ts":        end_ts,
+                # Full-precision copies for display only.  start_ts/end_ts stay
+                # second-truncated so existing sorting and callers are
+                # unaffected; the sub-second detail matters here because
+                # outbound sessions can be seconds apart (two of the sample
+                # log's sessions are separated by 0.28 s).
+                "start_ts_full": _fmt_ts_full(start_dt),
+                "end_ts_full":   _fmt_ts_full(end_dt),
                 "duration":      dur_str,
                 "duration_secs": dur_secs,
                 "user":          bkt["_user"],
@@ -4635,7 +4703,10 @@ class _RemoteAssistanceDialog(QDialog):
                 "related_keys":  related_keys,
             })
 
-        sessions.sort(key=lambda s: s["start_ts"] or "")
+        # Sort on the full-precision start: ordering by the second-truncated
+        # value left sessions that begin in the same second in arbitrary order,
+        # which reads as a bug once the display is set to milliseconds.
+        sessions.sort(key=lambda s: (s.get("start_ts_full") or s["start_ts"] or ""))
         return sessions
 
     # ── UI building ────────────────────────────────────────────────────────
@@ -4787,8 +4858,8 @@ class _RemoteAssistanceDialog(QDialog):
             cells = [
                 s["type"],
                 s["computer"],
-                s["start_ts"],
-                s["end_ts"],
+                _ts_disp(s, "start"),
+                _ts_disp(s, "end"),
                 s["duration"],
                 s["user"],
                 s["remote_host"],
@@ -4951,8 +5022,10 @@ class _RemoteAssistanceDialog(QDialog):
                 _EXTRACTORS = [
                     lambda s: s["type"],
                     lambda s: s["computer"],
-                    lambda s: s["start_ts"],
-                    lambda s: s["end_ts"],
+                    # Same precision the analyst is looking at on screen, so an
+                    # exported CSV cannot disagree with the table it came from.
+                    lambda s: _ts_disp(s, "start"),
+                    lambda s: _ts_disp(s, "end"),
                     lambda s: s["duration"],
                     lambda s: s["user"],
                     lambda s: s["remote_host"],
