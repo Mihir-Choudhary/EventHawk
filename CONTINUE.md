@@ -3,9 +3,12 @@
 Read `STATE.md` first. Branch **`beta`**. Forensic integrity is paramount — never fabricate
 a duration, never silently drop evidence.
 
-**State as of 2026-07-28:** HEAD `07d3325`, working tree clean, `main_window.py` compiles.
-Rounds 1-3 of the RDP audit are committed and were verified at 159 checks before the test
-scratchpad was wiped.
+**State as of 2026-08-11:** HEAD `3b6f4fa`, working tree clean, tree compiles.
+`beta` and `main` are the **same commit** and both are pushed — the 21-commit backlog was
+fast-forwarded into `main` on 2026-08-11. Rounds 1-3 of the RDP audit are committed and
+were verified at 159 checks before the test scratchpad was wiped.
+
+Keep working on `beta` and fast-forward `main` when asked; do not commit to `main` directly.
 
 ---
 
@@ -34,8 +37,12 @@ Put the harnesses in `tests/` this time — `/tmp` is not durable.
 
 ## Also open
 
-- **5 commits unpushed on `beta`** (`bd17cc8` → `07d3325`). Awaiting the user's go-ahead;
-  asked twice, no answer yet. Do not push unprompted.
+- ~~5 commits unpushed on `beta`~~ — **done 2026-08-11.** All pushed, and `main`
+  fast-forwarded to match. Note the consequence: the inbound defect above is now on the
+  **public default branch**, not quarantined on `beta`. That raises its priority.
+- **`STATE.md` publishes its own open defect.** The "OPEN DEFECT" and "Test infrastructure
+  — LOST" sections are now on public `main`. Honest, but a reputational call the author has
+  not explicitly made — offer to move the journal under `docs/` if that is not intended.
 - **No user docs for this browser.** `docs/` has no page for the Remote Assistance / RDP
   session browser, so Evidence, Source Log and the whole flag vocabulary are undocumented
   for anyone but the author. `docs/10c-logon-sessions.md` is the model to follow.

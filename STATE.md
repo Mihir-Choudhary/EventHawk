@@ -179,8 +179,8 @@ half-started.
 
 ## Test infrastructure — LOST 2026-07-28, needs rebuilding IN-REPO
 
-Eight harnesses totalling **159 checks green** lived in the session scratchpad under
-`/tmp/claude-1000/.../scratchpad/` and were **wiped by the environment**. All code work was
+Eight harnesses totalling **159 checks green** lived in a session scratchpad under `/tmp`
+and were **wiped by the environment**. All code work was
 already committed, so nothing shipped was lost — but verification can no longer be re-run.
 
 Lost: `test_rdp_pairing.py` (47), `test_rdp_render.py` (21), `test_rdp_extra.py` (22),
@@ -218,4 +218,14 @@ Harnesses need `QT_QPA_PLATFORM=offscreen`.
   UserData payloads, proof-bounded durations, `LOCAL_CONSOLE`; first end-to-end Juggernaut
   verification. Scratchpad wiped later the same day; confirmed committed state compiles and
   both grep-checkable invariants hold; wrote this journal. **Paused with the inbound
-  fabricated-duration defect open and 5 commits unpushed on `beta`.**
+  fabricated-duration defect open and 6 commits unpushed on `beta`.**
+- **2026-08-11** — Released the backlog: user asked to merge `beta` into `main`. Verified
+  `main` held nothing `beta` lacked (merge base *was* `main`'s tip), so this was a clean
+  fast-forward of 21 commits, not a merge. Redacted three local filesystem paths from this
+  journal first, because `main` is the default branch of a **public** repo and the notes
+  cited an OCR'd copy of SANS courseware by path. Pushed `beta`, fast-forwarded `main` to
+  `3b6f4fa`, pushed `main`. No test suite gated this — the harnesses that covered the
+  changed RDP code are the ones lost on 2026-07-28; verification was `compileall` clean
+  plus the empty `beta..main` range. **The inbound fabricated-duration defect is unchanged
+  and now sits on `main`** — it predates `beta` and was never a regression from it, but it
+  is no longer confined to a side branch.
