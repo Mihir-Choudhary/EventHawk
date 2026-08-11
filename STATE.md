@@ -19,9 +19,8 @@ Subject: `_RemoteAssistanceDialog` in `evtx_tool/gui/main_window.py`. Its
 `_build_sessions()` is a `@staticmethod` shared by BOTH operating modes, which is why
 mode parity is testable at all.
 
-Reference: SANS 508.2 Intrusion Analysis,
-`/mnt/NewVolume/SANS_DATA/akhil-latest-pdf-gcfa/OCR_clean_ocr_508.2 Intrusion Analysis.pdf`,
-"RDP Logs — Source System" (~pp. 66-69 of a `pdftotext -layout` extract).
+Reference: SANS 508.2 Intrusion Analysis, "RDP Logs — Source System"
+(~pp. 66-69). Courseware is not redistributable; consult your own copy.
 
 ### Commits (all on `beta`, 2026-07-21 → 2026-07-28)
 
@@ -86,8 +85,8 @@ Second invariant: `assert len(_EXTRACTORS) == len(self._HEADERS)` in the CSV exp
 
 ### Ground truth for the sample log
 
-`/mnt/NewVolume/Test_logs_Bulk/Logs/Microsoft-Windows-TerminalServices-RDPClient%4Operational.evtx`
-→ **7 outbound sessions**, every destination populated, no flags, durations
+`Microsoft-Windows-TerminalServices-RDPClient%4Operational.evtx` (local test corpus, not
+in-repo) → **7 outbound sessions**, every destination populated, no flags, durations
 **`[6395, 29, 14, 16, 3, 4507, 383]`** seconds.
 
 Those are `int()`-truncated, not rounded — 29.854 s displays as "29s". An earlier note
