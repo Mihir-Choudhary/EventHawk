@@ -292,16 +292,22 @@ class _FilterThread(QThread):
         try:
             con2 = duckdb.connect()
             # Composite (record_id, source_file) key prevents cross-file matches
+            # Column names deliberately DO NOT match the Parquet columns.
+            # SEARCH_TEXT_EXPR_FULL and the condition SQL reference bare column
+            # names (source_file, event_id, ...); with a probe table that also
+            # had "source_file", DuckDB raised "Ambiguous reference to column
+            # name" and the except below swallowed it -- silently showing the
+            # UNFILTERED metadata result as if the search had been applied.
             rid_tbl = pa.table({
-                "record_id":   pa.array(record_ids,   type=pa.int64()),
-                "source_file": pa.array(source_files, type=pa.string()),
+                "_p1_rid": pa.array(record_ids,   type=pa.int64()),
+                "_p1_src": pa.array(source_files, type=pa.string()),
             })
             con2.register("_p1_ids", rid_tbl)
             phase2_sql = (
                 f"SELECT p.record_id, p.source_file "
                 f"FROM parquet_scan([{quoted}]) p "
                 f"JOIN _p1_ids f "
-                f"  ON p.record_id = f.record_id AND p.source_file = f.source_file "
+                f"  ON p.record_id = f._p1_rid AND p.source_file = f._p1_src "
                 f"WHERE {cond_sql}"
             )
             passing_set = {
@@ -401,16 +407,22 @@ class _FilterThread(QThread):
         try:
             con2 = duckdb.connect()
             # Composite (record_id, source_file) key — prevents cross-file row matches
+            # Column names deliberately DO NOT match the Parquet columns.
+            # SEARCH_TEXT_EXPR_FULL and the condition SQL reference bare column
+            # names (source_file, event_id, ...); with a probe table that also
+            # had "source_file", DuckDB raised "Ambiguous reference to column
+            # name" and the except below swallowed it -- silently showing the
+            # UNFILTERED metadata result as if the search had been applied.
             rid_tbl = pa.table({
-                "record_id":   pa.array(record_ids,   type=pa.int64()),
-                "source_file": pa.array(source_files, type=pa.string()),
+                "_p1_rid": pa.array(record_ids,   type=pa.int64()),
+                "_p1_src": pa.array(source_files, type=pa.string()),
             })
             con2.register("_p1_ids", rid_tbl)
             phase2_sql = (
                 f"SELECT p.record_id, p.source_file "
                 f"FROM parquet_scan([{quoted}]) p "
                 f"JOIN _p1_ids f "
-                f"  ON p.record_id = f.record_id AND p.source_file = f.source_file "
+                f"  ON p.record_id = f._p1_rid AND p.source_file = f._p1_src "
                 f"WHERE {phase2_where}"
             )
             passing_set = {

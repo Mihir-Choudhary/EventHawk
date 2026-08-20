@@ -151,6 +151,40 @@ try:
     check("clear_filter restores the full table", model.rowCount() == total,
           f"{model.rowCount()} vs {total}")
 
+    # ── full-text search must actually filter, not fail open ─────────────
+    # Phase 2 joins the Parquet scan against a probe table. When the probe's
+    # columns shared names with the Parquet columns, DuckDB raised "Ambiguous
+    # reference to column name" -- and the handler logs it and returns the
+    # UNFILTERED metadata result, so a search silently showed every candidate
+    # row as if it had matched. Asserting on row counts is the only way to see
+    # that; "no exception" would have passed throughout.
+    import logging as _logging
+    class _Catch(_logging.Handler):
+        def __init__(self): super().__init__(); self.errs = []
+        def emit(self, rec):
+            if rec.levelno >= _logging.ERROR: self.errs.append(rec.getMessage())
+    _cap = _Catch()
+    _logging.getLogger("evtx_tool.gui.heavyweight_model").addHandler(_cap)
+    _hml = _logging.getLogger(ArrowTableModel.__module__); _hml.addHandler(_cap)
+
+    model.clear_filter(); settle(model)
+    before = model.rowCount()
+    model.apply_filter({"text_search": "svchost"}); settle(model)
+    after = model.rowCount()
+    print(f"      full-text 'svchost': {after:,} of {before:,}")
+    check("full-text search does not fail open (returns a real subset)",
+          0 < after < before, f"{after} of {before}")
+    check("full-text search logs no error (Phase 2 actually ran)",
+          not _cap.errs, "; ".join(_cap.errs)[:300])
+
+    _cap.errs.clear()
+    model.apply_filter({"text_search": "zzz-no-such-token-zzz"}); settle(model)
+    check("a term that matches nothing returns nothing, not everything",
+          model.rowCount() == 0, f"{model.rowCount()} rows")
+    check("still no error on the empty-result path",
+          not _cap.errs, "; ".join(_cap.errs)[:300])
+    model.clear_filter(); settle(model)
+
     # ── per-file tab path: a model with a fixed pre-filter ───────────────
     # Per-file tabs construct ArrowTableModel with fixed_where="source_file = ?"
     # and share the same full_table. The unified metadata path changed how that
