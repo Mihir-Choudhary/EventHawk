@@ -3,14 +3,44 @@
 Read `STATE.md` first. Branch **`beta`**. Forensic integrity is paramount — never fabricate
 a duration, never silently drop evidence.
 
-**State as of 2026-08-11:** HEAD `3b6f4fa`, working tree clean, tree compiles.
-`beta` and `main` are the **same commit** and both are pushed — the 21-commit backlog was
-fast-forwarded into `main` on 2026-08-11. Rounds 1-3 of the RDP audit are committed and
+**State as of 2026-08-20:** HEAD `219e010`, working tree clean, tree compiles.
+`main` was fast-forwarded to `beta` on 2026-08-11; since then `beta` is **4 commits ahead
+and unpushed** (`46e348a` journal, plus the three performance commits below). Rounds 1-3 of the RDP audit are committed and
 were verified at 159 checks before the test scratchpad was wiped.
 
 Keep working on `beta` and fast-forward `main` when asked; do not commit to `main` directly.
 
 ---
+
+## Performance work (2026-08-20) — done, and what is left
+
+Parsing ran `cpu-1` wide; almost nothing after it did. Fixed on `beta`:
+`7166ea6` JM sort off the GUI thread, `179ff54` JM export on a worker,
+`219e010` normal-mode text haystack precomputed. Harnesses now live in
+`tests/` (not `/tmp`): `test_jm_sort_perf.py` 16, `test_jm_export.py` 11,
+`test_normal_filter_perf.py` 11.
+
+Measured on 1,710,518 rows (JM) and 500,000 events (normal):
+
+| Operation | Before | After |
+|---|---|---|
+| JM column-header sort | full-table sort, GUI blocked | 0.02–0.03 ms to return |
+| JM sort by a string column | **silently unsorted** | correct (via DuckDB) |
+| JM filter threads | 4 of 12 cores | `max(2, min(cpu-1, 16))` |
+| JM export, 1.7M rows | 17.9 s frozen window | worker + progress + cancel |
+| Normal text search, 500k | 11.4 s | ~1.6 s on repeats |
+
+**Still open (deliberately not started):** filters that change the row count a
+lot are dominated by `QSortFilterProxyModel`'s mapping churn plus the view's
+response, not by our predicate — 500k → 24k still costs ~2 s. Fixing it means
+replacing the proxy with one that computes an accepted-row list in a single
+pass and resets the model. That is a subsystem change touching the main grid,
+per-file tabs and several dialogs, so it wants its own scoped session.
+
+Also note: `filterAcceptsRow` catches exceptions and returns `True`, so a bug
+in the predicate shows the FULL set instead of raising. It hid a real mistake
+during this work until a test caught it. Any change there needs a test that
+asserts row counts, not just "no exception".
 
 ## Next concrete action
 
