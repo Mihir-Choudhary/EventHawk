@@ -3,7 +3,7 @@
 Read `STATE.md` first. Branch **`beta`**. Forensic integrity is paramount — never fabricate
 a duration, never silently drop evidence.
 
-**State as of 2026-08-20:** HEAD `219e010`, working tree clean, tree compiles.
+**State as of 2026-08-20:** HEAD `bffb8d2`, working tree clean, tree compiles.
 `main` was fast-forwarded to `beta` on 2026-08-11; since then `beta` is **4 commits ahead
 and unpushed** (`46e348a` journal, plus the three performance commits below). Rounds 1-3 of the RDP audit are committed and
 were verified at 159 checks before the test scratchpad was wiped.
@@ -17,7 +17,7 @@ Keep working on `beta` and fast-forward `main` when asked; do not commit to `mai
 Parsing ran `cpu-1` wide; almost nothing after it did. Fixed on `beta`:
 `7166ea6` JM sort off the GUI thread, `179ff54` JM export on a worker,
 `219e010` normal-mode text haystack precomputed. Harnesses now live in
-`tests/` (not `/tmp`): `test_jm_sort_perf.py` 16, `test_jm_export.py` 11,
+`tests/` (not `/tmp`): `test_jm_sort_perf.py` 20, `test_jm_export.py` 11,
 `test_normal_filter_perf.py` 11.
 
 Measured on 1,710,518 rows (JM) and 500,000 events (normal):
@@ -29,6 +29,13 @@ Measured on 1,710,518 rows (JM) and 500,000 events (normal):
 | JM filter threads | 4 of 12 cores | `max(2, min(cpu-1, 16))` |
 | JM export, 1.7M rows | 17.9 s frozen window | worker + progress + cancel |
 | Normal text search, 500k | 11.4 s | ~1.6 s on repeats |
+
+**Costs accepted, worth knowing:** the normal-mode advanced-text cache adds
+**~99 MB per 500k events** (RSS 541 → 640 MB), about the same as the existing
+`_search_cache` (90 MB) and only paid if an analyst actually runs an advanced
+text search. It is freed and rebuilt whenever the dataset changes. Anyone
+loading millions of events in normal mode is already carrying ~400 MB of event
+dicts and belongs in Juggernaut mode, so this is not the binding constraint.
 
 **Still open (deliberately not started):** filters that change the row count a
 lot are dominated by `QSortFilterProxyModel`'s mapping churn plus the view's

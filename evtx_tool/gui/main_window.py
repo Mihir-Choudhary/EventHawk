@@ -13936,6 +13936,14 @@ class MainWindow(QMainWindow):
     # =========================================================================
 
     def closeEvent(self, event) -> None:
+        # Stop the export worker FIRST: it writes to a file, so it must be told
+        # to stop (and discard its partial output) before anything it reads is
+        # torn down.  Without this, closing mid-export destroys a running
+        # QThread.
+        _exp = getattr(self, "_jm_export_worker", None)
+        if _exp is not None and _exp.isRunning():
+            _exp.cancel()
+            _exp.wait(5000)
         self._cleanup_juggernaut()
         if self._worker and self._worker.isRunning():
             self._worker.request_stop()

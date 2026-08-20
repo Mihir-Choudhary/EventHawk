@@ -151,6 +151,30 @@ try:
     check("clear_filter restores the full table", model.rowCount() == total,
           f"{model.rowCount()} vs {total}")
 
+    # ── per-file tab path: a model with a fixed pre-filter ───────────────
+    # Per-file tabs construct ArrowTableModel with fixed_where="source_file = ?"
+    # and share the same full_table. The unified metadata path changed how that
+    # filter combines with ORDER BY, so exercise it directly.
+    src_files = sorted({v for v in table["source_file"].to_pylist() if v})
+    if src_files:
+        pick = src_files[len(src_files) // 2]
+        fm = ArrowTableModel(table, parquet_dir=pq_dir,
+                             fixed_where="source_file = ?", fixed_params=[pick])
+        settle(fm)
+        want = sum(1 for v in table["source_file"].to_pylist() if v == pick)
+        check("per-file tab shows exactly that file's rows",
+              fm.rowCount() == want, f"{fm.rowCount()} vs {want}")
+        fm.sort(COL_TS, Qt.SortOrder.DescendingOrder); settle(fm)
+        check("per-file tab keeps its fixed filter after sorting",
+              fm.rowCount() == want, f"{fm.rowCount()} vs {want}")
+        ts_desc = fm._display_table["timestamp_utc"].slice(0, 5000).to_pylist()
+        check("per-file tab sorts correctly",
+              ts_desc == sorted(ts_desc, reverse=True), f"first {ts_desc[:1]}")
+        only = {v for v in fm._display_table["source_file"].to_pylist()}
+        check("per-file tab never leaks another file's rows",
+              only == {pick}, f"{len(only)} distinct source_files")
+        fm._filter_thread.stop()
+
     model._filter_thread.stop()
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
