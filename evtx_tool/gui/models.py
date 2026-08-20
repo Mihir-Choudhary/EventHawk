@@ -243,6 +243,10 @@ class EventTableModel(QAbstractTableModel):
         super().__init__(parent)
         self._events: list[dict] = []
         self._search_cache: list[str] = []   # pre-lowered search strings
+        # Advanced-text haystacks, lowered.  Built lazily on the first advanced
+        # text filter (most sessions never run one, and building it eagerly
+        # would slow every load), then reused for every subsequent pass.
+        self._adv_search_cache: list[str] | None = None
         self._header_overrides: dict[int, str] = {}  # col_idx → custom header text
         self._bookmarked_keys: frozenset = frozenset()  # (source_file, record_id) pairs
 
@@ -385,6 +389,34 @@ class EventTableModel(QAbstractTableModel):
     # ── Data management ───────────────────────────────────────────────────────
 
     @staticmethod
+    def build_adv_search_str(ev: dict) -> str:
+        """Haystack for the ADVANCED text filter (not the quick search bar).
+
+        Deliberately a different scope from ``_build_search_str``: no timestamp,
+        no ATT&CK tags, and event_data flattened RECURSIVELY via
+        flatten_searchable_values -- i.e. exactly Juggernaut's ed_values blob,
+        so the same query returns the same events in both modes.  Changing this
+        scope changes which events an analyst sees, so the two must not be
+        merged for convenience.
+
+        Previously this was rebuilt inline for EVERY row on EVERY filter pass
+        (recursive flatten plus a regex substitution per value, ~23 us/row):
+        11.4 s of frozen GUI for one text search over 500k events.
+        """
+        from evtx_tool.core.filters import flatten_searchable_values as _fsv
+        parts: list[str] = []
+        for _fld in ("event_id", "level_name", "channel", "provider",
+                     "computer", "user_id", "source_file"):
+            _v = ev.get(_fld)
+            if _v is not None:
+                parts.append(str(_v))
+        ed = ev.get("event_data", {}) or {}
+        if ed:
+            for _val in _fsv(ed):
+                parts.append(_re.sub(r'\\\s+', r'\\', _val))
+        return " ".join(parts)
+
+    @staticmethod
     def _build_search_str(ev: dict) -> str:
         """Build a lowered, space-joined search string for one event.
 
@@ -393,15 +425,18 @@ class EventTableModel(QAbstractTableModel):
         check instead of rebuilding the string per keystroke.
         """
         tags = ev.get("attack_tags") or []
+        # `or ""` on every field, not just user_id: a key PRESENT with a None
+        # value (rather than absent) made the join below raise TypeError, which
+        # propagated out of set_events() and failed the whole model load.
         parts = [
             str(ev.get("event_id", "")),
-            ev.get("level_name", ""),
-            ev.get("timestamp", ""),
-            ev.get("computer", ""),
-            ev.get("channel", ""),
-            ev.get("user_id", "") or "",
-            ev.get("provider", ""),
-            ev.get("source_file", ""),
+            ev.get("level_name") or "",
+            ev.get("timestamp") or "",
+            ev.get("computer") or "",
+            ev.get("channel") or "",
+            ev.get("user_id") or "",
+            ev.get("provider") or "",
+            ev.get("source_file") or "",
         ]
         if tags:
             parts.append(" ".join(t.get("tid", "") for t in tags))
@@ -458,6 +493,8 @@ class EventTableModel(QAbstractTableModel):
         self._events = [self._events[i] for i in indices]
         if len(self._search_cache) == n:
             self._search_cache = [self._search_cache[i] for i in indices]
+        if self._adv_search_cache is not None and len(self._adv_search_cache) == n:
+            self._adv_search_cache = [self._adv_search_cache[i] for i in indices]
         self.layoutChanged.emit()
 
     # High-cardinality fields that repeat across events — interning these makes
@@ -493,12 +530,23 @@ class EventTableModel(QAbstractTableModel):
             self._search_cache = search_cache
         else:
             self._search_cache = [self._build_search_str(ev) for ev in events]
+        self._adv_search_cache = None      # dataset changed — rebuild on demand
         self.endResetModel()
 
     def get_event(self, row: int) -> dict | None:
         if 0 <= row < len(self._events):
             return self._events[row]
         return None
+
+    def get_adv_search_str(self, row: int) -> str:
+        """Lowered advanced-filter haystack for *row*, building the cache once."""
+        if self._adv_search_cache is None:
+            self._adv_search_cache = [
+                self.build_adv_search_str(ev).lower() for ev in self._events
+            ]
+        if 0 <= row < len(self._adv_search_cache):
+            return self._adv_search_cache[row]
+        return ""
 
     def get_search_str(self, row: int) -> str:
         """Return the pre-computed lowercase search string for the given row."""
@@ -1239,7 +1287,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
 
         # ── Layer 3: Advanced ELE-style filter ──────────────────────────────
         if self._adv:
-            if not self._passes_advanced(ev):
+            if not self._passes_advanced(ev, source_row, src_model):
                 return False
 
         # ── Layer 4: Quick filter (right-click context filters) ──────────────
@@ -1309,7 +1357,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
 
         return True
 
-    def _passes_advanced(self, ev: dict) -> bool:
+    def _passes_advanced(self, ev: dict, source_row: int = -1,
+                         src_model: "EventTableModel | None" = None) -> bool:
         """Apply all advanced filter criteria using pre-compiled state.
 
         No string lowering, regex compilation, or timestamp parsing happens
@@ -1416,23 +1465,18 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             # event_id + level_name + channel + provider + computer + user_id +
             # source_file + event_data_json (all fields, not just event_data values).
             # This keeps normal mode and Juggernaut mode results consistent.
-            parts: list[str] = []
-            for _fld in ("event_id", "level_name", "channel", "provider",
-                         "computer", "user_id", "source_file"):
-                _v = ev.get(_fld)
-                if _v is not None:
-                    parts.append(str(_v))
-            ed = ev.get("event_data", {}) or {}
-            if ed:
-                # Values-only: search every EventData VALUE (recursively), NOT
-                # field names — matches Juggernaut mode's ed_values search blob
-                # so the same text query returns the same events in both modes.
-                from evtx_tool.core.filters import flatten_searchable_values as _fsv
-                for _val in _fsv(ed):
-                    parts.append(_re.sub(r'\\\s+', r'\\', _val))
-            desc_text = " ".join(parts)
-            if not self._adv_case_sensitive:
-                desc_text = desc_text.lower()
+            # Same haystack scope as before (see build_adv_search_str), but
+            # taken from a cache built once per dataset instead of being
+            # reconstructed for every row on every pass.  The case-sensitive
+            # path is rare and needs original case, so it still builds inline.
+            if src_model is not None and source_row >= 0 and not self._adv_case_sensitive:
+                desc_text = src_model.get_adv_search_str(source_row)
+            else:
+                # Case-sensitive search needs original case, and a caller that
+                # passed no model/row (direct use in tests) must still work.
+                desc_text = EventTableModel.build_adv_search_str(ev)
+                if not self._adv_case_sensitive:
+                    desc_text = desc_text.lower()
 
             if self._adv_text_regex is not None:
                 found = bool(self._adv_text_regex.search(desc_text))
