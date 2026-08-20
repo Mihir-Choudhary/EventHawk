@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateTimeEdit,
     QDialog, QDialogButtonBox, QFileDialog, QFrame, QGroupBox, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QProgressBar, QPushButton, QRadioButton,
+    QMainWindow, QMessageBox, QProgressBar, QProgressDialog, QPushButton, QRadioButton,
     QScrollArea,
     QSizePolicy, QSplitter, QStatusBar, QStyle, QStyleOptionComboBox,
     QStylePainter, QTabWidget, QTableView, QTableWidget,
@@ -5384,6 +5384,214 @@ def _is_forwarded_source(source_file: str) -> bool:
 
 
 # ── Computer Normalisation JM worker ──────────────────────────────────────────
+
+class _JMExportWorker(QThread):
+    """Runs a Juggernaut export off the GUI thread.
+
+    The export used to run inline: a DuckDB query plus a row-by-row writer over
+    (potentially) millions of rows, with no thread, no progress and no
+    processEvents -- so the window froze solid for the whole export with no way
+    to tell whether it had hung.
+
+    Cancellation deletes the partial file.  A truncated export that looks
+    complete is worse than no export: it would be read as the full evidence set.
+    """
+
+    progress   = Signal(int)        # rows written so far
+    finished_ok = Signal(int, str)  # (rows written, path)
+    failed     = Signal(str)
+
+    _BATCH = 5_000
+
+    def __init__(self, full_table, shard_paths, where_sql, params, order_sql,
+                 path, ext, row_limit, parent=None):
+        super().__init__(parent)
+        self._full_table  = full_table
+        self._shard_paths = shard_paths
+        self._where_sql   = where_sql
+        self._params      = list(params)
+        self._order_sql   = order_sql
+        self._path        = path
+        self._ext         = ext
+        self._row_limit   = row_limit
+        self._cancel      = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    # ── helpers ───────────────────────────────────────────────────────────
+    def _discard_partial(self) -> None:
+        try:
+            if os.path.exists(self._path):
+                os.remove(self._path)
+        except OSError as exc:
+            logger.warning("Could not remove partial export %s: %s", self._path, exc)
+
+    def run(self) -> None:
+        import duckdb as _duckdb
+        con = None
+        try:
+            con = _duckdb.connect()
+            con.execute(f"SET threads={max(2, min((os.cpu_count() or 4) - 1, 16))}")
+            con.register("events", self._full_table)
+            if self._ext in ("csv", "json"):
+                written = self._run_streaming(con)
+            else:
+                written = self._run_reconstructed(con)
+            if self._cancel:
+                self._discard_partial()
+                self.failed.emit("__cancelled__")
+                return
+            self.finished_ok.emit(written, self._path)
+        except Exception as exc:
+            logger.exception("Juggernaut export failed: %s", self._path)
+            self._discard_partial()
+            self.failed.emit(str(exc))
+        finally:
+            if con is not None:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+
+    # ── CSV / JSON: streaming, no full-set buffer ─────────────────────────
+    def _run_streaming(self, con) -> int:
+        import csv as _csv
+        import json as _json
+        # Without re-attaching event_data_json from the Parquet shards, CSV/JSON
+        # exports would silently omit ALL EventData -- incomplete forensic
+        # records.  The 1:1 composite-key LEFT JOIN preserves streaming and the
+        # exact filtered/ordered row set (no dup, no loss).
+        if self._shard_paths:
+            cursor = con.execute(
+                f"SELECT e.* EXCLUDE (ed_values), p.ed_json_full AS event_data_json "
+                f"FROM events e "
+                f"LEFT JOIN (SELECT record_id AS _jrid, "
+                f"           source_file AS _jsf, "
+                f"           event_data_json AS ed_json_full "
+                f"           FROM parquet_scan({self._shard_paths})) p "
+                f"  ON e.record_id = p._jrid AND e.source_file = p._jsf "
+                f"WHERE {self._where_sql} "
+                f"ORDER BY {self._order_sql}",
+                self._params,
+            )
+        else:
+            cursor = con.execute(
+                f"SELECT * EXCLUDE (ed_values) FROM events "
+                f"WHERE {self._where_sql} "
+                f"ORDER BY {self._order_sql}",
+                self._params,
+            )
+        col_names = [d[0].strip() for d in cursor.description]
+        written = 0
+        if self._ext == "csv":
+            with open(self._path, "w", newline="", encoding="utf-8") as fh:
+                writer = _csv.writer(fh)
+                writer.writerow(col_names)
+                while not self._cancel:
+                    batch = cursor.fetchmany(self._BATCH)
+                    if not batch:
+                        break
+                    writer.writerows(batch)
+                    written += len(batch)
+                    self.progress.emit(written)
+        else:
+            with open(self._path, "w", encoding="utf-8") as fh:
+                fh.write("[\n")
+                first = True
+                while not self._cancel:
+                    batch = cursor.fetchmany(self._BATCH)
+                    if not batch:
+                        break
+                    for row in batch:
+                        if not first:
+                            fh.write(",\n")
+                        fh.write(_json.dumps(dict(zip(col_names, row)), default=str))
+                        first = False
+                    written += len(batch)
+                    self.progress.emit(written)
+                fh.write("\n]\n")
+        return written
+
+    # ── HTML / XML: reconstruct dicts, then hand to the exporter ──────────
+    def _run_reconstructed(self, con) -> int:
+        from evtx_tool.output.exporters import export
+
+        events: list[dict] = []
+        offset = 0
+        while len(events) < self._row_limit and not self._cancel:
+            batch_limit = min(self._BATCH, self._row_limit - len(events))
+            cursor = con.execute(
+                f"SELECT * EXCLUDE (ed_values) FROM events "
+                f"WHERE {self._where_sql} "
+                f"ORDER BY {self._order_sql} "
+                f"LIMIT {batch_limit} OFFSET {offset}",
+                self._params,
+            )
+            col_names = [d[0].strip() for d in cursor.description]
+            rows = cursor.fetchall()
+            if not rows:
+                break
+            for r in rows:
+                d = dict(zip(col_names, r))
+                events.append({
+                    "record_id":      d.get("record_id"),
+                    "event_id":       d.get("event_id"),
+                    "level_name":     d.get("level_name") or "",
+                    "timestamp":      d.get("timestamp_utc") or "",
+                    "computer":       d.get("computer") or "",
+                    "channel":        d.get("channel") or "",
+                    "user_id":        d.get("user_id") or "",
+                    "source_file":    d.get("source_file") or "",
+                    "provider":       d.get("provider") or "",
+                    "keywords":       d.get("keywords") or "",
+                    "task":           d.get("task") or 0,
+                    "opcode":         d.get("opcode") or 0,
+                    "process_id":     d.get("process_id"),
+                    "thread_id":      d.get("thread_id"),
+                    "correlation_id": d.get("correlation_id") or "",
+                    "event_data":     {},
+                    "_heavyweight":   True,
+                })
+            offset += len(rows)
+            self.progress.emit(len(events))
+            if len(rows) < batch_limit:
+                break
+        if self._cancel:
+            return len(events)
+
+        # Enrich event_data from Parquet shards (Arrow table holds metadata only)
+        if self._shard_paths and events:
+            try:
+                import json as _json_ed
+                import pyarrow as _pa_ed
+                key_tbl = _pa_ed.table({
+                    "k_src": [ev["source_file"] or "" for ev in events],
+                    "k_rid": [ev["record_id"] for ev in events],
+                })
+                con.register("_export_keys", key_tbl)
+                ed_rows = con.execute(
+                    f"SELECT p.source_file, p.record_id, p.event_data_json "
+                    f"FROM parquet_scan({self._shard_paths}) p "
+                    f"INNER JOIN _export_keys k "
+                    f"  ON p.source_file = k.k_src AND p.record_id = k.k_rid"
+                ).fetchall()
+                ed_map = {(r[0], r[1]): r[2] for r in ed_rows if r[2]}
+                for ev in events:
+                    ed_json = ed_map.get((ev["source_file"], ev["record_id"]))
+                    if ed_json:
+                        try:
+                            ev["event_data"] = _json_ed.loads(ed_json)
+                        except Exception:
+                            pass
+            except Exception as exc:
+                logger.warning(
+                    "HTML/XML export: could not load event_data from Parquet: %s", exc)
+        if self._cancel:
+            return len(events)
+        return export(events, self._path, None,
+                      attack_summary=None, iocs=None, chains=[])
+
 
 class _ComputerNormJMWorker(QThread):
     """Aggregate distinct (computer, source_file, count) tuples in JM mode.
@@ -12829,94 +13037,24 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        try:
-            import duckdb as _duckdb
-            from evtx_tool.output.exporters import export
+        where_sql, params = _export_model._combined_where()
+        sort_col  = _export_model._sort_col
+        direction = "ASC" if _export_model._sort_asc else "DESC"
+        # ALWAYS append a unique (source_file, record_id) tiebreaker:
+        #  1. same-timestamp rows export in deterministic, reproducible order;
+        #  2. the HTML/XML path paginates with LIMIT/OFFSET — without a
+        #     total order, ties spanning a batch boundary can be DUPLICATED
+        #     or SKIPPED between batches (rows silently lost from exports).
+        order_sql = (f"{sort_col} {direction}, "
+                     f"source_file {direction}, record_id {direction}")
 
-            where_sql, params = _export_model._combined_where()
-            sort_col  = _export_model._sort_col
-            direction = "ASC" if _export_model._sort_asc else "DESC"
-            # ALWAYS append a unique (source_file, record_id) tiebreaker:
-            #  1. same-timestamp rows export in deterministic, reproducible order;
-            #  2. the HTML/XML path paginates with LIMIT/OFFSET — without a
-            #     total order, ties spanning a batch boundary can be DUPLICATED
-            #     or SKIPPED between batches (rows silently lost from exports).
-            order_sql = (f"{sort_col} {direction}, "
-                         f"source_file {direction}, record_id {direction}")
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
 
-            # Open a temporary in-memory DuckDB connection on the Arrow table.
-            # This gives us streaming SQL access without needing _hw_con.
-            _exp_con = _duckdb.connect()
-            _exp_con.register("events", self._hw_model._full_table)
-
-            ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-
-            # Fast path: streaming Python writer for CSV/JSON.
-            if ext in ("csv", "json"):
-                import csv as _csv
-                import json as _json
-                # The Arrow table excludes event_data_json (memory); without
-                # re-attaching it, CSV/JSON exports would silently omit ALL
-                # EventData in Juggernaut mode — incomplete forensic records.
-                # A 1:1 composite-key LEFT JOIN back to the Parquet shards adds
-                # event_data_json while preserving streaming (no full-set buffer)
-                # and the exact filtered/ordered row set (no dup, no loss).
-                _shard_paths = self._hw_model._get_shard_paths()
-                if _shard_paths:
-                    cursor = _exp_con.execute(
-                        f"SELECT e.* EXCLUDE (ed_values), p.ed_json_full AS event_data_json "
-                        f"FROM events e "
-                        f"LEFT JOIN (SELECT record_id AS _jrid, "
-                        f"           source_file AS _jsf, "
-                        f"           event_data_json AS ed_json_full "
-                        f"           FROM parquet_scan({_shard_paths})) p "
-                        f"  ON e.record_id = p._jrid AND e.source_file = p._jsf "
-                        f"WHERE {where_sql} "
-                        f"ORDER BY {order_sql}",
-                        params,
-                    )
-                else:
-                    cursor = _exp_con.execute(
-                        f"SELECT * EXCLUDE (ed_values) FROM events "
-                        f"WHERE {where_sql} "
-                        f"ORDER BY {order_sql}",
-                        params,
-                    )
-                col_names = [d[0].strip() for d in cursor.description]
-                if ext == "csv":
-                    with open(path, "w", newline="", encoding="utf-8") as _f:
-                        writer = _csv.writer(_f)
-                        writer.writerow(col_names)
-                        while True:
-                            _batch = cursor.fetchmany(5000)
-                            if not _batch:
-                                break
-                            writer.writerows(_batch)
-                else:  # json
-                    with open(path, "w", encoding="utf-8") as _f:
-                        _f.write("[\n")
-                        _first = True
-                        while True:
-                            _batch = cursor.fetchmany(5000)
-                            if not _batch:
-                                break
-                            for _row in _batch:
-                                if not _first:
-                                    _f.write(",\n")
-                                _f.write(_json.dumps(dict(zip(col_names, _row)),
-                                                     default=str))
-                                _first = False
-                        _f.write("\n]\n")
-                _exp_con.close()
-                QMessageBox.information(
-                    self, "Exported",
-                    f"Exported {total:,} events to:\n{path}"
-                )
-                return
-
-            # Slow path: Python reconstruction for HTML/XML.
+        # Row-cap prompt must be answered before the worker starts — it is the
+        # last thing on this path that needs the user.
+        export_row_limit = total
+        if ext not in ("csv", "json"):
             _HTML_XML_MAX = 100_000
-            export_row_limit = total
             if total > _HTML_XML_MAX:
                 reply = QMessageBox.question(
                     self, "Large Export — Memory Safety Cap",
@@ -12929,92 +13067,58 @@ class MainWindow(QMainWindow):
                     QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
                 )
                 if reply != QMessageBox.StandardButton.Ok:
-                    _exp_con.close()
                     return
                 export_row_limit = _HTML_XML_MAX
 
-            BATCH = 5_000
-            events: list[dict] = []
-            offset = 0
-            while len(events) < export_row_limit:
-                batch_limit = min(BATCH, export_row_limit - len(events))
-                cursor = _exp_con.execute(
-                    f"SELECT * EXCLUDE (ed_values) FROM events "
-                    f"WHERE {where_sql} "
-                    f"ORDER BY {order_sql} "
-                    f"LIMIT {batch_limit} OFFSET {offset}",
-                    params,
-                )
-                col_names = [d[0].strip() for d in cursor.description]
-                rows = cursor.fetchall()
-                if not rows:
-                    break
-                for r in rows:
-                    d = dict(zip(col_names, r))
-                    events.append({
-                        "record_id":      d.get("record_id"),
-                        "event_id":       d.get("event_id"),
-                        "level_name":     d.get("level_name") or "",
-                        "timestamp":      d.get("timestamp_utc") or "",
-                        "computer":       d.get("computer") or "",
-                        "channel":        d.get("channel") or "",
-                        "user_id":        d.get("user_id") or "",
-                        "source_file":    d.get("source_file") or "",
-                        "provider":       d.get("provider") or "",
-                        "keywords":       d.get("keywords") or "",
-                        "task":           d.get("task") or 0,
-                        "opcode":         d.get("opcode") or 0,
-                        "process_id":     d.get("process_id"),
-                        "thread_id":      d.get("thread_id"),
-                        "correlation_id": d.get("correlation_id") or "",
-                        "event_data":     {},
-                        "_heavyweight":   True,
-                    })
-                offset += len(rows)
-                if len(rows) < batch_limit:
-                    break
-            # Enrich event_data from Parquet shards (Arrow table only has metadata columns)
+        try:
             _shard_paths = self._hw_model._get_shard_paths()
-            if _shard_paths and events:
-                try:
-                    import json as _json_ed
-                    import pyarrow as _pa_ed
-                    _key_tbl = _pa_ed.table({
-                        "k_src": [ev["source_file"] or "" for ev in events],
-                        "k_rid": [ev["record_id"] for ev in events],
-                    })
-                    _exp_con.register("_export_keys", _key_tbl)
-                    _ed_rows = _exp_con.execute(
-                        f"SELECT p.source_file, p.record_id, p.event_data_json "
-                        f"FROM parquet_scan({_shard_paths}) p "
-                        f"INNER JOIN _export_keys k "
-                        f"  ON p.source_file = k.k_src AND p.record_id = k.k_rid"
-                    ).fetchall()
-                    _ed_map = {(r[0], r[1]): r[2] for r in _ed_rows if r[2]}
-                    for _ev in events:
-                        _ed_json = _ed_map.get((_ev["source_file"], _ev["record_id"]))
-                        if _ed_json:
-                            try:
-                                _ev["event_data"] = _json_ed.loads(_ed_json)
-                            except Exception:
-                                pass
-                except Exception as _ed_exc:
-                    logger.warning("HTML/XML export: could not load event_data from Parquet: %s", _ed_exc)
-            _exp_con.close()
+        except Exception:
+            _shard_paths = []
 
-            count = export(
-                events, path, None,
-                attack_summary=None,
-                iocs=None,
-                chains=[],
-            )
+        # Cancellable progress instead of a frozen window.  The export reads a
+        # shared immutable Arrow table, so running it on a worker is safe.
+        dlg = QProgressDialog(
+            f"Exporting {total:,} events…", "Cancel", 0,
+            max(1, min(total, export_row_limit)), self,
+        )
+        dlg.setWindowTitle("Exporting")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(400)   # don't flash for small exports
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+
+        worker = _JMExportWorker(
+            self._hw_model._full_table, _shard_paths, where_sql, params,
+            order_sql, path, ext, export_row_limit, parent=self,
+        )
+        self._jm_export_worker = worker   # keep a reference; QThread must outlive run()
+
+        def _on_progress(n: int) -> None:
+            dlg.setValue(min(n, dlg.maximum()))
+            dlg.setLabelText(f"Exporting… {n:,} of {total:,} events")
+
+        def _on_ok(count: int, out_path: str) -> None:
+            dlg.close()
             QMessageBox.information(
-                self, "Exported",
-                f"Exported {count:,} events to:\n{path}"
-            )
-        except Exception as exc:
-            logger.exception("Juggernaut export failed: %s", path)
-            QMessageBox.critical(self, "Export Failed", str(exc))
+                self, "Exported", f"Exported {count:,} events to:\n{out_path}")
+
+        def _on_failed(msg: str) -> None:
+            dlg.close()
+            if msg == "__cancelled__":
+                QMessageBox.information(
+                    self, "Export Cancelled",
+                    "Export was cancelled and the partial file was deleted.\n\n"
+                    "A truncated export is not written, so it can never be "
+                    "mistaken for the complete set.",
+                )
+            else:
+                QMessageBox.critical(self, "Export Failed", msg)
+
+        worker.progress.connect(_on_progress)
+        worker.finished_ok.connect(_on_ok)
+        worker.failed.connect(_on_failed)
+        dlg.canceled.connect(worker.cancel)
+        worker.start()
 
     # =========================================================================
     # CLEAR
