@@ -18,7 +18,7 @@ Parsing ran `cpu-1` wide; almost nothing after it did. Fixed on `beta`:
 `7166ea6` JM sort off the GUI thread, `179ff54` JM export on a worker,
 `219e010` normal-mode text haystack precomputed. Harnesses now live in
 `tests/` (not `/tmp`): `test_jm_sort_perf.py` 24, `test_jm_export.py` 11,
-`test_normal_filter_perf.py` 11.
+`test_normal_filter_perf.py` 11, `test_parse_integrity_perf.py` 8.
 
 Measured on 1,710,518 rows (JM) and 500,000 events (normal):
 
@@ -38,6 +38,21 @@ loading millions of events in normal mode is already carrying ~400 MB of event
 dicts and belongs in Juggernaut mode, so this is not the binding constraint.
 
 ## Resource-utilisation audit (2026-08-20) — measured, not read
+
+**Parse stage FIXED (`fc60634`).** It now runs on processes: **39.8 s → 15.7 s**,
+**1.1 → 6.0 of 12 cores** average (peak 2.9 → 11.4), with 1,710,518 records
+intact and exact per source file. Start method is forkserver, else spawn, never
+plain fork (Qt threads). It degrades to the old thread path if processes cannot
+start, and an unguarded caller degrades safely too.
+
+**Callers of `HeavyweightEngine.run()` should be `if __name__ == "__main__"`
+guarded** — standard multiprocessing requirement. All app entrypoints already
+are (`eventhawk_gui.py`, `gui/app.py`, `evtx_tool.py` have `freeze_support()`
+and guards). An unguarded script does not fork-bomb: the engine catches the
+bootstrap error and falls back to threads, correct but ~4x slower.
+
+Numbers below are the ORIGINAL audit that found the problem, kept for the
+reasoning.
 
 Sampled process CPU while each stage ran, on 1616 files / 1.4 GB / 1,710,518
 rows, 12 cores. `100% = 1 core`.
@@ -72,13 +87,18 @@ those same GIL-bound worker threads, plus the single-threaded Parquet writer in
 the consumer. Moving to processes would parallelise that part too, so the prize
 is larger than 4.6x — but so is the risk.
 
-**Not attempted, deliberately.** Switching the heavyweight engine to
-`ProcessPoolExecutor` means picklable tasks, a `multiprocessing.Queue`, and a
-multiprocessing stop Event, on the core parse path of a forensic tool that has
-already had two silent record-loss bugs (see [[split-evtx-record-loss-bugs]]).
-Normal mode already parses with `ProcessPoolExecutor`, so there is precedent
-and picklable worker functions to copy from. This wants its own session with
-record-count equality asserted per source file before and after.
+**Done in `fc60634`**, with record-count equality asserted per source file
+(`tests/test_parse_integrity_perf.py`). Rows still stream through a queue —
+measured at ~0.1 GB / ~1.1 s of pickling for the whole corpus, cheap enough to
+keep the single-writer Parquet path and the integrity accounting unchanged.
+Workers now PULL tasks, which also closed a latent hang: the consumer waits
+`while done_tasks < total_tasks`, so a worker dying without emitting DONE would
+have blocked the parse forever.
+
+**Remaining headroom on parse:** 15.7 s is still above the ~7 s the raw
+threaded parse alone takes, so the single-threaded Parquet writer in the
+consumer is now the next bottleneck. Worth attacking only if parse latency
+still matters.
 
 **Still open (deliberately not started):** filters that change the row count a
 lot are dominated by `QSortFilterProxyModel`'s mapping churn plus the view's
