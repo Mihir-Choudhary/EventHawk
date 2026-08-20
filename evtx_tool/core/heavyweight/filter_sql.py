@@ -46,12 +46,21 @@ logger = logging.getLogger(__name__)
 # ed_subject_user etc. are subsumed by ed_values but kept for clarity/back-compat.
 _SEARCH_TEXT_RAW: str = (
     "CAST(event_id AS VARCHAR) || ' ' || "
+    "CAST(record_id AS VARCHAR) || ' ' || "
     "COALESCE(level_name,      '') || ' ' || "
     "COALESCE(channel,         '') || ' ' || "
     "COALESCE(provider,        '') || ' ' || "
+    "COALESCE(event_source_name, '') || ' ' || "
     "COALESCE(computer,        '') || ' ' || "
     "COALESCE(user_id,         '') || ' ' || "
     "COALESCE(source_file,     '') || ' ' || "
+    "COALESCE(timestamp_utc,   '') || ' ' || "
+    "COALESCE(keywords,        '') || ' ' || "
+    "COALESCE(correlation_id,  '') || ' ' || "
+    "CAST(COALESCE(task, 0) AS VARCHAR) || ' ' || "
+    "CAST(COALESCE(opcode, 0) AS VARCHAR) || ' ' || "
+    "CAST(COALESCE(process_id, 0) AS VARCHAR) || ' ' || "
+    "CAST(COALESCE(thread_id, 0) AS VARCHAR) || ' ' || "
     "COALESCE(ed_subject_user, '') || ' ' || "
     "COALESCE(ed_target_user,  '') || ' ' || "
     "COALESCE(ed_ip_address,   '') || ' ' || "
@@ -69,13 +78,33 @@ SEARCH_TEXT_EXPR: str = f"lower({_SEARCH_TEXT_RAW})"
 # merely has a LogonType field.  Runs only in text_config_to_parquet_sql().
 _SEARCH_TEXT_RAW_FULL: str = (
     "CAST(event_id AS VARCHAR) || ' ' || "
+    "CAST(record_id AS VARCHAR) || ' ' || "
     "COALESCE(level_name,      '') || ' ' || "
+    "CAST(COALESCE(level, 0) AS VARCHAR) || ' ' || "
     "COALESCE(channel,         '') || ' ' || "
     "COALESCE(provider,        '') || ' ' || "
+    "COALESCE(event_source_name, '') || ' ' || "
     "COALESCE(computer,        '') || ' ' || "
     "COALESCE(user_id,         '') || ' ' || "
     "COALESCE(source_file,     '') || ' ' || "
-    "COALESCE(ed_values,       '')"
+    "COALESCE(timestamp_utc,   '') || ' ' || "
+    "COALESCE(keywords,        '') || ' ' || "
+    "COALESCE(correlation_id,  '') || ' ' || "
+    "CAST(COALESCE(task, 0) AS VARCHAR) || ' ' || "
+    "CAST(COALESCE(opcode, 0) AS VARCHAR) || ' ' || "
+    "CAST(COALESCE(process_id, 0) AS VARCHAR) || ' ' || "
+    "CAST(COALESCE(thread_id, 0) AS VARCHAR) || ' ' || "
+    "CAST(COALESCE(qualifiers, 0) AS VARCHAR) || ' ' || "
+    # ed_values = every EventData VALUE, with XML line-split backslashes
+    # collapsed.  event_data_json = the COMPLETE nested structure: container
+    # keys, leaf names, values and attributes.
+    #
+    # Not ed_flat_json: it flattens the outer container away, so an event whose
+    # data sits under e.g. "data_0x8000003F" kept only the leaf names and that
+    # container name was unsearchable.  event_data_json is the only field that
+    # skips nothing, and "nothing is skipped" is the contract here.
+    "COALESCE(ed_values,       '') || ' ' || "
+    "COALESCE(event_data_json, '')"
 )
 SEARCH_TEXT_EXPR_FULL: str = f"lower({_SEARCH_TEXT_RAW_FULL})"
 

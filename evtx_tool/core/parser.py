@@ -64,9 +64,15 @@ def _extract_from_json(data: dict, record_id: int, timestamp: str, source_file: 
         attrs = provider_attrs.get("#attributes", {})
         provider_name = attrs.get("Name", "")
         provider_guid = attrs.get("Guid", "")
+        # Classic providers carry a SECOND name: Provider@EventSourceName
+        # (Name="Microsoft-Windows-Winlogon" EventSourceName="Wlclntfy").  It was
+        # never captured, so the legacy source string older tooling and docs call
+        # the "Source" was unsearchable on ~5% of a real corpus.
+        event_source_name = attrs.get("EventSourceName", "")
     else:
         provider_name = ""
         provider_guid = ""
+        event_source_name = ""
 
     time_created = system.get("TimeCreated", {})
     if isinstance(time_created, dict):
@@ -117,6 +123,7 @@ def _extract_from_json(data: dict, record_id: int, timestamp: str, source_file: 
         "timestamp":      ts_str,
         "channel":        system.get("Channel", ""),
         "provider":       provider_name,
+        "event_source_name": event_source_name,
         "provider_guid":  provider_guid,
         "computer":       system.get("Computer", ""),
         "level":          level,

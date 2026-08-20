@@ -405,15 +405,33 @@ class EventTableModel(QAbstractTableModel):
         """
         from evtx_tool.core.filters import flatten_searchable_values as _fsv
         parts: list[str] = []
-        for _fld in ("event_id", "level_name", "channel", "provider",
-                     "computer", "user_id", "source_file"):
+        # EVERY System-level field, not a hand-picked subset.  The old list
+        # covered seven; the other twelve (timestamp, record_id, keywords, task,
+        # opcode, pids, correlation, qualifiers, version, level, provider_guid,
+        # event_source_name) were silently unsearchable, so a term the analyst
+        # could see in the detail panel returned nothing from Advanced Filter.
+        # Mirrors SEARCH_TEXT_EXPR_FULL so both modes answer identically.
+        for _fld in ("event_id", "record_id", "level", "level_name", "channel",
+                     "provider", "event_source_name", "provider_guid",
+                     "computer", "user_id", "source_file", "timestamp",
+                     "keywords", "correlation_id", "task", "opcode",
+                     "process_id", "thread_id", "qualifiers", "version"):
             _v = ev.get(_fld)
-            if _v is not None:
+            if _v is not None and _v != "":
                 parts.append(str(_v))
         ed = ev.get("event_data", {}) or {}
         if ed:
+            # Mirrors the JM side exactly: ed_values (normalised values) PLUS
+            # event_data_json (the complete nested structure — container keys,
+            # leaf names, values and attributes).  The JSON dump is what makes
+            # field names searchable; walking keys by hand missed attributes,
+            # and the two modes have to answer identically.
             for _val in _fsv(ed):
                 parts.append(_re.sub(r'\\\s+', r'\\', _val))
+            try:
+                parts.append(_json_mod.dumps(ed, default=str))
+            except Exception:
+                parts.append(str(ed))
         return " ".join(parts)
 
     @staticmethod
@@ -570,6 +588,7 @@ class EventTableModel(QAbstractTableModel):
 
 # ── Proxy model (live text filter) ────────────────────────────────────────────
 
+import json as _json_mod
 import re as _re
 from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 

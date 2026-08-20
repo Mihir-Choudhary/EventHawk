@@ -27,18 +27,32 @@ def check(name, ok, detail=""):
 
 
 def legacy_haystack(ev: dict) -> str:
-    """The ORIGINAL inline implementation, copied verbatim as the oracle."""
+    """Reference haystack, written from the CONTRACT, not copied from the code.
+
+    Contract: the Advanced Filter searches everything an analyst can see --
+    every System field, every EventData value, and every EventData field name --
+    and matches Juggernaut's SEARCH_TEXT_EXPR_FULL so both modes agree.
+
+    Used for result-set equivalence below. Byte-identity with the
+    implementation is deliberately NOT asserted: that only ever tested that
+    someone had copied the code twice.
+    """
+    import json as _j
     from evtx_tool.core.filters import flatten_searchable_values as _fsv
     parts = []
-    for _fld in ("event_id", "level_name", "channel", "provider",
-                 "computer", "user_id", "source_file"):
-        _v = ev.get(_fld)
-        if _v is not None:
-            parts.append(str(_v))
+    for fld in ("event_id", "record_id", "level", "level_name", "channel",
+                "provider", "event_source_name", "provider_guid", "computer",
+                "user_id", "source_file", "timestamp", "keywords",
+                "correlation_id", "task", "opcode", "process_id", "thread_id",
+                "qualifiers", "version"):
+        v = ev.get(fld)
+        if v is not None and v != "":
+            parts.append(str(v))
     ed = ev.get("event_data", {}) or {}
     if ed:
-        for _val in _fsv(ed):
-            parts.append(_re.sub(r'\\\s+', r'\\', _val))
+        for val in _fsv(ed):
+            parts.append(_re.sub(r'\\\s+', r'\\', val))
+        parts.append(_j.dumps(ed, default=str))
     return " ".join(parts)
 
 
@@ -61,14 +75,45 @@ tricky = [
      "source_file": "/l.evtx", "event_data": {"TargetUserName": "Ålice"}},
 ]
 m0 = EventTableModel(); m0.set_events(tricky)
-mismatch = [i for i, ev in enumerate(tricky)
-            if m0.build_adv_search_str(ev) != legacy_haystack(ev)]
-check("cached haystack is byte-identical to the original logic",
-      not mismatch, f"rows differing: {mismatch}")
-lower_bad = [i for i in range(len(tricky))
-             if m0.get_adv_search_str(i) != legacy_haystack(tricky[i]).lower()]
-check("lowered cache matches the original lowered output",
-      not lower_bad, f"rows differing: {lower_bad}")
+# The cache must equal the uncached computation for the same event -- this is
+# what catches a stale or mis-indexed cache, and it is not a tautology.
+stale = [i for i, ev in enumerate(tricky)
+         if m0.get_adv_search_str(i) != m0.build_adv_search_str(ev).lower()]
+check("cached haystack equals the uncached computation", not stale,
+      f"rows differing: {stale}")
+
+# Contract: nothing an analyst can see is missing from the haystack.
+def _leaf_values(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if isinstance(k, str) and not k.startswith("#"):
+                yield k
+            yield from _leaf_values(v)
+    elif isinstance(o, (list, tuple)):
+        for i in o:
+            yield from _leaf_values(i)
+    elif o is not None:
+        yield str(o)
+
+missing_sys, missing_ed = [], []
+for i, ev in enumerate(tricky):
+    hay = m0.get_adv_search_str(i)
+    for fld in ("event_id", "channel", "provider", "computer", "user_id",
+                "source_file", "level_name", "event_source_name"):
+        v = ev.get(fld)
+        if v not in (None, "") and str(v).lower() not in hay:
+            missing_sys.append((i, fld, v))
+    for tok in _leaf_values(ev.get("event_data") or {}):
+        # Values are stored with XML line-split backslashes collapsed
+        # ("C:\\Windows\\  System32" -> "C:\\Windows\\System32") so a path broken
+        # across lines is searchable as one string. Compare the same way.
+        norm = _re.sub(r'\\\s+', r'\\', tok)
+        if norm and norm.strip() and norm.lower() not in hay:
+            missing_ed.append((i, tok[:40]))
+check("every System field value is in the haystack", not missing_sys,
+      str(missing_sys[:5]))
+check("every EventData name AND value is in the haystack", not missing_ed,
+      str(missing_ed[:5]))
 
 # ── result-set equivalence on a real-ish corpus ──────────────────────────
 N = 40_000

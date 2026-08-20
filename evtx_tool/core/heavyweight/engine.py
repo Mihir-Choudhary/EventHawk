@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 # ── Column order (22 non-PK columns, matches Arrow schema) ───────────────────
 _COL_NAMES = (
     "record_id", "event_id", "level", "level_name", "timestamp_utc",
-    "channel", "provider", "computer", "user_id", "keywords",
+    "channel", "provider", "event_source_name", "computer", "user_id", "keywords",
     "correlation_id", "source_file", "task", "opcode",
     "process_id", "thread_id",
     "ed_subject_user", "ed_target_user", "ed_ip_address",
@@ -69,6 +69,12 @@ def _make_schema():
         ("timestamp_utc",   pa.string()),   # stored as ISO-8601 text; DuckDB casts on query
         ("channel",         pa.string()),
         ("provider",        pa.string()),
+        # Classic providers carry TWO names: Provider@Name and
+        # Provider@EventSourceName (e.g. Name="Microsoft-Windows-Winlogon",
+        # EventSourceName="Wlclntfy").  Only Name was captured, so ~5% of
+        # records in a real corpus had a legacy source string that no search
+        # could ever find.
+        ("event_source_name", pa.string()),
         ("computer",        pa.string()),
         ("user_id",         pa.string()),
         ("keywords",        pa.string()),
@@ -294,9 +300,13 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | boo
 
         prov = system.get("Provider") or {}
         if isinstance(prov, dict):
-            provider_name = (prov.get("#attributes") or {}).get("Name", "") or prov.get("Name", "")
+            _pattrs = prov.get("#attributes") or {}
+            provider_name = _pattrs.get("Name", "") or prov.get("Name", "")
+            event_source_name = (_pattrs.get("EventSourceName", "")
+                                 or prov.get("EventSourceName", "") or "")
         else:
             provider_name = str(prov)
+            event_source_name = ""
 
         # ── Extract user_id BEFORE the pre-filter ─────────────────────────────
         # Previously extracted after filtering with user_id="" passed to the
@@ -384,7 +394,7 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | boo
 
         return (
             record_id, eid, level, level_name, ts_db,
-            channel, provider_name, computer, user_id, keywords,
+            channel, provider_name, event_source_name, computer, user_id, keywords,
             corr_id, source_file, task_val, opcode_val,
             pid, tid,
             str(flat_ed.get("SubjectUserName", "") or ""),
@@ -475,7 +485,7 @@ _MANIFEST_FILENAME = "parquet_manifest.json"
 # String columns with low cardinality — dictionary-encode for 9× memory savings.
 # e.g. "Microsoft-Windows-Security-Auditing" (36 bytes) → 1-byte integer index.
 _DICT_COLS = frozenset({
-    "level_name", "channel", "provider", "computer", "user_id", "source_file",
+    "level_name", "channel", "provider", "event_source_name", "computer", "user_id", "source_file",
     "ed_subject_sid", "ed_target_sid",
 })
 
@@ -485,7 +495,7 @@ _DICT_COLS = frozenset({
 # commonly-searched event_data fields.
 _ARROW_COLS = [
     "record_id", "event_id", "level", "level_name", "timestamp_utc",
-    "channel", "provider", "computer", "user_id", "keywords",
+    "channel", "provider", "event_source_name", "computer", "user_id", "keywords",
     "correlation_id", "source_file", "task", "opcode",
     "process_id", "thread_id",
     "ed_subject_user", "ed_target_user", "ed_ip_address",

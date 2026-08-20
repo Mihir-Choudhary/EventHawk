@@ -10,6 +10,7 @@ Layout (3-panel + status bar):
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sys
@@ -8457,6 +8458,45 @@ class MainWindow(QMainWindow):
         self._hw_loading_lbl = detail_lbl
         self._hw_loading_bar = bar
 
+    # Below this many events a normal-mode filter pass is fast enough that a
+    # dialog would only flash. Measured: ~40k events filter in well under 100ms.
+    _NORMAL_BUSY_MIN_ROWS = 25_000
+
+    @contextlib.contextmanager
+    def _normal_filter_busy(self, detail: str = "Applying filter…"):
+        """Show the Please-Wait dialog around a NORMAL-mode filter pass.
+
+        Juggernaut filtering runs on a worker and already drives this dialog
+        from busy_started/busy_finished.  Normal mode filters on the GUI
+        thread, so until now the window simply froze -- seconds of no repaint,
+        no cursor change, nothing to distinguish "working" from "hung".
+
+        processEvents() is needed because the very thread that would paint the
+        dialog is the one about to block; without it the dialog is created but
+        never drawn.
+        """
+        shown = False
+        try:
+            _src = self._active_proxy.sourceModel()
+            _rows = _src.rowCount() if _src is not None else 0
+        except Exception:
+            _rows = 0
+        if _rows >= self._NORMAL_BUSY_MIN_ROWS and self._hw_loading_dlg is None:
+            try:
+                self._show_hw_loading_dialog(
+                    heading="Please Wait — Applying Filter",
+                    detail=f"{detail}  ({_rows:,} events)",
+                )
+                QApplication.processEvents()
+                shown = True
+            except Exception:
+                shown = False
+        try:
+            yield
+        finally:
+            if shown:
+                self._close_hw_loading_dialog()
+
     def _close_hw_loading_dialog(self) -> None:
         """Dismiss and destroy the 'Please Wait' loading dialog."""
         if self._hw_loading_dlg is not None:
@@ -9510,7 +9550,8 @@ class MainWindow(QMainWindow):
             self._update_header_indicators()
             return
 
-        self._active_proxy.set_quick_filters(new_qf)
+        with self._normal_filter_busy("Applying quick filter…"):
+            self._active_proxy.set_quick_filters(new_qf)
         self._update_quick_filter_badge()
         self._update_count_label()
         self._update_header_indicators()
@@ -10155,20 +10196,24 @@ class MainWindow(QMainWindow):
                 # profile toggles can re-build the combined filter cleanly.
                 self._adv_filter_cfg = cfg
                 is_jm = self._hw_model is not None
-                for fp in scope_dlg.selected():
-                    if fp == "__all_events__":
+                # JM drives the wait dialog from its worker signals; normal mode
+                # blocks this thread, so it needs the dialog wrapped around it.
+                with contextlib.nullcontext() if is_jm else self._normal_filter_busy(
+                        "Applying advanced filter…"):
+                    for fp in scope_dlg.selected():
+                        if fp == "__all_events__":
+                            if is_jm:
+                                self._hw_model.apply_filter(cfg_effective)
+                            else:
+                                self._proxy_model.set_advanced_filter(cfg_effective)
+                            continue
+                        state = self._file_tabs.get(fp)
+                        if state is None:
+                            continue
                         if is_jm:
-                            self._hw_model.apply_filter(cfg_effective)
+                            state.model.apply_filter(cfg_effective)
                         else:
-                            self._proxy_model.set_advanced_filter(cfg_effective)
-                        continue
-                    state = self._file_tabs.get(fp)
-                    if state is None:
-                        continue
-                    if is_jm:
-                        state.model.apply_filter(cfg_effective)
-                    else:
-                        state.proxy.set_advanced_filter(cfg_effective)
+                            state.proxy.set_advanced_filter(cfg_effective)
                 self._update_adv_filter_badge()
                 self._update_count_label()
                 return
@@ -10180,7 +10225,8 @@ class MainWindow(QMainWindow):
             self._update_adv_filter_badge()
             self._update_count_label()
             return
-        self._active_proxy.set_advanced_filter(cfg_effective)
+        with self._normal_filter_busy("Applying advanced filter…"):
+            self._active_proxy.set_advanced_filter(cfg_effective)
         self._update_adv_filter_badge()
         self._update_count_label()
 
