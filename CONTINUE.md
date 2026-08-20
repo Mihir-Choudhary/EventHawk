@@ -17,7 +17,7 @@ Keep working on `beta` and fast-forward `main` when asked; do not commit to `mai
 Parsing ran `cpu-1` wide; almost nothing after it did. Fixed on `beta`:
 `7166ea6` JM sort off the GUI thread, `179ff54` JM export on a worker,
 `219e010` normal-mode text haystack precomputed. Harnesses now live in
-`tests/` (not `/tmp`): `test_jm_sort_perf.py` 20, `test_jm_export.py` 11,
+`tests/` (not `/tmp`): `test_jm_sort_perf.py` 24, `test_jm_export.py` 11,
 `test_normal_filter_perf.py` 11.
 
 Measured on 1,710,518 rows (JM) and 500,000 events (normal):
@@ -36,6 +36,49 @@ Measured on 1,710,518 rows (JM) and 500,000 events (normal):
 text search. It is freed and rebuilt whenever the dataset changes. Anyone
 loading millions of events in normal mode is already carrying ~400 MB of event
 dicts and belongs in Juggernaut mode, so this is not the binding constraint.
+
+## Resource-utilisation audit (2026-08-20) — measured, not read
+
+Sampled process CPU while each stage ran, on 1616 files / 1.4 GB / 1,710,518
+rows, 12 cores. `100% = 1 core`.
+
+| Stage | Wall | Avg cores | Peak |
+|---|---|---|---|
+| `engine.run()` (parse → Parquet) | 39.8 s | **1.1 / 12** | 2.9 |
+| JM filter (single event_id) | 0.06 s | 0.8 | 0.8 |
+| JM sort (timestamp / channel / eid) | 0.5–0.9 s | 3.2–3.4 | 9.7 |
+| JM full-text search | 2.3 s | 1.6 | 8.0 |
+| JM export, full table | 18.4 s | 1.5 | 10.3 |
+
+Post-parse now uses the machine (peaks of 9–10 of 12 cores). **The parse stage
+is the one that does not** — and it is the stage everyone assumed was already
+parallel.
+
+**Root cause, measured:** `evtx.PyEvtxParser.records_json()` does NOT release
+the GIL, so the engine's `ThreadPoolExecutor` buys nothing. Raw parse of the
+corpus, page-cache warm:
+
+- 1 thread → 1.62 s, 2 → 1.63 s, 4 → 1.70 s, 8 → 1.71 s, 11 → 1.68 s (**zero
+  scaling**)
+- full corpus: 11 threads **7.27 s** (202 MB/s) vs 11 processes **1.59 s**
+  (923 MB/s) — **4.6x** on parsing alone.
+
+`engine.py`'s own docstring claims "ThreadPoolExecutor — no spawn overhead, no
+pickle, GIL-free Rust parsing". The GIL-free half is false for this binding.
+
+**Note the bigger number:** raw parse is 7.3 s of the 39.8 s stage, so ~32 s is
+Python-side record processing (orjson decode, field extraction, tuple build) in
+those same GIL-bound worker threads, plus the single-threaded Parquet writer in
+the consumer. Moving to processes would parallelise that part too, so the prize
+is larger than 4.6x — but so is the risk.
+
+**Not attempted, deliberately.** Switching the heavyweight engine to
+`ProcessPoolExecutor` means picklable tasks, a `multiprocessing.Queue`, and a
+multiprocessing stop Event, on the core parse path of a forensic tool that has
+already had two silent record-loss bugs (see [[split-evtx-record-loss-bugs]]).
+Normal mode already parses with `ProcessPoolExecutor`, so there is precedent
+and picklable worker functions to copy from. This wants its own session with
+record-count equality asserted per source file before and after.
 
 **Still open (deliberately not started):** filters that change the row count a
 lot are dominated by `QSortFilterProxyModel`'s mapping churn plus the view's
