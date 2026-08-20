@@ -120,6 +120,7 @@ _SAFE_JSON_KEY_RE = _re.compile(r"^[\w.\-]+$")
 # return NULL for them.
 _TOP_LEVEL_COLS: frozenset[str] = frozenset({
     "event_id", "level", "level_name", "channel", "provider",
+    "event_source_name",
     "computer", "user_id", "timestamp_utc", "source_file",
     "record_id", "task",
     # System/Execution PID/TID — decimal integers stored as top-level columns.

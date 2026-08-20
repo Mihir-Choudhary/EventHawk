@@ -9523,20 +9523,24 @@ class MainWindow(QMainWindow):
         if self._view_mode == "separate":
             if scope_dlg is not None:
                 is_jm = self._hw_model is not None
-                for fp in scope_dlg.selected():
-                    if fp == "__all_events__":
+                # Per-file tabs in normal mode filter on the GUI thread too, and
+                # the scope loop can hit several of them in a row.
+                with contextlib.nullcontext() if is_jm else self._normal_filter_busy(
+                        "Applying quick filter…"):
+                    for fp in scope_dlg.selected():
+                        if fp == "__all_events__":
+                            if is_jm:
+                                self._hw_model.set_quick_filters(new_qf)
+                            else:
+                                self._proxy_model.set_quick_filters(new_qf)
+                            continue
+                        state = self._file_tabs.get(fp)
+                        if state is None:
+                            continue
                         if is_jm:
-                            self._hw_model.set_quick_filters(new_qf)
+                            state.model.set_quick_filters(new_qf)
                         else:
-                            self._proxy_model.set_quick_filters(new_qf)
-                        continue
-                    state = self._file_tabs.get(fp)
-                    if state is None:
-                        continue
-                    if is_jm:
-                        state.model.set_quick_filters(new_qf)
-                    else:
-                        state.proxy.set_quick_filters(new_qf)
+                            state.proxy.set_quick_filters(new_qf)
                 self._update_quick_filter_badge()
                 self._update_count_label()
                 self._update_header_indicators()

@@ -429,7 +429,14 @@ class EventTableModel(QAbstractTableModel):
             for _val in _fsv(ed):
                 parts.append(_re.sub(r'\\\s+', r'\\', _val))
             try:
-                parts.append(_json_mod.dumps(ed, default=str))
+                # MUST match how the Juggernaut engine serialises
+                # event_data_json (orjson): compact separators and raw UTF-8.
+                # Python's defaults differ on both counts -- ", " / ": " and
+                # \uXXXX escapes -- so a search for '"Provider":"IntelMEProv"'
+                # or for a non-ASCII field name would have hit in one mode and
+                # missed in the other.
+                parts.append(_json_mod.dumps(
+                    ed, separators=(",", ":"), ensure_ascii=False, default=str))
             except Exception:
                 parts.append(str(ed))
         return " ".join(parts)

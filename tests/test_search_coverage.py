@@ -103,6 +103,42 @@ def main() -> int:
             check(f"{label} is findable", a > 0 and b > 0, f"jm={a} normal={b}")
             check(f"{label} agrees across modes", a == b, f"jm={a} normal={b}")
 
+        # JSON-shaped and non-ASCII terms: normal mode serialises event_data
+        # with Python's json, JM with orjson.  Separator and \uXXXX escaping
+        # differences would make the same query hit in one mode and miss in the
+        # other, which is worse than missing in both.
+        import json as _j
+        def _first_str_pair(o):
+            """Any (key, str-value) pair, at any depth."""
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if isinstance(k, str) and isinstance(v, str) and v.strip() \
+                       and not k.startswith("#"):
+                        return k, v
+                for v in o.values():
+                    r = _first_str_pair(v)
+                    if r:
+                        return r
+            elif isinstance(o, (list, tuple)):
+                for i in o:
+                    r = _first_str_pair(i)
+                    if r:
+                        return r
+            return None
+        pair = next((p for p in (_first_str_pair(e.get("event_data") or {})
+                                 for e in evs) if p), None)
+        check("found a JSON pair to test encoder parity with", pair is not None,
+              "no string-valued EventData field in the sample")
+        if pair:
+            _k, _v = pair
+            frag = _j.dumps({_k: _v}, separators=(",", ":"),
+                            ensure_ascii=False)[1:-1]   # 'key":"value'
+            a, b = jm(frag), norm(frag)
+            print(f"  {'json fragment':<22} {frag[:32]!r:<34} {a:>7} {b:>7}")
+            check("JSON-shaped term is findable at all", a > 0 and b > 0,
+                  f"jm={a} normal={b}")
+            check("JSON-shaped term agrees across modes", a == b, f"jm={a} normal={b}")
+
         # a term that is genuinely absent must still return nothing
         a, b = jm("zz-not-present-zz"), norm("zz-not-present-zz")
         check("absent term returns nothing in both modes", a == 0 and b == 0, f"{a}/{b}")
