@@ -117,6 +117,15 @@ class _FilterThread(QThread):
     Two-phase filtering when conditions are present:
       Phase 1 — metadata WHERE clause against Arrow table (no I/O)
       Phase 2 — condition clauses against event_data_json in Parquet shards via JOIN
+
+    Sorting happens HERE, not on the GUI thread.  It used to run in
+    ``_on_filter_done`` (a Slot, i.e. the main thread) and again in ``sort()``,
+    so every filter change and every column-header click blocked the UI for the
+    length of a full-table sort — the busy indicator could not even repaint,
+    because the thread it lives on was the one stalled.  On the common
+    metadata-only path the sort is now fused into the DuckDB query as ORDER BY,
+    so DuckDB sorts row_ids in parallel and ``take()`` yields an already-ordered
+    table with no separate Arrow sort pass at all.
     """
 
     done = Signal(object, int)   # (pa.Table, generation)
@@ -127,6 +136,12 @@ class _FilterThread(QThread):
         self._parquet_dir  = parquet_dir
         self._q: _queue_module.SimpleQueue = _queue_module.SimpleQueue()
         self._shard_paths: list | None = None  # loaded lazily on first condition query
+        # Last emitted result + the keys that produced it.  A column-header
+        # click changes only the sort, so the (expensive) filter is reused and
+        # just re-ordered instead of being run again.
+        self._last_fkey:   tuple | None = None
+        self._last_sort:   tuple | None = None
+        self._last_result: object       = None
 
     # ── Shard manifest loader (cached) ────────────────────────────────────────
     def _get_shard_paths(self) -> list:
@@ -141,6 +156,103 @@ class _FilterThread(QThread):
             logger.warning("_FilterThread: cannot load shard manifest: %s", exc)
             self._shard_paths = []
         return self._shard_paths
+
+    # ── Sort helpers ──────────────────────────────────────────────────────────
+    # Whitelist: _SORT_COL_MAP is the only producer of sort columns, but the
+    # value is interpolated into SQL, so it is validated rather than trusted.
+    _SORTABLE = frozenset(_SORT_COL_MAP.values())
+
+    @classmethod
+    def _sort_keys(cls, sort_col: str, sort_asc: bool) -> list:
+        """Arrow sort keys, with the forensic tiebreaker preserved."""
+        if sort_col not in cls._SORTABLE:
+            sort_col = "timestamp_utc"
+        direction = "ascending" if sort_asc else "descending"
+        if sort_col == "timestamp_utc":
+            # record_id tiebreaker on timestamp sorts: same-second events (the
+            # overwhelming majority in Security logs) get deterministic,
+            # log-write order instead of arbitrary shard-interleave order.
+            return [(sort_col, direction), ("record_id", direction)]
+        return [(sort_col, direction)]
+
+    @classmethod
+    def _order_by_sql(cls, sort_col: str, sort_asc: bool) -> str:
+        """The same ordering as _sort_keys(), expressed for DuckDB."""
+        if sort_col not in cls._SORTABLE:
+            sort_col = "timestamp_utc"
+        direction = "ASC" if sort_asc else "DESC"
+        if sort_col == "timestamp_utc":
+            return f"timestamp_utc {direction}, record_id {direction}"
+        return f"{sort_col} {direction}"
+
+    def _order_result(self, con, result, sort_col: str, sort_asc: bool):
+        """Order an already-filtered result via DuckDB.
+
+        Arrow's ``sort_by`` raises on dictionary-encoded columns -- which is how
+        every string column in this table is stored (computer, channel,
+        provider, source_file, user_id, level_name).  The old code caught that
+        and fell through to "returning unsorted result", so sorting the grid by
+        any of those columns silently displayed UNSORTED rows.  DuckDB sorts
+        them correctly, and in parallel.
+
+        Every result here is derived from _full_table, so it always carries the
+        row_id column; ordering the ids and re-taking is equivalent to ordering
+        the rows, and take() preserves dictionary encoding.
+        """
+        if len(result) == 0:
+            return result
+        import pyarrow as pa
+        try:
+            con.register("_ord_keep", pa.table({"row_id": result["row_id"]}))
+            try:
+                ids = con.execute(
+                    f"SELECT e.row_id FROM events e "
+                    f"JOIN _ord_keep k ON e.row_id = k.row_id "
+                    f"ORDER BY {self._order_by_sql(sort_col, sort_asc)}"
+                ).fetch_arrow_table()["row_id"]
+            finally:
+                try:
+                    con.unregister("_ord_keep")
+                except Exception:
+                    pass
+            return self._full_table.take(ids)
+        except Exception as exc:
+            logger.warning("DuckDB ordering failed (%s) — falling back to Arrow", exc)
+            return self._sort_table(result, sort_col, sort_asc)
+
+    def _sort_table(self, table, sort_col: str, sort_asc: bool):
+        """Sort an Arrow table, falling back to the un-tiebroken order."""
+        try:
+            return table.sort_by(self._sort_keys(sort_col, sort_asc))
+        except Exception as exc:
+            logger.warning("Sort failed (%s) — retrying without tiebreaker", exc)
+            try:
+                direction = "ascending" if sort_asc else "descending"
+                return table.sort_by([(sort_col, direction)])
+            except Exception:
+                logger.warning("Sort failed entirely — returning unsorted result")
+                return table
+
+    def _metadata_filter(self, con, where_sql: str, params: list,
+                         sort_col: str, sort_asc: bool):
+        """Metadata-only filter with the sort fused in as ORDER BY.
+
+        Fetches only row_ids and take()s from full_table: take() preserves
+        dictionary encoding and shares the underlying string buffers, avoiding
+        a ~1.7 GB unencoded copy that SELECT * would materialise.
+
+        Uses fetch_arrow_table() (Arrow C-interface) rather than fetchnumpy():
+        modern pyarrow (14+) makes numpy OPTIONAL, so a box can have
+        pyarrow+duckdb (Juggernaut active) but no numpy.  fetchnumpy() then
+        raised "No module named 'numpy'", which the caller's except turned into
+        result=full_table -- silently showing EVERY event for any filtered view.
+        """
+        row_ids = con.execute(
+            f"SELECT row_id FROM events WHERE {where_sql} "
+            f"ORDER BY {self._order_by_sql(sort_col, sort_asc)}",
+            params,
+        ).fetch_arrow_table()["row_id"]
+        return self._full_table.take(row_ids)
 
     # ── Two-phase condition post-filter ───────────────────────────────────────
     def _apply_with_conditions(self, con, where_sql: str, params: list, conditions_cfg: dict):
@@ -328,14 +440,19 @@ class _FilterThread(QThread):
     def run(self) -> None:
         import duckdb
         con = duckdb.connect()
-        con.execute(f"SET threads={min(4, os.cpu_count() or 4)}")
+        # Was min(4, cpu): the parser gets cpu-1 workers, so on a 12-core box
+        # parsing ran 11-wide while the interactive filter — the one the analyst
+        # actually waits on — ran 4-wide.  This runs on a background thread, so
+        # the only core that must stay free is the GUI's.
+        con.execute(f"SET threads={max(2, min((os.cpu_count() or 4) - 1, 16))}")
         con.register("events", self._full_table)
 
         while True:
             item = self._q.get()          # blocks until request arrives
             if item is None:
                 break                     # shutdown sentinel
-            gen, where_sql, params, conditions_cfg, text_search_cfg = item
+            (gen, where_sql, params, conditions_cfg,
+             text_search_cfg, sort_col, sort_asc) = item
 
             # Drain queue — only the latest request matters.
             while not self._q.empty():
@@ -343,43 +460,54 @@ class _FilterThread(QThread):
                 if item is None:
                     con.close()
                     return
-                gen, where_sql, params, conditions_cfg, text_search_cfg = item
+                (gen, where_sql, params, conditions_cfg,
+                 text_search_cfg, sort_col, sort_asc) = item
 
             has_conditions = bool(conditions_cfg.get("conditions"))
             has_full_text  = bool(text_search_cfg.get("text_search"))
+
+            # A column-header click changes only (sort_col, sort_asc).  Re-running
+            # the filter for that would be pure waste, so the previous result is
+            # reused and merely re-ordered; an identical repeat is emitted as-is.
+            fkey = (where_sql, tuple(params),
+                    repr(conditions_cfg), repr(text_search_cfg))
+            skey = (sort_col, sort_asc)
+            if fkey == self._last_fkey and self._last_result is not None:
+                if skey == self._last_sort:
+                    try:
+                        self.done.emit(self._last_result, gen)
+                    except RuntimeError:
+                        pass
+                    continue
+                result = self._order_result(con, self._last_result, sort_col, sort_asc)
+                self._last_sort, self._last_result = skey, result
+                try:
+                    self.done.emit(result, gen)
+                except RuntimeError:
+                    pass
+                continue
+
+            sorted_in_sql = False
             try:
-                if where_sql == "1=1" and not has_conditions and not has_full_text:
-                    # No filter — return full table directly (zero-copy, preserves dict encoding).
-                    result = self._full_table
+                if not has_conditions and not has_full_text:
+                    # Metadata-only (including the unfiltered "1=1" case).  This
+                    # used to short-circuit to `result = self._full_table` when
+                    # unfiltered, which then needed an Arrow sort that could not
+                    # order dictionary columns; ordering in SQL is both correct
+                    # and parallel, and take() still preserves dict encoding.
+                    result = self._metadata_filter(con, where_sql, params,
+                                                   sort_col, sort_asc)
+                    sorted_in_sql = True
                 elif has_full_text:
                     # Full-text search: Phase 2 Parquet scan includes event_data_json.
                     # Handles conditions too if both are set.
                     result = self._apply_with_full_text_search(
                         con, where_sql, params, conditions_cfg, text_search_cfg
                     )
-                elif not has_conditions:
-                    # Metadata-only filter — fast Arrow/DuckDB path.
-                    # Fetch only row_ids matching the filter, then take() from full_table.
-                    # take() preserves dictionary encoding and shares underlying string buffers —
-                    # avoids materialising a 1.7 GB unencoded copy via SELECT *.
-                    #
-                    # Use fetch_arrow_table() (Arrow C-interface) rather than
-                    # fetchnumpy(): modern pyarrow (14+) makes numpy an OPTIONAL
-                    # dependency, so a box can have pyarrow+duckdb (Juggernaut
-                    # active) but no numpy.  fetchnumpy() then raised
-                    # "No module named 'numpy'", which the except below turned
-                    # into result=self._full_table — silently showing EVERY
-                    # event for any filtered view (per-file tabs, quick filters,
-                    # advanced filters).  fetch_arrow_table()["row_id"] returns a
-                    # ChunkedArray that Table.take() accepts directly, with no
-                    # numpy involved.
-                    row_ids = con.execute(
-                        f"SELECT row_id FROM events WHERE {where_sql}", params
-                    ).fetch_arrow_table()["row_id"]
-                    result = self._full_table.take(row_ids)
                 else:
                     # Two-phase: metadata via Arrow + conditions via Parquet.
                     result = self._apply_with_conditions(con, where_sql, params, conditions_cfg)
+                    sorted_in_sql = False
             except Exception as exc:
                 # NOTE: this fallback shows the FULL table (fail-open).  That is
                 # a forensic-integrity hazard — a filtered view silently showing
@@ -392,6 +520,12 @@ class _FilterThread(QThread):
                     "results are UNRELIABLE for where=%r", exc, where_sql,
                 )
                 result = self._full_table   # on error, show all rows (see note)
+                sorted_in_sql = False
+
+            if not sorted_in_sql:
+                result = self._order_result(con, result, sort_col, sort_asc)
+
+            self._last_fkey, self._last_sort, self._last_result = fkey, skey, result
 
             try:
                 self.done.emit(result, gen)
@@ -401,8 +535,10 @@ class _FilterThread(QThread):
         con.close()
 
     def request(self, gen: int, where_sql: str, params: list,
-                conditions_cfg: dict = None, text_search_cfg: dict = None) -> None:
-        self._q.put((gen, where_sql, params, conditions_cfg or {}, text_search_cfg or {}))
+                conditions_cfg: dict = None, text_search_cfg: dict = None,
+                sort_col: str = "timestamp_utc", sort_asc: bool = True) -> None:
+        self._q.put((gen, where_sql, params, conditions_cfg or {},
+                     text_search_cfg or {}, sort_col, sort_asc))
 
     def stop(self) -> None:
         self._q.put(None)
@@ -690,9 +826,13 @@ class ArrowTableModel(QAbstractTableModel):
         """Invalidate visible cache and dispatch a new filter request."""
         self._cached_where = None
         where_sql, params = self._combined_where()
-        where_key = (where_sql, tuple(params), str(self._conditions_cfg), str(self._text_search_cfg))
+        # Sort is part of the key: the thread now does the ordering, so a
+        # sort-only change must still dispatch (the thread reuses the cached
+        # filter result and only re-orders it).
+        where_key = (where_sql, tuple(params), str(self._conditions_cfg),
+                     str(self._text_search_cfg), self._sort_col, self._sort_asc)
         if where_key == self._last_where_key:
-            return  # WHERE clause unchanged — skip redundant dispatch
+            return  # nothing changed — skip redundant dispatch
         self._last_where_key = where_key
         self.busy_started.emit()
         self._generation += 1
@@ -702,6 +842,7 @@ class ArrowTableModel(QAbstractTableModel):
             self._generation, where_sql, list(params),
             self._conditions_cfg,
             self._text_search_cfg,
+            self._sort_col, self._sort_asc,
         )
 
     @Slot(object, int)
@@ -709,24 +850,9 @@ class ArrowTableModel(QAbstractTableModel):
         if generation != self._generation:
             return   # stale — a newer request is already in flight
 
-        # Re-apply the current sort order (filter result is unordered).
-        direction = "ascending" if self._sort_asc else "descending"
-        try:
-            # record_id tiebreaker on timestamp sorts: same-second events (the
-            # overwhelming majority in Security logs) get deterministic,
-            # log-write order instead of arbitrary shard-interleave order.
-            if self._sort_col == "timestamp_utc":
-                _keys = [(self._sort_col, direction), ("record_id", direction)]
-            else:
-                _keys = [(self._sort_col, direction)]
-            filtered_table = filtered_table.sort_by(_keys)
-        except Exception as exc:
-            logger.warning("Sort after filter failed (%s) — using unsorted result", exc)
-            try:
-                filtered_table = filtered_table.sort_by([(self._sort_col, direction)])
-            except Exception:
-                pass
-
+        # Already ordered by _FilterThread (see its docstring).  Sorting here
+        # ran on the GUI thread and stalled the UI after every single filter
+        # change, not just on header clicks.
         self._display_table = filtered_table
         self._total_rows    = len(filtered_table)
         self._cache_dict    = {}
@@ -1048,19 +1174,14 @@ class ArrowTableModel(QAbstractTableModel):
         arrow_col = _SORT_COL_MAP.get(column)
         if arrow_col is None:
             return
+        if arrow_col == self._sort_col and (order == Qt.SortOrder.AscendingOrder) == self._sort_asc:
+            return                      # same order already applied
         self._sort_col = arrow_col
         self._sort_asc = (order == Qt.SortOrder.AscendingOrder)
-        direction = "ascending" if self._sort_asc else "descending"
-        self.busy_started.emit()
-        try:
-            self._display_table = self._display_table.sort_by([(arrow_col, direction)])
-        except Exception as exc:
-            logger.warning("Sort failed: %s", exc)
-        self._cache_dict  = {}
-        self._cache_start = self._cache_end = 0
-        self.beginResetModel()
-        self.endResetModel()
-        self.busy_finished.emit()
+        # Dispatch to _FilterThread rather than sorting inline.  It reuses the
+        # cached filter result and only re-orders, so this costs a sort, not a
+        # re-filter — and it no longer freezes the window on large tables.
+        self._invalidate()
 
     # ── Event count ───────────────────────────────────────────────────────────
 
