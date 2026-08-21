@@ -209,8 +209,30 @@ class AnalysisRunner(QObject):
                 self._last_progress_ts = time.monotonic()
                 self._cleanup_shm()  # Worker has its own copy now
             elif msg_type == "error":
+                # A result may ALREADY be sitting in the result queue: the
+                # progress queue is drained first, so returning here threw away
+                # completed IOC/correlation/Hayabusa output and the analyst saw
+                # empty tabs -- "one section failed, so none of them loaded".
+                # Deliver whatever finished, and carry the failure with it.
                 self._poll_timer.stop()
-                self.error.emit(msg.get("message", "Unknown worker error"))
+                _err = msg.get("message", "Unknown worker error")
+                _partial = None
+                try:
+                    _partial = self._result_q.get_nowait()
+                except Empty:
+                    _partial = None
+                if _partial is not None:
+                    _meta = dict(_partial.get("metadata") or {})
+                    _errs = dict(_meta.get("_analysis_errors") or {})
+                    _errs.setdefault("Analysis", _err)
+                    _meta["_analysis_errors"] = _errs
+                    self.finished.emit(
+                        _partial.get("iocs"),
+                        _partial.get("chains", []),
+                        _meta,
+                    )
+                else:
+                    self.error.emit(_err)
                 self._cleanup()
                 return
 

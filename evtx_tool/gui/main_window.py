@@ -10293,6 +10293,24 @@ class MainWindow(QMainWindow):
                 parts.append(f"IOCs: {total_iocs}")
         if chains:
             parts.append(f"Chains: {len(chains)}")
+
+        # A component may have failed while others succeeded.  The results that
+        # DID complete are shown (that is the point of the partial-result
+        # path), but a silent partial result is a forensic hazard: the analyst
+        # would read empty IOCs as "no IOCs found" rather than "IOC extraction
+        # crashed".  Name what broke, in the status bar and once in a dialog.
+        _an_errs = (metadata or {}).get("_analysis_errors") or {}
+        if _an_errs:
+            parts.append("⚠ " + ", ".join(f"{k} failed" for k in _an_errs))
+            self._set_status("Done (partial analysis)", stats="  |  ".join(parts))
+            QMessageBox.warning(
+                self, "Analysis Partially Failed",
+                "Some analysis components did not complete. Results from the "
+                "others are shown, but the sections below are INCOMPLETE — do "
+                "not read an empty tab as 'nothing found':\n\n"
+                + "\n".join(f"  • {k}: {v}" for k, v in _an_errs.items()),
+            )
+            return
         self._set_status("Done", stats="  |  ".join(parts))
 
     @Slot(str)

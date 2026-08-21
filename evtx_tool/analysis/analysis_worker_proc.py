@@ -238,6 +238,11 @@ def _run_pipeline(
         """Send per-component percentage to the GUI."""
         progress_q.put({"type": "component_progress", "component": component, "pct": pct})
 
+    # Per-component failures, carried back with whatever DID succeed.  One
+    # section failing must never mean none of them load: the analyst should get
+    # the IOCs even if correlation blew up, and be told which part failed.
+    errors: dict[str, str] = {}
+
     # ── 1. Attach SharedMemory → deserialize events ──────────────────────
     shm = SharedMemory(name=shm_name, create=False)
     try:
@@ -269,6 +274,7 @@ def _run_pipeline(
             )
         except Exception as exc:
             logger.warning("metadata failed: %s", exc)
+            errors["Metadata"] = f"{type(exc).__name__}: {exc}"
         _emit_component("Metadata", 100)
 
     if cancel_event.is_set():
@@ -306,6 +312,7 @@ def _run_pipeline(
                 return result
             except Exception as exc:
                 logger.warning("IOC extraction failed: %s", exc)
+                errors["IOC Extraction"] = f"{type(exc).__name__}: {exc}"
                 return None
 
         def _run_correlate() -> list:
@@ -320,6 +327,7 @@ def _run_pipeline(
                 return result
             except Exception as exc:
                 logger.warning("Correlation failed: %s", exc)
+                errors["Correlation"] = f"{type(exc).__name__}: {exc}"
                 return []
 
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="analysis") as pool:
@@ -334,8 +342,18 @@ def _run_pipeline(
                 time.sleep(0.2)
 
             if not cancel_event.is_set():
-                iocs = fut_ioc.result(timeout=60)
-                chains = fut_corr.result(timeout=60)
+                # Guarded independently: an exception or timeout collecting one
+                # future must not discard the other one's completed work.
+                try:
+                    iocs = fut_ioc.result(timeout=60)
+                except Exception as exc:
+                    logger.warning("IOC extraction result failed: %s", exc)
+                    errors["IOC Extraction"] = f"{type(exc).__name__}: {exc}"
+                try:
+                    chains = fut_corr.result(timeout=60)
+                except Exception as exc:
+                    logger.warning("Correlation result failed: %s", exc)
+                    errors["Correlation"] = f"{type(exc).__name__}: {exc}"
 
         # Consume the extra step count (we reported both as one combined step)
         step += 1
@@ -354,6 +372,7 @@ def _run_pipeline(
                 _score_and_correlate(iocs)
             except Exception as exc:
                 logger.warning("IOC extraction failed: %s", exc)
+                errors["IOC Extraction"] = f"{type(exc).__name__}: {exc}"
             _emit_component("IOC Extraction", 100)
 
         if do_correlate and not cancel_event.is_set():
@@ -367,6 +386,7 @@ def _run_pipeline(
                 )
             except Exception as exc:
                 logger.warning("Correlation failed: %s", exc)
+                errors["Correlation"] = f"{type(exc).__name__}: {exc}"
             _emit_component("Correlation", 100)
 
     # ── 4. Hayabusa / Sigma rules ─────────────────────────────────────────
@@ -411,14 +431,19 @@ def _run_pipeline(
             chains.extend(hayabusa_chains)
         except Exception as exc:
             logger.warning("Hayabusa scan failed: %s", exc)
+            errors["Hayabusa"] = f"{type(exc).__name__}: {exc}"
         _emit_component("Hayabusa", 100)
 
 
     # ── 5. Send results ──────────────────────────────────────────────────
     if not cancel_event.is_set():
+        if errors:
+            metadata = dict(metadata or {})
+            metadata["_analysis_errors"] = errors
         result_q.put({
             "type": "result",
             "iocs": iocs,
             "chains": chains,
             "metadata": metadata,
+            "errors": errors,
         })
