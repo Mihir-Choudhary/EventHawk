@@ -781,6 +781,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._adv_computers = []
         self._adv_computer_exclude = False
         self._adv_text = ""
+        self._adv_text_terms = []      # must reset with the rest, or a cleared
+        self._adv_text_regexes = []    # filter leaves the predicate gate armed
+        self._adv_text_mode = "AND"
         self._adv_text_regex = None
         self._adv_text_exclude = False
         self._adv_date_from = None

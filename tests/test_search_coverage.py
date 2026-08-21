@@ -251,6 +251,38 @@ def main() -> int:
         except Exception as _exc:
             check("multi-term list does not crash normal mode", False, repr(_exc))
 
+        # ── the DIALOG must actually emit the text in Juggernaut Mode ────
+        # The engine work is worthless if the control is greyed out or the
+        # value is clamped on the way out, which is exactly what happened:
+        # text search was engine-complete but UI-unreachable in JM.
+        from evtx_tool.gui.filter_dialog import FilterDialog
+        for _jm in (True, False):
+            _d = FilterDialog(metadata={}, current_filter={}, juggernaut_mode=_jm)
+            _d._inp_text.setText("svchost")
+            _d._chk_regex.setChecked(True)
+            _d._chk_text_exclude.setChecked(True)
+            _cfg = _d.get_filter_config()
+            _lbl = "JM" if _jm else "normal"
+            check(f"filter dialog ({_lbl}) leaves the text field usable",
+                  _d._inp_text.isEnabled() and _d._chk_regex.isEnabled())
+            check(f"filter dialog ({_lbl}) emits the text term unclamped",
+                  _cfg.get("text_search") == "svchost"
+                  and _cfg.get("text_regex") is True
+                  and _cfg.get("text_exclude") is True,
+                  f"{_cfg.get('text_search')!r} regex={_cfg.get('text_regex')} "
+                  f"excl={_cfg.get('text_exclude')}")
+
+        # and that config must give the same answer through both models
+        _d = FilterDialog(metadata={}, current_filter={}, juggernaut_mode=True)
+        _d._inp_text.setText("svchost")
+        _dcfg = _d.get_filter_config()
+        jm_model.apply_filter(dict(_dcfg)); settle(); _a = jm_model.rowCount()
+        jm_model.clear_filter(); settle()
+        npx.set_advanced_filter(dict(_dcfg)); _b = npx.rowCount()
+        npx.set_advanced_filter(None)
+        check("dialog-built config agrees across modes", _a == _b,
+              f"jm={_a} normal={_b}")
+
         # a term that is genuinely absent must still return nothing
         a, b = jm("zz-not-present-zz"), norm("zz-not-present-zz")
         check("absent term returns nothing in both modes", a == 0 and b == 0, f"{a}/{b}")

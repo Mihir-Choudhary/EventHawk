@@ -240,6 +240,7 @@ class FilterDialog(QDialog):
         self.setMinimumSize(580, 550)
         self._metadata = metadata
         self._current = current_filter or {}
+        # Retained for callers/back-compat; no longer gates any control.
         self._juggernaut_mode = bool(juggernaut_mode)
         self._build_ui()
         self._restore_state(self._current)
@@ -1029,9 +1030,9 @@ class FilterDialog(QDialog):
             # Event IDs
             "event_id_expr": self._inp_event_ids.text().strip(),
             "event_id_exclude": self._chk_eid_exclude.isChecked(),
-            # Text — in Juggernaut Mode the widgets are disabled (see
-            # _disable_text_in_description) but read defensively so even if a
-            # caller re-enables them programmatically the cfg stays clean.
+            # Text-in-description works in BOTH modes: Juggernaut's Phase 2
+            # scan reads the Parquet shards including event_data_json, so the
+            # field no longer searches a partial haystack.
             "text_search": self._inp_text.text().strip(),
             "text_regex": self._chk_regex.isChecked(),
             "text_exclude": self._chk_text_exclude.isChecked(),
@@ -1057,51 +1058,6 @@ class FilterDialog(QDialog):
 
     # =====================================================================
     # JUGGERNAUT MODE — disable widgets whose backend can't honour them
-    # =====================================================================
-
-    def _disable_text_in_description(self) -> None:
-        """Grey out the Text-in-description field + its flags in JM mode.
-
-        Why disabled: the JM live-filter pipeline builds its search blob from
-        the Arrow metadata columns only (event_id, level_name, channel,
-        provider, computer, user_id, source_file, ed_subject_user,
-        ed_target_user, ed_ip_address, ed_new_process).  ``event_data_json``
-        is NOT part of that blob, so a text-in-description filter run through
-        the dialog would silently miss the data the user typically wants to
-        find (PIDs, paths, command lines, etc.).  Greying out the controls is
-        clearer than letting them run against a partial haystack.
-
-        Field-level Conditions (further down in the dialog) DO query
-        ``event_data_json`` via ``json_extract_string`` in Juggernaut mode and
-        remain enabled.
-        """
-        _tip = (
-            "Disabled in Juggernaut Mode.\n\n"
-            "The live JM filter pipeline cannot search inside event_data_json, "
-            "so this field would silently miss most of what you're looking for "
-            "(process IDs, file paths, command lines, etc.).\n\n"
-            "Use the field-level Conditions below to match on specific "
-            "event_data keys instead — those DO run against event_data_json "
-            "via json_extract_string."
-        )
-        # Clear any prefilled text so a stale value can't leak into the cfg.
-        self._inp_text.clear()
-        self._inp_text.setPlaceholderText("Disabled in Juggernaut Mode")
-        self._inp_text.setEnabled(False)
-        self._inp_text.setToolTip(_tip)
-        self._chk_regex.setChecked(False)
-        self._chk_regex.setEnabled(False)
-        self._chk_regex.setToolTip(_tip)
-        self._chk_text_exclude.setChecked(False)
-        self._chk_text_exclude.setEnabled(False)
-        self._chk_text_exclude.setToolTip(_tip)
-        # Dim the label too so the whole row reads as inactive.
-        self._lbl_text.setEnabled(False)
-        self._lbl_text.setToolTip(_tip)
-        self._lbl_text_disabled_hint.setVisible(True)
-
-    # =====================================================================
-    # VALIDATION — surface silent parse failures before the dialog accepts
     # =====================================================================
 
     def _validate_inputs(self) -> list[str]:
