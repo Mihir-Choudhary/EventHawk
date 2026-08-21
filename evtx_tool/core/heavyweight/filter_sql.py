@@ -46,6 +46,11 @@ logger = logging.getLogger(__name__)
 # ed_subject_user etc. are subsumed by ed_values but kept for clarity/back-compat.
 _SEARCH_TEXT_RAW: str = (
     "CAST(event_id AS VARCHAR) || ' ' || "
+    # Timestamps are stored as "YYYY-MM-DD HH:MM:SS.ffffff".  An analyst
+    # pasting the ISO form the raw EVTX (and most other tooling) uses --
+    # "YYYY-MM-DDTHH:MM:SS.ffffffZ" -- matched NOTHING.  Both renderings are
+    # in the blob so either one finds the event.
+    "replace(COALESCE(timestamp_utc, ''), ' ', 'T') || 'Z' || ' ' || "
     "CAST(record_id AS VARCHAR) || ' ' || "
     "COALESCE(level_name,      '') || ' ' || "
     "COALESCE(channel,         '') || ' ' || "
@@ -78,6 +83,11 @@ SEARCH_TEXT_EXPR: str = f"lower({_SEARCH_TEXT_RAW})"
 # merely has a LogonType field.  Runs only in text_config_to_parquet_sql().
 _SEARCH_TEXT_RAW_FULL: str = (
     "CAST(event_id AS VARCHAR) || ' ' || "
+    # Timestamps are stored as "YYYY-MM-DD HH:MM:SS.ffffff".  An analyst
+    # pasting the ISO form the raw EVTX (and most other tooling) uses --
+    # "YYYY-MM-DDTHH:MM:SS.ffffffZ" -- matched NOTHING.  Both renderings are
+    # in the blob so either one finds the event.
+    "replace(COALESCE(timestamp_utc, ''), ' ', 'T') || 'Z' || ' ' || "
     "CAST(record_id AS VARCHAR) || ' ' || "
     "COALESCE(level_name,      '') || ' ' || "
     "CAST(COALESCE(level, 0) AS VARCHAR) || ' ' || "

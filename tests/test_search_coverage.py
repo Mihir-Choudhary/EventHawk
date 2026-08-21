@@ -176,6 +176,42 @@ def main() -> int:
               jm_model.rowCount() == q_only, f"{jm_model.rowCount()} vs {q_only}")
         jm_model.apply_text_filter(""); settle()
 
+        # ── both timestamp renderings must be findable ───────────────────
+        # JM stores "YYYY-MM-DD HH:MM:SS.ffffff"; the raw EVTX and most other
+        # tooling render "YYYY-MM-DDTHH:MM:SS.ffffffZ". Each mode used to find
+        # only its own form, so a pasted timestamp hit in one and missed in the
+        # other.
+        _ts_iso = next((e["timestamp"] for e in evs if e.get("timestamp")), "")
+        if _ts_iso:
+            _ts_space = _ts_iso.replace("T", " ").rstrip("Z")
+            for label, form in (("ISO (…T…Z)", _ts_iso), ("space form", _ts_space)):
+                a, b = jm(form), norm(form)
+                print(f"  {'timestamp ' + label:<22} {form[:32]!r:<34} {a:>7} {b:>7}")
+                check(f"timestamp {label} is findable", a > 0 and b > 0,
+                      f"jm={a} normal={b}")
+                check(f"timestamp {label} agrees across modes", a == b,
+                      f"jm={a} normal={b}")
+
+        # ── a duplicated record must not be returned twice ───────────────
+        # Phase 2 joins against the Parquet shards. A plain JOIN emitted one row
+        # per matching PARQUET row, so an event whose (record_id, source_file)
+        # appeared twice came back twice -- and include+exclude then summed to
+        # MORE than the dataset. A semi-join keeps it to one row per candidate.
+        _base = jm_model.rowCount()
+        _t = cases[0][1]
+        if _t:
+            jm_model.apply_filter({"text_search": _t}); settle()
+            _inc = jm_model.rowCount()
+            _ids = jm_model._display_table["row_id"].to_pylist()
+            jm_model.clear_filter(); settle()
+            jm_model.apply_filter({"text_search": _t, "text_exclude": True}); settle()
+            _exc = jm_model.rowCount()
+            jm_model.clear_filter(); settle()
+            check("no row is returned twice by a text search",
+                  len(_ids) == len(set(_ids)), f"{len(_ids)} rows, {len(set(_ids))} unique")
+            check("include + exclude == the whole dataset (no double counting)",
+                  _inc + _exc == _base, f"{_inc}+{_exc} vs {_base}")
+
         # a term that is genuinely absent must still return nothing
         a, b = jm("zz-not-present-zz"), norm("zz-not-present-zz")
         check("absent term returns nothing in both modes", a == 0 and b == 0, f"{a}/{b}")

@@ -419,6 +419,13 @@ class EventTableModel(QAbstractTableModel):
             _v = ev.get(_fld)
             if _v is not None and _v != "":
                 parts.append(str(_v))
+        # Normal mode stores the ISO form ("...T...Z"); Juggernaut stores
+        # "YYYY-MM-DD HH:MM:SS.ffffff".  Each mode could only find its own
+        # rendering, so the same pasted timestamp hit in one and missed in the
+        # other.  Both forms go in both haystacks.
+        _ts = str(ev.get("timestamp") or "")
+        if _ts:
+            parts.append(_ts.replace("T", " ").rstrip("Z"))
         ed = ev.get("event_data", {}) or {}
         if ed:
             # Mirrors the JM side exactly: ed_values (normalised values) PLUS
