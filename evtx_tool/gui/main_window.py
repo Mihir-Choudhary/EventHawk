@@ -8604,7 +8604,9 @@ class MainWindow(QMainWindow):
     _NORMAL_BUSY_MIN_ROWS = 25_000
 
     @contextlib.contextmanager
-    def _normal_filter_busy(self, detail: str = "Applying filter…"):
+    def _normal_filter_busy(self, detail: str = "Applying filter…",
+                            rows: "int | None" = None,
+                            heading: str = "Please Wait — Applying Filter"):
         """Show the Please-Wait dialog around a NORMAL-mode filter pass.
 
         Juggernaut filtering runs on a worker and already drives this dialog
@@ -8617,15 +8619,18 @@ class MainWindow(QMainWindow):
         never drawn.
         """
         shown = False
-        try:
-            _src = self._active_proxy.sourceModel()
-            _rows = _src.rowCount() if _src is not None else 0
-        except Exception:
-            _rows = 0
+        if rows is not None:
+            _rows = rows
+        else:
+            try:
+                _src = self._active_proxy.sourceModel()
+                _rows = _src.rowCount() if _src is not None else 0
+            except Exception:
+                _rows = 0
         if _rows >= self._NORMAL_BUSY_MIN_ROWS and self._hw_loading_dlg is None:
             try:
                 self._show_hw_loading_dialog(
-                    heading="Please Wait — Applying Filter",
+                    heading=heading,
                     detail=f"{detail}  ({_rows:,} events)",
                 )
                 QApplication.processEvents()
@@ -14142,8 +14147,29 @@ class MainWindow(QMainWindow):
         hdr.setSortIndicatorShown(True)
         hdr.setSortIndicator(col_idx, new_order)
         model = table.model()
-        if model is not None:
-            model.sort(col_idx, new_order)
+        if model is None:
+            return
+        self._sort_with_feedback(model, col_idx, new_order)
+
+    def _sort_with_feedback(self, model, col_idx: int, order) -> None:
+        """Sort *model*, showing a wait dialog when the sort blocks this thread.
+
+        Juggernaut's ArrowTableModel sorts on its filter thread and drives the
+        overlay from busy_started/busy_finished, so it must NOT be wrapped --
+        doing so would show a dialog and close it before the work even began.
+        A QSortFilterProxyModel sorts inline on the GUI thread, which on a large
+        set is exactly the "it just hangs" the analyst sees.
+        """
+        if hasattr(model, "busy_started"):
+            model.sort(col_idx, order)
+            return
+        try:
+            _rows = model.rowCount()
+        except Exception:
+            _rows = 0
+        with self._normal_filter_busy("Sorting events…", rows=_rows,
+                                      heading="Please Wait — Sorting"):
+            model.sort(col_idx, order)
 
     def _on_group_by_column(self, col_idx: int) -> None:
         """
@@ -14157,7 +14183,7 @@ class MainWindow(QMainWindow):
         hdr.setSortIndicator(col_idx, Qt.SortOrder.AscendingOrder)
         model = table.model()
         if model is not None:
-            model.sort(col_idx, Qt.SortOrder.AscendingOrder)
+            self._sort_with_feedback(model, col_idx, Qt.SortOrder.AscendingOrder)
         col_name = COLUMNS[col_idx] if col_idx < len(COLUMNS) else str(col_idx)
         self._set_status(f"Grouped by \u2018{col_name}\u2019 (sorted ascending)")
 

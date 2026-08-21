@@ -269,14 +269,17 @@ class _FilterThread(QThread):
         # Select source_file alongside record_id so the Phase 2 JOIN uses a
         # composite (record_id, source_file) key — bare record_id is not unique
         # across multi-file loads and would mix rows from different files.
-        meta_sql = f"SELECT row_id, record_id, source_file FROM events WHERE {where_sql}"
-        phase1 = con.execute(meta_sql, params).fetchall()
-        if not phase1:
+        # Arrow, not Python lists — see the note in _apply_with_full_text_search:
+        # per-row Python work here holds the GIL and freezes the window.
+        p1 = con.execute(
+            f"SELECT row_id AS _p1_row, record_id AS _p1_rid, "
+            f"       source_file AS _p1_src "
+            f"FROM events WHERE {where_sql}",
+            params,
+        ).fetch_arrow_table()
+        if p1.num_rows == 0:
             return self._full_table.slice(0, 0)   # empty, preserve schema
-
-        row_ids      = [int(r[0])       for r in phase1]
-        record_ids   = [int(r[1])       for r in phase1]
-        source_files = [str(r[2] or "") for r in phase1]
+        row_ids = p1["_p1_row"]
 
         # Phase 2 — condition filter via Parquet
         shards = self._get_shard_paths()
@@ -298,21 +301,17 @@ class _FilterThread(QThread):
             # had "source_file", DuckDB raised "Ambiguous reference to column
             # name" and the except below swallowed it -- silently showing the
             # UNFILTERED metadata result as if the search had been applied.
-            rid_tbl = pa.table({
-                "_p1_rid": pa.array(record_ids,   type=pa.int64()),
-                "_p1_src": pa.array(source_files, type=pa.string()),
-            })
-            con2.register("_p1_ids", rid_tbl)
+            con2.register("_p1_ids", p1)
+            # The JOIN yields the surviving ROW IDS directly, so Phase 3 is a
+            # single Arrow take() with no Python set-membership pass.
             phase2_sql = (
-                f"SELECT p.record_id, p.source_file "
+                f"SELECT f._p1_row AS row_id "
                 f"FROM parquet_scan([{quoted}]) p "
                 f"JOIN _p1_ids f "
                 f"  ON p.record_id = f._p1_rid AND p.source_file = f._p1_src "
                 f"WHERE {cond_sql}"
             )
-            passing_set = {
-                (r[0], r[1]) for r in con2.execute(phase2_sql, cond_params).fetchall()
-            }
+            keep_ids = con2.execute(phase2_sql, cond_params).fetch_arrow_table()["row_id"]
             con2.close()
         except Exception as exc:
             # Same fail-open hazard as the main filter loop: the user's field
@@ -324,15 +323,10 @@ class _FilterThread(QThread):
             )
             return self._full_table.take(row_ids)
 
-        # Phase 3 — keep only row_ids whose (record_id, source_file) passed conditions
-        final_row_ids = [
-            row_ids[i]
-            for i, (rid, sf) in enumerate(zip(record_ids, source_files))
-            if (rid, sf) in passing_set
-        ]
-        if not final_row_ids:
+        # Phase 3 — the JOIN already returned the surviving row ids.
+        if len(keep_ids) == 0:
             return self._full_table.slice(0, 0)
-        return self._full_table.take(final_row_ids)
+        return self._full_table.take(keep_ids)
 
     # ── Full-text search via Parquet ──────────────────────────────────────────
     def _apply_with_full_text_search(
@@ -367,14 +361,21 @@ class _FilterThread(QThread):
         # Phase 1 — non-text metadata filter via Arrow
         # Select source_file so Phase 2 can use composite (record_id, source_file)
         # key — bare record_id is not unique across multi-file loads.
-        meta_sql = f"SELECT row_id, record_id, source_file FROM events WHERE {where_sql_no_text}"
-        phase1 = con.execute(meta_sql, params_no_text).fetchall()
-        if not phase1:
+        # Kept in ARROW, never materialised into Python lists.  fetchall()
+        # here returned one tuple per candidate row -- 1.7M of them on an
+        # unfiltered search -- and the list/set comprehensions that followed
+        # walked them several more times.  All of that holds the GIL, which
+        # starved the GUI thread: measured 1291 ms of frozen window during a
+        # text search, even though the work was on a worker.
+        p1 = con.execute(
+            f"SELECT row_id AS _p1_row, record_id AS _p1_rid, "
+            f"       source_file AS _p1_src "
+            f"FROM events WHERE {where_sql_no_text}",
+            params_no_text,
+        ).fetch_arrow_table()
+        if p1.num_rows == 0:
             return self._full_table.slice(0, 0)
-
-        row_ids      = [int(r[0])       for r in phase1]
-        record_ids   = [int(r[1])       for r in phase1]
-        source_files = [str(r[2] or "") for r in phase1]
+        row_ids = p1["_p1_row"]
 
         # Phase 2 — CONTAINS + optional conditions via Parquet
         shards = self._get_shard_paths()
@@ -427,21 +428,17 @@ class _FilterThread(QThread):
             # had "source_file", DuckDB raised "Ambiguous reference to column
             # name" and the except below swallowed it -- silently showing the
             # UNFILTERED metadata result as if the search had been applied.
-            rid_tbl = pa.table({
-                "_p1_rid": pa.array(record_ids,   type=pa.int64()),
-                "_p1_src": pa.array(source_files, type=pa.string()),
-            })
-            con2.register("_p1_ids", rid_tbl)
+            con2.register("_p1_ids", p1)
+            # The JOIN yields the surviving ROW IDS directly, so Phase 3 is a
+            # single Arrow take() with no Python set-membership pass.
             phase2_sql = (
-                f"SELECT p.record_id, p.source_file "
+                f"SELECT f._p1_row AS row_id "
                 f"FROM parquet_scan([{quoted}]) p "
                 f"JOIN _p1_ids f "
                 f"  ON p.record_id = f._p1_rid AND p.source_file = f._p1_src "
                 f"WHERE {phase2_where}"
             )
-            passing_set = {
-                (r[0], r[1]) for r in con2.execute(phase2_sql, phase2_params).fetchall()
-            }
+            keep_ids = con2.execute(phase2_sql, phase2_params).fetch_arrow_table()["row_id"]
             con2.close()
         except Exception as exc:
             # Fail-open: the full-text term is silently DROPPED and the
@@ -453,14 +450,10 @@ class _FilterThread(QThread):
             )
             return self._full_table.take(row_ids)
 
-        final_row_ids = [
-            row_ids[i]
-            for i, (rid, sf) in enumerate(zip(record_ids, source_files))
-            if (rid, sf) in passing_set
-        ]
-        if not final_row_ids:
+        # Phase 3 — the JOIN already returned the surviving row ids.
+        if len(keep_ids) == 0:
             return self._full_table.slice(0, 0)
-        return self._full_table.take(final_row_ids)
+        return self._full_table.take(keep_ids)
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     def run(self) -> None:
