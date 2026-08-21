@@ -872,7 +872,15 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
     fc.get() dict lookups on every event.
 
     Falls back to passes_filter() if fc is effectively empty (no conditions).
+
+    A None config is treated as "no filter" rather than raising.  It used to
+    surface as AttributeError: 'NoneType' object has no attribute 'get' inside
+    the worker, which the caller reported as "Parsing failed — no events were
+    produced" — reading as *the data is empty* when the truth was *the config
+    was wrong*.  For a forensic tool those two must never look alike.
     """
+    if fc is None:
+        fc = {}
     checks: list[Callable[[dict], bool]] = []
 
     # Event ID include
