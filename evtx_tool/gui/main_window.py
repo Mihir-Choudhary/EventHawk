@@ -7578,7 +7578,7 @@ class MainWindow(QMainWindow):
 
         hdr.setSortIndicatorShown(False)
 
-        # ── Default column widths for all 20 columns ──────────────────────
+        # ── Default column widths (COLUMNS currently has 22 entries) ──────
         col_widths = {
             0: 40,   # #
             1: 70,   # Event ID

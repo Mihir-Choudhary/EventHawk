@@ -127,6 +127,58 @@ def main() -> int:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    # ── the JM analysis DRIVER, end to end ──────────────────────────────
+    # _jm_start_heavy_analysis is the piece that turns a ticked checkbox into a
+    # running analysis. Driving it with a stub runner proves the whole chain:
+    # RAM gate -> wait dialog -> materialise worker -> AnalysisRunner.start.
+    if files:
+        import evtx_tool.gui.main_window as mw_mod
+        tmp2 = tempfile.mkdtemp(prefix="ram_drv_")
+        try:
+            pq2 = HeavyweightEngine(parquet_dir=tmp2).run(files[:12])
+            started = {}
+            class StubRunner:
+                def __init__(self, parent=None): pass
+                class _Sig:
+                    def connect(self, *a, **k): pass
+                progress = component_progress = finished = error = _Sig()
+                def start(self, **kw): started.update(kw)
+            real_runner = mw_mod.AnalysisRunner
+            real_avail  = MW.__dict__['_available_ram']
+            mw_mod.AnalysisRunner = StubRunner
+            MW._available_ram = staticmethod(lambda: 64 * 1024 ** 3)  # plenty
+            try:
+                from evtx_tool.core.heavyweight.engine import load_arrow_table as _lat
+                from evtx_tool.gui.heavyweight_model import ArrowTableModel
+                w._hw_model = ArrowTableModel(_lat(pq2), parquet_dir=pq2)
+                w._chk_ioc.setChecked(True)
+                w._chk_correlate.setChecked(False)
+                w._chk_hayabusa.setChecked(False)
+                w._jm_start_heavy_analysis(pq2, True, False, False)
+                loop = QEventLoop(); QTimer.singleShot(180000, loop.quit)
+                t = QTimer(); t.setInterval(200)
+                t.timeout.connect(lambda: started and loop.quit())
+                t.start(); loop.exec(); t.stop()
+                check("JM analysis driver reaches AnalysisRunner.start",
+                      bool(started), str(list(started)))
+                check("it passes do_ioc through", started.get("do_ioc") is True,
+                      str(started.get("do_ioc")))
+                check("it hands over a non-empty event list",
+                      len(started.get("events") or []) > 0,
+                      f"{len(started.get('events') or []):,} events")
+                _ev = (started.get("events") or [{}])[0]
+                check("handed-over events carry event_data",
+                      "event_data" in _ev, str(list(_ev)[:6]))
+                check("wait dialog was closed once analysis started",
+                      w._hw_loading_dlg is None)
+                w._hw_model._filter_thread.stop()
+                w._hw_model = None
+            finally:
+                mw_mod.AnalysisRunner = real_runner
+                MW._available_ram = real_avail
+        finally:
+            shutil.rmtree(tmp2, ignore_errors=True)
+
     print("\n" + "=" * 60)
     bad = [n for n, ok in res if not ok]
     print(f"RESULT: {len(res)-len(bad)}/{len(res)} passed")

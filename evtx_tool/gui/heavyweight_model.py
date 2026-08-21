@@ -302,15 +302,13 @@ class _FilterThread(QThread):
             # name" and the except below swallowed it -- silently showing the
             # UNFILTERED metadata result as if the search had been applied.
             con2.register("_p1_ids", p1)
-            # EXISTS for the same reason as the full-text path: one row per
+            # SEMI JOIN for the same reason as the full-text path: one row per
             # candidate, never one per matching Parquet row.
             phase2_sql = (
                 f"SELECT f._p1_row AS row_id FROM _p1_ids f "
-                f"WHERE EXISTS ("
-                f"  SELECT 1 FROM parquet_scan([{quoted}]) p "
-                f"  WHERE p.record_id = f._p1_rid AND p.source_file = f._p1_src "
-                f"    AND ({cond_sql})"
-                f")"
+                f"SEMI JOIN parquet_scan([{quoted}]) p "
+                f"  ON (p.record_id = f._p1_rid AND p.source_file = f._p1_src "
+                f"      AND ({cond_sql}))"
             )
             keep_ids = con2.execute(phase2_sql, cond_params).fetch_arrow_table()["row_id"]
             con2.close()
@@ -430,20 +428,19 @@ class _FilterThread(QThread):
             # name" and the except below swallowed it -- silently showing the
             # UNFILTERED metadata result as if the search had been applied.
             con2.register("_p1_ids", p1)
-            # EXISTS, not JOIN: a plain join emits one row per matching PARQUET
-            # row, so a (record_id, source_file) key present twice — the same
-            # file ingested twice, which does happen — returned the event twice.
-            # The code this replaced collapsed that through a Python set(); the
-            # semi-join keeps exactly one row per candidate without it, and
-            # measurably so (include + exclude summed to 126 more than the
-            # dataset before this, 126 being 2x the 63 duplicated records).
+            # SEMI JOIN, not a plain join: a join emits one row per matching
+            # PARQUET row, so a (record_id, source_file) key present twice — the
+            # same file ingested twice, which does happen — returned the event
+            # twice.  The code this replaced collapsed that through a Python
+            # set(); SEMI JOIN keeps exactly one row per candidate without it.
+            # Measured on 1.7M rows: SEMI JOIN 2.21s, plain JOIN 2.21s,
+            # EXISTS 5.24s — the correct operator is also the fast one, so
+            # there is nothing to trade off here.
             phase2_sql = (
                 f"SELECT f._p1_row AS row_id FROM _p1_ids f "
-                f"WHERE EXISTS ("
-                f"  SELECT 1 FROM parquet_scan([{quoted}]) p "
-                f"  WHERE p.record_id = f._p1_rid AND p.source_file = f._p1_src "
-                f"    AND ({phase2_where})"
-                f")"
+                f"SEMI JOIN parquet_scan([{quoted}]) p "
+                f"  ON (p.record_id = f._p1_rid AND p.source_file = f._p1_src "
+                f"      AND ({phase2_where}))"
             )
             keep_ids = con2.execute(phase2_sql, phase2_params).fetch_arrow_table()["row_id"]
             con2.close()
