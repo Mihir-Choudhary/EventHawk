@@ -5386,6 +5386,99 @@ def _is_forwarded_source(source_file: str) -> bool:
 
 # ── Computer Normalisation JM worker ──────────────────────────────────────────
 
+class _JMAnalysisMaterializeWorker(QThread):
+    """Build the in-memory event list Juggernaut Mode does not normally keep.
+
+    IOC extraction and the Correlation Engine need whole event dicts, including
+    event_data -- which the Arrow table deliberately excludes.  Rather than
+    leaving both features silently dead in JM (GitHub issue #3: the checkboxes
+    were disabled and the IOC/Chains tabs just showed nothing), the rows are
+    rebuilt from the Parquet shards here, on a worker, so the caller can gate it
+    on available RAM first and the window stays alive while it runs.
+    """
+
+    progress    = Signal(int, int)     # (rows built, total)
+    finished_ok = Signal(list)
+    failed      = Signal(str)
+
+    _CHUNK = 50_000
+
+    def __init__(self, parquet_dir: str, where_sql: str = "1=1",
+                 params: "list | None" = None, limit: int = 0, parent=None):
+        super().__init__(parent)
+        self._parquet_dir = parquet_dir
+        self._where_sql   = where_sql or "1=1"
+        self._params      = list(params or [])
+        self._limit       = limit
+        self._cancel      = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        import json as _json
+        import duckdb as _duckdb
+        con = None
+        try:
+            manifest = os.path.join(self._parquet_dir, "parquet_manifest.json")
+            with open(manifest, "r", encoding="utf-8") as fh:
+                shards = _json.load(fh)
+            if not shards:
+                self.finished_ok.emit([])
+                return
+            quoted = ", ".join(f"'{p}'" for p in shards)
+            con = _duckdb.connect()
+            con.execute(f"SET threads={max(2, min((os.cpu_count() or 4) - 1, 16))}")
+            lim = f" LIMIT {int(self._limit)}" if self._limit else ""
+            cur = con.execute(
+                f"SELECT record_id, event_id, level_name, timestamp_utc, channel, "
+                f"       provider, event_source_name, computer, user_id, keywords, "
+                f"       source_file, event_data_json "
+                f"FROM parquet_scan([{quoted}]) WHERE {self._where_sql} "
+                f"ORDER BY timestamp_utc{lim}",
+                self._params,
+            )
+            total = self._limit or 0
+            events: list[dict] = []
+            while not self._cancel:
+                rows = cur.fetchmany(self._CHUNK)
+                if not rows:
+                    break
+                for r in rows:
+                    try:
+                        ed = _json.loads(r[11]) if r[11] else {}
+                    except Exception:
+                        ed = {}
+                    events.append({
+                        "record_id":   r[0],
+                        "event_id":    r[1],
+                        "level_name":  r[2] or "",
+                        "timestamp":   r[3] or "",
+                        "channel":     r[4] or "",
+                        "provider":    r[5] or "",
+                        "event_source_name": r[6] or "",
+                        "computer":    r[7] or "",
+                        "user_id":     r[8] or "",
+                        "keywords":    r[9] or "",
+                        "source_file": r[10] or "",
+                        "event_data":  ed,
+                    })
+                self.progress.emit(len(events), total)
+            if self._cancel:
+                self.failed.emit("__cancelled__")
+                return
+            self.finished_ok.emit(events)
+        except Exception as exc:                       # noqa: BLE001
+            logger.exception("JM analysis materialisation failed")
+            self.failed.emit(str(exc))
+        finally:
+            if con is not None:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+
+
 class _JMExportWorker(QThread):
     """Runs a Juggernaut export off the GUI thread.
 
@@ -8305,7 +8398,45 @@ class MainWindow(QMainWindow):
 
     # ── Volume validation (Safety Gate) ──────────────────────────────────
 
-    _RECOMMENDED_MAX_SIZE = 700 * 1024 ** 2  # 700 MB
+    # ── RAM budgeting ────────────────────────────────────────────────────
+    # Measured, not guessed: loading 210 MB of real EVTX into Normal Mode cost
+    # 863 MB of RSS (548 MB event dicts + 112 MB table model + 203 MB search
+    # caches) = 4.1x the on-disk size once every cache is warm.  Rounded up a
+    # little because event shape varies by channel.
+    _RAM_PER_EVTX_BYTE = 4.5
+    # Per materialised event dict, for analysis in Juggernaut Mode:
+    # 337,558 events cost 548 MB of dicts => ~1.7 KB each.
+    _RAM_PER_EVENT = 1_700
+    # Never hand more than this share of FREE memory to one dataset; the OS,
+    # Qt, and whatever else the analyst is running need the rest.
+    _RAM_BUDGET_SHARE = 0.5
+    # Floor/ceiling so a machine reporting odd numbers still gets a sane gate.
+    _RECOMMENDED_MIN_SIZE = 200 * 1024 ** 2
+    _RECOMMENDED_MAX_CAP  = 8 * 1024 ** 3
+
+    @staticmethod
+    def _available_ram() -> int:
+        """Bytes of RAM actually free right now, or 0 if it cannot be read."""
+        try:
+            import psutil
+            return int(psutil.virtual_memory().available)
+        except Exception:
+            return 0
+
+    @classmethod
+    def _recommended_max_size(cls) -> int:
+        """Largest EVTX volume Normal Mode should attempt, given free RAM.
+
+        Was a hardcoded 700 MB, which is simultaneously too strict on a 64 GB
+        workstation and too generous on an 8 GB laptop that already has a
+        browser open.  Falls back to the old constant when free RAM is
+        unreadable, so the gate never disappears entirely.
+        """
+        avail = cls._available_ram()
+        if avail <= 0:
+            return 700 * 1024 ** 2
+        budget = int(avail * cls._RAM_BUDGET_SHARE / cls._RAM_PER_EVTX_BYTE)
+        return max(cls._RECOMMENDED_MIN_SIZE, min(budget, cls._RECOMMENDED_MAX_CAP))
 
     @staticmethod
     def _human_size(n: int) -> str:
@@ -8328,19 +8459,29 @@ class MainWindow(QMainWindow):
         """
         import os
         total = sum(os.path.getsize(f) for f in files if os.path.isfile(f))
-        if total <= self._RECOMMENDED_MAX_SIZE:
+        limit = self._recommended_max_size()
+        if total <= limit:
             return "proceed"
 
         human = self._human_size(total)
+        _avail = self._available_ram()
         msg = QMessageBox(self)
         msg.setWindowTitle("\u26a0  Large Data Volume Detected")
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setText(
             f"<b>Total size: {human}</b>  ({len(files)} files)<br><br>"
             f"This exceeds the recommended limit of "
-            f"<b>{self._human_size(self._RECOMMENDED_MAX_SIZE)}</b> for "
-            f"Normal Mode.<br><br>"
-            f"Loading this much data in-memory may cause the tool to "
+            f"<b>{self._human_size(limit)}</b> for Normal Mode "
+            f"on this machine.<br><br>"
+            + (f"That limit is computed from the "
+               f"<b>{self._human_size(_avail)} of RAM free right now</b> — "
+               f"Normal Mode needs roughly {self._RAM_PER_EVTX_BYTE:g}× the "
+               f"on-disk size once search caches are warm, so this load would "
+               f"want about <b>{self._human_size(int(total * self._RAM_PER_EVTX_BYTE))}</b>."
+               f"<br><br>" if _avail else
+               "Free RAM could not be read, so the historical 700 MB limit is "
+               "being used.<br><br>")
+            + f"Loading this much data in-memory may cause the tool to "
             f"<b>lag or crash</b>.<br><br>"
             f"<span style='color:#4fc3f7'>&#9889; <b>Juggernaut Mode</b></span> "
             f"processes large log sets without loading everything into RAM."
@@ -8793,13 +8934,42 @@ class MainWindow(QMainWindow):
         # the parse-complete status update appeared.
         QTimer.singleShot(0, lambda p=parquet_dir: self._load_jm_metadata(p))
 
-        # ── Disable heavy analysis — ATT&CK / IOC / Correlation need full
-        # in-memory event list which doesn't exist in Juggernaut mode.
-        # Hayabusa (subprocess against .evtx files) works fine in JM.
-        _jm_tip = "Not available in Juggernaut Mode"
-        for chk in (self._chk_attack, self._chk_ioc, self._chk_correlate):
-            chk.setEnabled(False)
-            chk.setToolTip(_jm_tip)
+        # ── Analysis availability in Juggernaut Mode ──────────────────────
+        # IOC extraction and Correlation used to be disabled here, which left
+        # the IOC/Chains tabs silently empty (GitHub issue #3).  They only need
+        # whole event dicts, which can be rebuilt from the Parquet shards, so
+        # they are enabled and gated on a RAM estimate at run time instead of
+        # being refused outright.
+        #
+        # ATT&CK stays disabled: it TAGS the events themselves (attack_tags is
+        # read back by the table and the search cache), and the Arrow-backed
+        # model has nowhere to write those tags.  Enabling it would produce a
+        # populated tab over a grid that disagrees with it.
+        self._chk_attack.setEnabled(False)
+        self._chk_attack.setToolTip(
+            "Not available in Juggernaut Mode — ATT&CK tagging annotates the "
+            "in-memory events, which this mode does not hold"
+        )
+        for chk in (self._chk_ioc, self._chk_correlate):
+            chk.setEnabled(True)
+            chk.setToolTip(
+                "Available in Juggernaut Mode. Events are rebuilt from disk "
+                "first; you will be warned if this dataset needs more RAM than "
+                "is free."
+            )
+        # Ticking one AFTER the dataset is loaded must actually do something.
+        # Analysis otherwise only fires at parse time, which is precisely the
+        # "I enabled it and the tab stayed empty" confusion from issue #3.
+        # Connected once per session; the flag survives because it is set on the
+        # instance, and _cleanup_juggernaut disconnects on the way out.
+        if not getattr(self, "_jm_analysis_toggle_connected", False):
+            def _on_toggle(checked: bool, _pd=parquet_dir) -> None:
+                if checked and self._hw_model is not None:
+                    self._jm_launch_analysis(_pd)
+            self._jm_analysis_toggle_cb = _on_toggle
+            self._chk_ioc.toggled.connect(_on_toggle)
+            self._chk_correlate.toggled.connect(_on_toggle)
+            self._jm_analysis_toggle_connected = True
 
         self._chk_hayabusa.setEnabled(True)
         self._chk_hayabusa.setToolTip("Run Hayabusa threat-detection rules against the loaded .evtx files")
@@ -9047,6 +9217,18 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self._hw_db_path = None
+
+        # Leaving JM: drop the toggle hook so it cannot fire against a
+        # parquet_dir that no longer exists.
+        if getattr(self, "_jm_analysis_toggle_connected", False):
+            _cb = getattr(self, "_jm_analysis_toggle_cb", None)
+            for _c in (self._chk_ioc, self._chk_correlate):
+                try:
+                    _c.toggled.disconnect(_cb)
+                except (TypeError, RuntimeError):
+                    pass
+            self._jm_analysis_toggle_connected = False
+            self._jm_analysis_toggle_cb = None
 
         # Re-enable Analysis checkboxes for normal mode
         for chk in (
@@ -11186,12 +11368,124 @@ class MainWindow(QMainWindow):
 
     # ── Juggernaut Mode — post-parse analysis (Hayabusa) ─────────────────────
 
+    def _jm_ram_gate(self, n_events: int) -> bool:
+        """Ask before materialising *n_events* if the RAM is not there.
+
+        Returns True to proceed.  The estimate is measured, not guessed:
+        337,558 real events cost ~548 MB of dicts, i.e. ~1.7 KB each.
+        """
+        need  = int(n_events * self._RAM_PER_EVENT)
+        avail = self._available_ram()
+        if avail and need < avail * self._RAM_BUDGET_SHARE:
+            return True
+        _need_h = self._human_size(need)
+        if not avail:
+            detail = ("Free RAM could not be read on this system, so this "
+                      "cannot be checked automatically.")
+        else:
+            detail = (f"That is more than half of the "
+                      f"<b>{self._human_size(avail)}</b> currently free.")
+        box = QMessageBox(self)
+        box.setWindowTitle("\u26a0  Analysis May Exhaust Memory")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(
+            f"<b>IOC extraction / Correlation</b> need every event held in "
+            f"memory at once.<br><br>"
+            f"This dataset has <b>{n_events:,} events</b>, needing roughly "
+            f"<b>{_need_h}</b>.<br>{detail}<br><br>"
+            f"Running anyway may make the tool <b>lag heavily or be killed by "
+            f"the OS</b>.<br><br>"
+            f"Hayabusa is unaffected — it streams the .evtx files and needs "
+            f"almost no extra RAM.<br><br>"
+            f"Narrowing the load (fewer files, or a filtered export) is the "
+            f"reliable way to run these on a large set."
+        )
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        run_btn = box.addButton("Run Anyway", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(box.buttons()[0])
+        box.exec()
+        return box.clickedButton() is run_btn
+
+    def _jm_start_heavy_analysis(self, parquet_dir: str, do_ioc: bool,
+                                 do_corr: bool, do_hayabusa: bool) -> None:
+        """Rebuild the event list from Parquet, then run IOC/Correlation on it."""
+        try:
+            n_events = int(self._hw_model.total_event_count())
+        except Exception:
+            n_events = 0
+        if not self._jm_ram_gate(n_events):
+            return
+
+        self._set_status("Analysing…", stats="Preparing events…")
+        self._btn_stop.setEnabled(True)
+        self._show_hw_loading_dialog(
+            heading="Please Wait — Preparing Analysis",
+            detail=f"Rebuilding {n_events:,} events from disk…",
+        )
+
+        worker = _JMAnalysisMaterializeWorker(parquet_dir, limit=0, parent=self)
+        self._jm_mat_worker = worker      # keep a reference; QThread must outlive run()
+
+        def _on_prog(done: int, _total: int) -> None:
+            if self._hw_loading_lbl is not None:
+                self._hw_loading_lbl.setText(
+                    f"Rebuilding events from disk… {done:,} of {n_events:,}")
+
+        def _on_ready(events: list) -> None:
+            self._close_hw_loading_dialog()
+            if not events:
+                self._set_status("Ready", stats="Analysis: no events")
+                self._btn_stop.setEnabled(False)
+                return
+            self._ioc_pivot_map = {}
+            self._analysis_runner = AnalysisRunner(parent=self)
+            self._analysis_runner.progress.connect(self._on_analysis_progress)
+            self._analysis_runner.component_progress.connect(self._on_component_progress)
+            self._analysis_runner.finished.connect(self._on_analysis_finished)
+            self._analysis_runner.error.connect(self._on_analysis_error)
+            self._analysis_runner.start(
+                events=events,
+                do_ioc=do_ioc,
+                do_correlate=do_corr,
+                do_hayabusa=do_hayabusa and bool(self._hayabusa_path),
+                hayabusa_path=self._hayabusa_path,
+                evtx_paths=getattr(self, "_last_parsed_files", []) or [],
+            )
+
+        def _on_failed(msg: str) -> None:
+            self._close_hw_loading_dialog()
+            self._btn_stop.setEnabled(False)
+            if msg == "__cancelled__":
+                self._set_status("Ready", stats="Analysis cancelled")
+                return
+            # Loud, not silent: the tabs would otherwise just stay empty, which
+            # is exactly the confusion this feature exists to remove.
+            self._set_status("Ready", stats="Analysis failed")
+            QMessageBox.critical(
+                self, "Analysis Failed",
+                f"Could not rebuild events for analysis:\n{msg}")
+
+        worker.progress.connect(_on_prog)
+        worker.finished_ok.connect(_on_ready)
+        worker.failed.connect(_on_failed)
+        worker.start()
+
     def _jm_launch_analysis(self, parquet_dir: str) -> None:
         """
-        Kick off Hayabusa analysis in JM mode — subprocess against the original
-        .evtx files, zero extra RAM. Gated by the Hayabusa checkbox.
+        Kick off post-parse analysis in JM mode.
+
+        Hayabusa is a subprocess over the original .evtx files and costs no
+        extra RAM.  IOC/Correlation need the event list rebuilt from Parquet,
+        so they are gated on available memory and run on a worker.
         """
         do_hayabusa = self._chk_hayabusa.isChecked() and bool(self._hayabusa_path)
+        do_ioc      = self._chk_ioc.isChecked()
+        do_corr     = self._chk_correlate.isChecked()
+
+        if (do_ioc or do_corr) and self._hw_model is not None:
+            self._jm_start_heavy_analysis(parquet_dir, do_ioc, do_corr,
+                                          do_hayabusa)
+            return
 
         if not do_hayabusa:
             return   # nothing to do
@@ -13990,10 +14284,11 @@ class MainWindow(QMainWindow):
         # to stop (and discard its partial output) before anything it reads is
         # torn down.  Without this, closing mid-export destroys a running
         # QThread.
-        _exp = getattr(self, "_jm_export_worker", None)
-        if _exp is not None and _exp.isRunning():
-            _exp.cancel()
-            _exp.wait(5000)
+        for _attr in ("_jm_export_worker", "_jm_mat_worker"):
+            _w = getattr(self, _attr, None)
+            if _w is not None and _w.isRunning():
+                _w.cancel()
+                _w.wait(5000)
         self._cleanup_juggernaut()
         if self._worker and self._worker.isRunning():
             self._worker.request_stop()

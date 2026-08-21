@@ -139,6 +139,43 @@ def main() -> int:
                   f"jm={a} normal={b}")
             check("JSON-shaped term agrees across modes", a == b, f"jm={a} normal={b}")
 
+        # ── JM quick search must have the SAME coverage as Advanced ──────
+        # apply_text_filter used to search the Arrow columns only, so EventData
+        # field names and container keys were invisible to the toolbar box
+        # while the Advanced Filter found them: the same term, two answers.
+        print("\n  quick (toolbar) vs advanced, same terms:")
+        for label, term in cases:
+            if not term:
+                continue
+            jm_model.apply_text_filter(term); settle(); q = jm_model.rowCount()
+            jm_model.apply_text_filter(""); settle()
+            a = jm(term)
+            print(f"    {label:<22} quick={q:>7}  advanced={a:>7}")
+            check(f"quick search matches advanced for {label}", q == a,
+                  f"quick={q} advanced={a}")
+
+        # ── the two text legs must AND, not replace each other ───────────
+        t1, t2 = cases[0][1], "Application"
+        if t1 and t2:
+            jm_model.apply_filter({"text_search": t1}); settle()
+            only_adv = jm_model.rowCount()
+            jm_model.apply_text_filter(t2); settle()
+            both = jm_model.rowCount()
+            jm_model.apply_text_filter(""); settle()
+            back = jm_model.rowCount()
+            jm_model.clear_filter(); settle()
+            check("quick + advanced compose (AND), neither is dropped",
+                  both <= only_adv, f"adv={only_adv} adv+quick={both}")
+            check("emptying the quick box restores the advanced-only result",
+                  back == only_adv, f"{back} vs {only_adv}")
+
+        # clearing the ADVANCED filter must not silently empty the quick box
+        jm_model.apply_text_filter(t2); settle(); q_only = jm_model.rowCount()
+        jm_model.clear_filter(); settle()
+        check("clear_filter() keeps the quick search applied",
+              jm_model.rowCount() == q_only, f"{jm_model.rowCount()} vs {q_only}")
+        jm_model.apply_text_filter(""); settle()
+
         # a term that is genuinely absent must still return nothing
         a, b = jm("zz-not-present-zz"), norm("zz-not-present-zz")
         check("absent term returns nothing in both modes", a == 0 and b == 0, f"{a}/{b}")

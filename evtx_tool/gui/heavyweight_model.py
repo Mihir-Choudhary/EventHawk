@@ -385,7 +385,21 @@ class _FilterThread(QThread):
             )
             return self._full_table.take(row_ids)
 
-        text_sql, text_params = text_config_to_parquet_sql(text_search_cfg)
+        # text_search_cfg may be a single config or several (the Advanced
+        # Filter's term and the quick toolbar term are independent legs and
+        # must AND together -- one must never silently replace the other, and
+        # each keeps its own regex/exclude/case flags).
+        _cfgs = (text_search_cfg if isinstance(text_search_cfg, (list, tuple))
+                 else [text_search_cfg])
+        _sqls, text_params = [], []
+        for _c in _cfgs:
+            if not (_c or {}).get("text_search"):
+                continue
+            _sql, _prm = text_config_to_parquet_sql(_c)
+            if _sql != "1=1":
+                _sqls.append(f"({_sql})")
+                text_params.extend(_prm)
+        text_sql = " AND ".join(_sqls) if _sqls else "1=1"
         if text_sql == "1=1":
             return self._full_table.take(row_ids)
 
@@ -476,7 +490,9 @@ class _FilterThread(QThread):
                  text_search_cfg, sort_col, sort_asc) = item
 
             has_conditions = bool(conditions_cfg.get("conditions"))
-            has_full_text  = bool(text_search_cfg.get("text_search"))
+            _tc = (text_search_cfg if isinstance(text_search_cfg, (list, tuple))
+                   else [text_search_cfg])
+            has_full_text  = any((c or {}).get("text_search") for c in _tc)
 
             # A column-header click changes only (sort_col, sort_asc).  Re-running
             # the filter for that would be pure waste, so the previous result is
@@ -648,6 +664,8 @@ class ArrowTableModel(QAbstractTableModel):
         # Phase 2 can run CONTAINS against event_data_json in Parquet shards
         # (event_data_json is not present in the Arrow table).
         self._text_search_cfg: dict = {}
+        # Quick toolbar search — separate leg, ANDed with the above.
+        self._quick_text_cfg: dict = {}
 
         # ── Start filter thread and dispatch initial sort ───────────────────
         self._filter_thread = _FilterThread(full_table, parquet_dir=self._parquet_dir, parent=self)
@@ -841,8 +859,10 @@ class ArrowTableModel(QAbstractTableModel):
         # Sort is part of the key: the thread now does the ordering, so a
         # sort-only change must still dispatch (the thread reuses the cached
         # filter result and only re-orders it).
+        _text_legs = [c for c in (self._text_search_cfg, self._quick_text_cfg)
+                      if c.get("text_search")]
         where_key = (where_sql, tuple(params), str(self._conditions_cfg),
-                     str(self._text_search_cfg), self._sort_col, self._sort_asc)
+                     str(_text_legs), self._sort_col, self._sort_asc)
         if where_key == self._last_where_key:
             return  # nothing changed — skip redundant dispatch
         self._last_where_key = where_key
@@ -853,7 +873,7 @@ class ArrowTableModel(QAbstractTableModel):
         self._filter_thread.request(
             self._generation, where_sql, list(params),
             self._conditions_cfg,
-            self._text_search_cfg,
+            _text_legs,
             self._sort_col, self._sort_asc,
         )
 
@@ -922,19 +942,37 @@ class ArrowTableModel(QAbstractTableModel):
         self._has_advanced_filter = False
         self._conditions_cfg  = {}
         self._text_search_cfg = {}
+        # _quick_text_cfg deliberately untouched: clearing the ADVANCED filter
+        # must not silently empty the toolbar search box's effect.
         self._invalidate()
 
     def has_filter(self) -> bool:
         return self._has_advanced_filter
 
     def apply_text_filter(self, text: str) -> None:
-        if text.strip():
-            term = text.strip().lower()
-            self._text_where_sql = f"CONTAINS({_ARROW_SEARCH_EXPR}, ?)"
-            self._text_params    = [term]
-        else:
-            self._text_where_sql = ""
-            self._text_params    = []
+        """Quick (toolbar) text search — SAME coverage as the Advanced Filter.
+
+        This used to search _ARROW_SEARCH_EXPR only: the metadata columns plus
+        ed_values.  event_data_json is deliberately not held in the Arrow table
+        (~500 B/row), so EventData FIELD NAMES and the outer container keys were
+        invisible here while the Advanced Filter found them -- the same term
+        gave two different answers depending on which box it was typed into.
+
+        It now routes through the Phase 2 Parquet scan, exactly like the
+        Advanced Filter, so both boxes and both modes agree.  That costs a
+        Parquet read (~3.9 s on 1.7M rows vs ~2.2 s), paid on the filter thread,
+        which is the right trade for a search that does not lie about coverage.
+        """
+        term = text.strip()
+        self._text_where_sql = ""
+        self._text_params    = []
+        # Its OWN leg: the Advanced Filter's text term lives in
+        # _text_search_cfg and the two AND together, exactly as they did when
+        # this was an Arrow WHERE clause.  Sharing one slot would have made the
+        # quick box silently drop an advanced text term.
+        self._quick_text_cfg = (
+            {"text_search": term, "case_sensitive": False} if term else {}
+        )
         self._invalidate()
 
     def apply_record_id_filter(self, ids: frozenset) -> None:
