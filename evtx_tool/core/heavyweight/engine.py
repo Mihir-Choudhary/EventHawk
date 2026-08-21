@@ -515,10 +515,21 @@ def load_arrow_table(parquet_dir: str) -> "pa.Table":
     """
     Read all Parquet shards into a single in-memory Apache Arrow table.
 
-    Memory profile (dictionary-encoded, event_data_json excluded):
-      1M rows  ~  19 MB
-      6M rows  ~ 114 MB
-      9M rows  ~ 171 MB
+    Memory profile — MEASURED 2026-08-21, not extrapolated.  The old figures
+    here (1M rows ~19 MB) predated ed_values being loaded into Arrow and
+    understated reality by ~13x, which matters now that the RAM gates quote
+    numbers to the analyst.
+
+      Arrow logical size : ~261 B/row  (459,178 rows -> 120 MB)
+        of which ed_values ~110 B/row (42%) — the values-only blob that lets
+        Phase 1 search every EventData value without touching Parquet.
+      Resident set growth: ~1 KB/row observed end-to-end on 1.7M rows
+        (1,466 MB of EVTX -> ~1.7 GB RSS), i.e. roughly 1.2x the on-disk size,
+        because loading also holds Parquet read buffers and DuckDB state.
+
+    Rule of thumb for sizing a machine: Juggernaut needs about the size of the
+    .evtx set again in RAM; Normal Mode needs about 4.5x (see
+    MainWindow._RAM_PER_EVTX_BYTE).
 
     The returned table is registered with an in-memory DuckDB connection in
     ArrowTableModel._FilterThread for zero-copy SQL filtering.  Parquet shards

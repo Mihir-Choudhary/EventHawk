@@ -950,7 +950,14 @@ class ArrowTableModel(QAbstractTableModel):
         return self._has_advanced_filter
 
     def apply_text_filter(self, text: str) -> None:
-        """Quick (toolbar) text search — SAME coverage as the Advanced Filter.
+        """Standalone text search — SAME coverage as the Advanced Filter.
+
+        NOTE: nothing in the GUI calls this today; the only user-facing event
+        text search is the Advanced Filter dialog, which goes through
+        apply_filter(). Kept and corrected rather than deleted so that a future
+        toolbar/quick-search box cannot reintroduce the narrower scope
+        described below.
+
 
         This used to search _ARROW_SEARCH_EXPR only: the metadata columns plus
         ed_values.  event_data_json is deliberately not held in the Arrow table
