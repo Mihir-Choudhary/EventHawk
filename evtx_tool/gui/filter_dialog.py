@@ -244,8 +244,11 @@ class FilterDialog(QDialog):
         self._build_ui()
         self._restore_state(self._current)
         self._apply_styles()
-        if self._juggernaut_mode:
-            self._disable_text_in_description()
+        # Text-in-description used to be disabled in Juggernaut Mode because the
+        # JM filter pipeline searched the Arrow metadata columns only, so the
+        # field would have missed event_data.  Phase 2 now scans the Parquet
+        # shards including event_data_json, verified equal to Normal Mode on
+        # every field kind, so the restriction is obsolete and the field works.
 
     # =====================================================================
     # UI CONSTRUCTION
@@ -395,13 +398,9 @@ class FilterDialog(QDialog):
         text_row.addWidget(self._chk_text_exclude)
         body.addLayout(text_row)
 
-        # Hidden by default — surfaced when juggernaut_mode is True so the user
-        # knows why the field above is greyed out.  See _disable_text_in_description.
-        self._lbl_text_disabled_hint = QLabel(
-            "Disabled in Juggernaut Mode — event_data_json is not part of the "
-            "live search blob.  Use field-level conditions below to match on "
-            "specific event_data keys instead."
-        )
+        # Kept (hidden) so any caller still referencing it does not break; the
+        # Juggernaut restriction it explained no longer exists.
+        self._lbl_text_disabled_hint = QLabel("")
         self._lbl_text_disabled_hint.setWordWrap(True)
         self._lbl_text_disabled_hint.setStyleSheet(
             f"color:{COLORS['text_dim']}; font-size:7pt;"
@@ -1033,15 +1032,9 @@ class FilterDialog(QDialog):
             # Text — in Juggernaut Mode the widgets are disabled (see
             # _disable_text_in_description) but read defensively so even if a
             # caller re-enables them programmatically the cfg stays clean.
-            "text_search": (
-                "" if self._juggernaut_mode else self._inp_text.text().strip()
-            ),
-            "text_regex": (
-                False if self._juggernaut_mode else self._chk_regex.isChecked()
-            ),
-            "text_exclude": (
-                False if self._juggernaut_mode else self._chk_text_exclude.isChecked()
-            ),
+            "text_search": self._inp_text.text().strip(),
+            "text_regex": self._chk_regex.isChecked(),
+            "text_exclude": self._chk_text_exclude.isChecked(),
             # Date/time
             "date_enabled": self._chk_date_enable.isChecked(),
             "time_enabled": self._chk_time_enable.isChecked(),

@@ -212,6 +212,45 @@ def main() -> int:
             check("include + exclude == the whole dataset (no double counting)",
                   _inc + _exc == _base, f"{_inc}+{_exc} vs {_base}")
 
+        # ── every SEARCH OPTION must agree across modes, not just plain
+        # substring.  Regex especially: Normal Mode compiles with Python's re,
+        # Juggernaut runs DuckDB regexp_matches -- two different engines that
+        # must not disagree about which events match.
+        _opts = [
+            ("EXCLUDE",              {"text_search": "svchost", "text_exclude": True}),
+            ("case-sensitive",       {"text_search": "MsiInstaller", "case_sensitive": True}),
+            ("case-sens wrong case", {"text_search": "msiinstaller", "case_sensitive": True}),
+            ("multi-term AND",       {"text_search": ["Application", "MsiInstaller"],
+                                      "search_mode": "AND"}),
+            ("multi-term OR",        {"text_search": ["MsiInstaller", "vmauthd"],
+                                      "search_mode": "OR"}),
+            ("regex",                {"text_search": "Msi.*ller", "text_regex": True}),
+            ("regex char class",     {"text_search": "Msi[Ii]nstaller", "text_regex": True}),
+            ("regex alternation",    {"text_search": "vmauthd|MsiInstaller", "text_regex": True}),
+            ("regex EXCLUDE",        {"text_search": "Msi.*ller", "text_regex": True,
+                                      "text_exclude": True}),
+            ("backslash path",       {"text_search": "C:\\\\Windows"}),
+            ("term with space",      {"text_search": "Windows Search Service"}),
+        ]
+        print("\n  search options, JM vs normal:")
+        for _label, _cfg in _opts:
+            jm_model.apply_filter(dict(_cfg)); settle(); _a = jm_model.rowCount()
+            jm_model.clear_filter(); settle()
+            npx.set_advanced_filter(dict(_cfg)); _b = npx.rowCount()
+            npx.set_advanced_filter(None)
+            print(f"    {_label:<22} jm={_a:>7}  normal={_b:>7}")
+            check(f"option '{_label}' agrees across modes", _a == _b,
+                  f"jm={_a} normal={_b}")
+
+        # a multi-term list must not crash Normal Mode (it used to raise
+        # AttributeError: 'list' object has no attribute 'lower')
+        try:
+            npx.set_advanced_filter({"text_search": ["a", "b"], "search_mode": "OR"})
+            npx.rowCount(); npx.set_advanced_filter(None)
+            check("multi-term list does not crash normal mode", True)
+        except Exception as _exc:
+            check("multi-term list does not crash normal mode", False, repr(_exc))
+
         # a term that is genuinely absent must still return nothing
         a, b = jm("zz-not-present-zz"), norm("zz-not-present-zz")
         check("absent term returns nothing in both modes", a == 0 and b == 0, f"{a}/{b}")

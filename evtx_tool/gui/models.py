@@ -711,6 +711,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._adv_computers: list[str] = []
         self._adv_computer_exclude: bool = False
         self._adv_text: str = ""
+        self._adv_text_terms: list[str] = []          # all terms, pre-lowered
+        self._adv_text_regexes: list = []             # compiled, one per term
+        self._adv_text_mode: str = "AND"
         self._adv_text_regex: object | None = None   # compiled re.Pattern or None
         self._adv_text_exclude: bool = False
         self._adv_date_from: object | None = None    # datetime or None
@@ -925,17 +928,32 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._adv_computers = [_low(c) for c in cfg.get("computers", [])]
         self._adv_computer_exclude = cfg.get("computer_exclude", False)
 
-        # Text search — pre-compile regex
-        text_search = cfg.get("text_search", "")
+        # Text search — pre-compile regex.
+        # text_search may be a STRING or a LIST of terms: the Juggernaut side
+        # has always accepted both (text_config_to_parquet_sql normalises), and
+        # a list here used to raise AttributeError: 'list' object has no
+        # attribute 'lower' — a hard crash, not a wrong result.
+        _raw_ts = cfg.get("text_search", "")
+        if isinstance(_raw_ts, (list, tuple)):
+            _terms = [str(t) for t in _raw_ts if str(t).strip()]
+        else:
+            _terms = [str(_raw_ts)] if str(_raw_ts).strip() else []
+        self._adv_text_terms = [_low(t) for t in _terms]
+        self._adv_text_mode = str(cfg.get("search_mode", "AND") or "AND").upper()
         self._adv_text_exclude = cfg.get("text_exclude", False)
-        if text_search and cfg.get("text_regex", False):
-            try:
-                flags = 0 if cs else _re.IGNORECASE
-                self._adv_text_regex = _re.compile(text_search, flags)
-            except _re.error:
-                self._adv_text_regex = None
+        text_search = _terms[0] if _terms else ""
+        if _terms and cfg.get("text_regex", False):
+            flags = 0 if cs else _re.IGNORECASE
+            self._adv_text_regexes = []
+            for _t in _terms:
+                try:
+                    self._adv_text_regexes.append(_re.compile(_t, flags))
+                except _re.error:
+                    self._adv_text_regexes.append(None)
+            self._adv_text_regex = self._adv_text_regexes[0]
             self._adv_text = _low(text_search)
         else:
+            self._adv_text_regexes = []
             self._adv_text_regex = None
             self._adv_text = _low(text_search) if text_search else ""
 
@@ -1493,7 +1511,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 if not hit: return False
 
         # ── Text in description ─────────────────────────────────────────────
-        if self._adv_text:
+        if self._adv_text_terms:
             # Build haystack matching the search_text STORED GENERATED COLUMN scope:
             # event_id + level_name + channel + provider + computer + user_id +
             # source_file + event_data_json (all fields, not just event_data values).
@@ -1511,10 +1529,19 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 if not self._adv_case_sensitive:
                     desc_text = desc_text.lower()
 
-            if self._adv_text_regex is not None:
-                found = bool(self._adv_text_regex.search(desc_text))
+            # Every term, combined per search_mode — matches the Juggernaut
+            # side, which ANDs/ORs the same list.
+            if self._adv_text_regexes:
+                hits = [bool(r.search(desc_text)) if r is not None else False
+                        for r in self._adv_text_regexes]
             else:
-                found = self._adv_text in desc_text
+                hits = [t in desc_text for t in self._adv_text_terms]
+            if not hits:
+                found = False
+            elif self._adv_text_mode == "OR":
+                found = any(hits)
+            else:
+                found = all(hits)
 
             if self._adv_text_exclude:
                 if found: return False
