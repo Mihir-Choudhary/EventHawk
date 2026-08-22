@@ -166,6 +166,67 @@ def main() -> int:
     check("a total failure with nothing to show is still reported as an error",
           "error" in got2 and "finished" not in got2, str(list(got2)))
 
+    # ── GUI half: a partial result must LOAD and be flagged ─────────────
+    # The worker and runner can be perfect and the analyst still be misled if
+    # the window quietly renders half an answer.
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    app = QApplication.instance() or QApplication([])
+    from evtx_tool.gui.main_window import MainWindow
+    w = MainWindow()
+    shown = {}
+    orig_warn = QMessageBox.warning
+    QMessageBox.warning = staticmethod(
+        lambda *a, **k: shown.update(msg=a[2] if len(a) > 2 else ""))
+    try:
+        _iocs = {"ip": [{"value": "10.0.0.5", "count": 3}]}
+        _chains = [{"name": "chain-1"}]
+        w._on_analysis_finished(
+            _iocs, _chains,
+            {"_analysis_errors": {"Correlation": "RuntimeError: boom"}})
+        app.processEvents()
+        check("GUI keeps the IOCs from a partial run", w._iocs == _iocs)
+        check("GUI keeps the chains from a partial run", w._chains == _chains)
+        check("GUI warns that the run was partial", "msg" in shown)
+        check("the warning names the failed component",
+              "Correlation" in shown.get("msg", ""), shown.get("msg", "")[:80])
+        check("the warning says not to read an empty tab as 'nothing found'",
+              "nothing found" in shown.get("msg", ""))
+        shown.clear()
+        w._on_analysis_finished(_iocs, _chains, {})
+        app.processEvents()
+        check("a clean run shows no warning", "msg" not in shown, str(shown))
+    finally:
+        QMessageBox.warning = orig_warn
+        w.close()
+
+    # ── a TOTAL failure must stay a failure, not a fake empty success ────
+    # If the events never deserialised, no component could have run: inventing
+    # an empty result would read as "analysis found nothing".
+    import evtx_tool.core._json_compat as _jc
+    _shm = SharedMemory(create=True, size=16); _shm.buf[:4] = b"junk"
+    _pq, _rq = mp.Queue(), mp.Queue()
+    _orig_loads = _jc.fast_loads
+    _jc.fast_loads = lambda *a, **k: (_ for _ in ()).throw(ValueError("corrupt"))
+    try:
+        awp.run_analysis(_shm.name, 4, _pq, _rq, mp.Event(),
+                         do_ioc=True, do_correlate=True)
+    finally:
+        _jc.fast_loads = _orig_loads
+        try: _shm.close(); _shm.unlink()
+        except Exception: pass
+    _res = None
+    try: _res = _rq.get(timeout=3)
+    except Exception: pass
+    _errs = []
+    while True:
+        try: _errs.append(_pq.get_nowait())
+        except Exception: break
+    check("total failure is reported as an error",
+          any(m.get("type") == "error" for m in _errs), str(len(_errs)))
+    check("total failure does not fabricate an empty successful result",
+          _res is None, str(_res)[:80])
+
     print("\n" + "=" * 60)
     bad = [n for n, ok in res if not ok]
     print(f"RESULT: {len(res)-len(bad)}/{len(res)} passed")
