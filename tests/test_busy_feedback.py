@@ -104,6 +104,65 @@ def main() -> int:
 
     w._show_hw_loading_dialog = orig_show
 
+    # ── EVERY filter path must show feedback, not just the wrapped ones ──
+    # Wrapping individual call sites missed several; the proxy now brackets
+    # invalidateFilter() itself, so any setter -- present or future -- reports.
+    w2 = MainWindow()
+    m2 = EventTableModel(); m2.set_events(events)
+    p2 = EventFilterProxyModel(); p2.setSourceModel(m2)
+    w2._wire_filter_feedback(p2)
+    seen = []
+    orig_show2 = w2._show_hw_loading_dialog
+    def spy2(heading="", detail="", **kw):
+        seen.append(heading)
+        return orig_show2(heading=heading, detail=detail, **kw)
+    w2._show_hw_loading_dialog = spy2
+    try:
+        for label, fn in (
+            ("advanced filter", lambda: p2.set_advanced_filter({"text_search": "alice"})),
+            ("clear advanced",  lambda: p2.set_advanced_filter(None)),
+            ("quick filters",   lambda: p2.set_quick_filters(
+                [{"key": "computer", "value": "host-01", "include": False}])),
+            ("clear quick",     lambda: p2.clear_quick_filters()),
+            # re-arm first: clear_all_filters() correctly no-ops (and shows
+            # nothing) when no filter is active, so clearing straight after a
+            # clear would prove nothing.
+            ("re-arm for clear-all", lambda: p2.set_quick_filters(
+                [{"key": "computer", "value": "host-02", "include": False}])),
+            ("clear ALL",       lambda: p2.clear_all_filters()),
+            ("record-id pivot", lambda: p2.set_record_id_filter(frozenset({1, 2, 3}))),
+            ("bookmark pivot",  lambda: p2.set_bookmark_filter(frozenset({("/l.evtx", 1)}))),
+            ("tactic filter",   lambda: p2.set_tactic_filter("execution")),
+        ):
+            seen.clear()
+            fn(); p2.rowCount(); app.processEvents()
+            check(f"'{label}' shows a wait dialog", bool(seen), str(seen))
+        check("the dialog is closed after each pass", w2._hw_loading_dlg is None)
+
+        # a no-op clear must NOT flash a dialog: no work, no wait message
+        p2.clear_all_filters(); p2.rowCount(); app.processEvents()
+        seen.clear()
+        p2.clear_all_filters(); p2.rowCount(); app.processEvents()
+        check("a clear with nothing active shows no dialog", not seen, str(seen))
+
+        # nested setters must not leave a dialog stranded
+        seen.clear()
+        p2.reset_all_filters() if hasattr(p2, "reset_all_filters") else p2.clear_all_filters()
+        p2.rowCount(); app.processEvents()
+        check("nested filter changes still close the dialog",
+              w2._hw_loading_dlg is None)
+
+        # a small dataset must stay silent
+        m3 = EventTableModel(); m3.set_events(events[:200])
+        p3 = EventFilterProxyModel(); p3.setSourceModel(m3)
+        w2._wire_filter_feedback(p3)
+        seen.clear()
+        p3.set_advanced_filter({"text_search": "alice"}); p3.rowCount(); app.processEvents()
+        check("small dataset filters without a dialog", not seen, str(seen))
+    finally:
+        w2._show_hw_loading_dialog = orig_show2
+        w2.close()
+
     print("\n" + "=" * 60)
     bad = [n for n, ok in res if not ok]
     print(f"RESULT: {len(res)-len(bad)}/{len(res)} passed")

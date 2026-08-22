@@ -7431,6 +7431,7 @@ class MainWindow(QMainWindow):
         # ── Merged-mode table (always exists) ────────────────────────────
         self._event_model  = EventTableModel()
         self._proxy_model  = EventFilterProxyModel()
+        self._wire_filter_feedback(self._proxy_model )
         self._proxy_model.setSourceModel(self._event_model)
 
         self._table = self._create_configured_table(self._proxy_model)
@@ -7542,6 +7543,51 @@ class MainWindow(QMainWindow):
         return w
 
     # ── Table factory (reused for merged + per-file tabs) ─────────────
+
+    def _wire_filter_feedback(self, proxy) -> None:
+        """Show a wait dialog around EVERY filter pass on *proxy*.
+
+        Connected once per proxy rather than at each of the ~30 call sites that
+        can change a filter, so a path added later cannot silently lose its
+        feedback.
+        """
+        if proxy is None or getattr(proxy, "_feedback_wired", False):
+            return
+        try:
+            proxy.filtering_started.connect(self._on_proxy_filter_started)
+            proxy.filtering_finished.connect(self._on_proxy_filter_finished)
+            proxy._feedback_wired = True
+        except Exception:
+            pass
+
+    @Slot()
+    def _on_proxy_filter_started(self) -> None:
+        # Only for datasets big enough that the pass is visible; below that a
+        # dialog would flash on every keystroke-fast operation.
+        try:
+            _src = self.sender().sourceModel() if self.sender() else None
+            _rows = _src.rowCount() if _src is not None else 0
+        except Exception:
+            _rows = 0
+        if _rows < self._NORMAL_BUSY_MIN_ROWS or self._hw_loading_dlg is not None:
+            self._proxy_busy_shown = False
+            return
+        try:
+            self._show_hw_loading_dialog(
+                heading="Please Wait — Filtering",
+                detail=f"Applying filter to {_rows:,} events…",
+            )
+            # The thread that paints the dialog is the one about to block.
+            QApplication.processEvents()
+            self._proxy_busy_shown = True
+        except Exception:
+            self._proxy_busy_shown = False
+
+    @Slot()
+    def _on_proxy_filter_finished(self) -> None:
+        if getattr(self, "_proxy_busy_shown", False):
+            self._close_hw_loading_dialog()
+            self._proxy_busy_shown = False
 
     def _create_configured_table(self, proxy: EventFilterProxyModel) -> _EventTableView:
         """Create and configure a QTableView with standard settings."""
@@ -8083,6 +8129,7 @@ class MainWindow(QMainWindow):
 
         model = EventTableModel()
         proxy = EventFilterProxyModel()
+        self._wire_filter_feedback(proxy)
         proxy.setSourceModel(model)
 
         table = self._create_configured_table(proxy)
@@ -13350,6 +13397,7 @@ class MainWindow(QMainWindow):
 
         model = EventTableModel()
         proxy = EventFilterProxyModel()
+        self._wire_filter_feedback(proxy)
         proxy.setSourceModel(model)
 
         table = self._create_configured_table(proxy)

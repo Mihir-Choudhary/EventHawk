@@ -15,6 +15,7 @@ from PySide6.QtCore import (
     QModelIndex,
     QSortFilterProxyModel,
     Qt,
+    Signal,
 )
 from PySide6.QtGui import QColor, QFont
 
@@ -711,8 +712,16 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         pure comparison logic with zero allocation.
     """
 
+    # Emitted around EVERY filter pass, whichever setter triggered it.
+    # Wrapping the ~30 call sites individually was how some paths ended up
+    # with no feedback at all; bracketing invalidateFilter() catches them all,
+    # including ones added later.
+    filtering_started  = Signal()
+    filtering_finished = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._filter_depth = 0
         self._filter_text = ""
         self._tactic_filter: str | None = None      # lowercase tactic name
         self._technique_filter: str | None = None   # lowercase TID (e.g. "t1059")
@@ -790,6 +799,32 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         # already-sorted order across filter changes without re-sorting.
         # Explicit sorts (header clicks) still work via the sort() override.
         self.setDynamicSortFilter(False)
+
+    def invalidateFilter(self) -> None:      # noqa: N802  (Qt naming)
+        """Bracket every filter pass with start/finish signals.
+
+        Qt re-runs filterAcceptsRow for every row here, which on a large
+        dataset is seconds of frozen GUI. The signals let the window put a
+        wait dialog up so that stall reads as "working", not "crashed".
+
+        Depth-counted because setters legitimately nest, and a nested pass must
+        not close the dialog the outer one opened.
+        """
+        self._filter_depth += 1
+        if self._filter_depth == 1:
+            try:
+                self.filtering_started.emit()
+            except RuntimeError:
+                pass
+        try:
+            super().invalidateFilter()
+        finally:
+            self._filter_depth -= 1
+            if self._filter_depth == 0:
+                try:
+                    self.filtering_finished.emit()
+                except RuntimeError:
+                    pass
 
     # FINDING-17: single flag updated by every filter setter so filterAcceptsRow
     # can skip all per-row checks when nothing is active.
