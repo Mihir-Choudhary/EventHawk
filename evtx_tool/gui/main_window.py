@@ -8094,6 +8094,10 @@ class MainWindow(QMainWindow):
         table.setModel(None)
 
         model.set_events(events, search_cache=cache)
+        # Build the advanced-search haystack in the background NOW.
+        # Left until the first text search it froze the GUI for ~30 s
+        # on 1.7M events.
+        model.start_adv_cache_build()
 
         proxy.setDynamicSortFilter(False)
         table.setModel(proxy)
@@ -8423,6 +8427,23 @@ class MainWindow(QMainWindow):
         except Exception:
             return 0
 
+    # Responsiveness ceiling, separate from the RAM ceiling and measured
+    # rather than guessed.  On 1,710,518 real events Normal Mode blocks the GUI
+    # for ~6 s on a single event-id filter, ~3.7 s on a sort and ~18 s clearing
+    # a text filter -- QSortFilterProxyModel rebuilds its row mapping on every
+    # change and that cost is in the row count, not in RAM.  Around 750k events
+    # those stalls are still ~2-3 s; past it the tool stops feeling usable even
+    # on a machine with memory to spare.
+    _RESPONSIVE_MAX_EVENTS = 750_000
+    # Bytes of EVTX per event, measured on the sample corpus
+    # (1,466 MB -> 1,710,518 events).  Used only to estimate the event count
+    # BEFORE parsing, which is the only moment the gate can still help.
+    _BYTES_PER_EVENT = 860
+
+    @classmethod
+    def _estimated_events(cls, total_bytes: int) -> int:
+        return int(total_bytes / cls._BYTES_PER_EVENT) if total_bytes > 0 else 0
+
     @classmethod
     def _recommended_max_size(cls) -> int:
         """Largest EVTX volume Normal Mode should attempt, given free RAM.
@@ -8460,7 +8481,13 @@ class MainWindow(QMainWindow):
         import os
         total = sum(os.path.getsize(f) for f in files if os.path.isfile(f))
         limit = self._recommended_max_size()
-        if total <= limit:
+        est_events = self._estimated_events(total)
+        # Two independent ceilings. RAM is not the only way Normal Mode becomes
+        # unusable: a machine with plenty free still stalls for seconds per
+        # filter once the proxy is mapping millions of rows, and that is the
+        # complaint users actually report.
+        _laggy = est_events > self._RESPONSIVE_MAX_EVENTS
+        if total <= limit and not _laggy:
             return "proceed"
 
         human = self._human_size(total)
@@ -8470,9 +8497,16 @@ class MainWindow(QMainWindow):
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setText(
             f"<b>Total size: {human}</b>  ({len(files)} files)<br><br>"
-            f"This exceeds the recommended limit of "
-            f"<b>{self._human_size(limit)}</b> for Normal Mode "
-            f"on this machine.<br><br>"
+            + (f"That is roughly <b>{est_events:,} events</b>. Past about "
+               f"{self._RESPONSIVE_MAX_EVENTS:,}, Normal Mode stalls for "
+               f"<b>seconds on every filter and sort</b> — measured at ~6 s to "
+               f"filter and ~18 s to clear a text search on 1.7M events — "
+               f"because the table rebuilds its row mapping each time. That "
+               f"happens even with memory to spare.<br><br>"
+               if _laggy else
+               f"This exceeds the recommended limit of "
+               f"<b>{self._human_size(limit)}</b> for Normal Mode "
+               f"on this machine.<br><br>")
             + (f"That limit is computed from the "
                f"<b>{self._human_size(_avail)} of RAM free right now</b> — "
                f"Normal Mode needs roughly {self._RAM_PER_EVTX_BYTE:g}× the "
@@ -10256,6 +10290,10 @@ class MainWindow(QMainWindow):
             self._proxy_model.clear_advanced_filter()
             self._proxy_model.clear_quick_filters()
             self._event_model.set_events(events, search_cache=search_cache)
+            # Build the advanced-search haystack in the background NOW.
+            # Left until the first text search it froze the GUI for ~30 s
+            # on 1.7M events.
+            self._event_model.start_adv_cache_build()
             self._table.setModel(self._proxy_model)
             self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -10319,6 +10357,10 @@ class MainWindow(QMainWindow):
             self._proxy_model.clear_quick_filters()
 
             self._event_model.set_events(events, search_cache=search_cache)
+            # Build the advanced-search haystack in the background NOW.
+            # Left until the first text search it froze the GUI for ~30 s
+            # on 1.7M events.
+            self._event_model.start_adv_cache_build()
 
             self._table.setModel(self._proxy_model)
 
@@ -13306,6 +13348,10 @@ class MainWindow(QMainWindow):
         table.setModel(None)
 
         model.set_events(events, search_cache=search_cache)
+        # Build the advanced-search haystack in the background NOW.
+        # Left until the first text search it froze the GUI for ~30 s
+        # on 1.7M events.
+        model.start_adv_cache_build()
 
         proxy.setDynamicSortFilter(False)
         table.setModel(proxy)

@@ -178,6 +178,44 @@ check("repeat text filters reuse the cache (much faster than the first)",
       second < first / 2 and second > 0,
       f"first {first*1000:.0f} ms, second {second*1000:.0f} ms")
 
+# ── background haystack build ────────────────────────────────────────────
+# Building this lazily on the first text search froze the GUI for ~30 s on
+# 1.7M events. It is now built in slices that yield to the event loop. The
+# result must be IDENTICAL to the lazy build -- a faster search that finds
+# different events would be worse than a slow one.
+from PySide6.QtWidgets import QApplication as _QApp
+_app = _QApp.instance() or _QApp([])
+m_bg = EventTableModel(); m_bg.set_events(events)
+m_lazy = EventTableModel(); m_lazy.set_events(events)
+lazy = [m_lazy.get_adv_search_str(i) for i in range(len(events))]
+
+m_bg.start_adv_cache_build()
+check("background build starts", getattr(m_bg, "_adv_build_timer", None) is not None)
+_spins = 0
+while getattr(m_bg, "_adv_build_timer", None) is not None and _spins < 200000:
+    _app.processEvents(); _spins += 1
+built = [m_bg.get_adv_search_str(i) for i in range(len(events))]
+check("background build completes", m_bg._adv_search_cache is not None)
+check("background build matches the lazy build exactly", built == lazy,
+      f"{sum(1 for a, b in zip(built, lazy) if a != b)} rows differ")
+
+# a search arriving mid-build must still be correct, not truncated
+m_mid = EventTableModel(); m_mid.set_events(events)
+m_mid.start_adv_cache_build()
+_app.processEvents()          # let one slice run, leaving it partial
+mid = [m_mid.get_adv_search_str(i) for i in range(len(events))]
+check("a search during the build finishes it rather than truncating",
+      mid == lazy, f"{sum(1 for a, b in zip(mid, lazy) if a != b)} rows differ")
+
+# a new dataset must abandon the in-flight build
+m_new = EventTableModel(); m_new.set_events(events)
+m_new.start_adv_cache_build()
+m_new.set_events(events[:50])
+check("loading a new dataset cancels the in-flight build",
+      getattr(m_new, "_adv_build_timer", None) is None)
+check("the new dataset's haystack is its own",
+      m_new.get_adv_search_str(0) == m_new.build_adv_search_str(events[0]).lower())
+
 print("\n" + "=" * 60)
 bad = [n for n, ok in res if not ok]
 print(f"RESULT: {len(res)-len(bad)}/{len(res)} passed")

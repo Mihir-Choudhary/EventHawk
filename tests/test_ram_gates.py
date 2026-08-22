@@ -68,6 +68,32 @@ def main() -> int:
     finally:
         MW._available_ram = orig
 
+    # ── responsiveness ceiling, independent of RAM ──────────────────────
+    # A 64 GB machine has memory to spare for 1.4 GB of logs, but Normal Mode
+    # still stalls for seconds per filter at that row count. The gate has to
+    # catch that, not just OOM risk.
+    _big = 1_466 * 1024 ** 2          # the corpus the user actually reported
+    est = MW._estimated_events(_big)
+    print(f"      {MW._human_size(_big)} -> ~{est:,} estimated events "
+          f"(ceiling {MW._RESPONSIVE_MAX_EVENTS:,})")
+    check("event-count estimate is in the right ballpark",
+          1_200_000 < est < 2_400_000, f"{est:,}")
+    check("a 1.4 GB load is over the responsiveness ceiling",
+          est > MW._RESPONSIVE_MAX_EVENTS, f"{est:,}")
+    orig2 = MW.__dict__['_available_ram']
+    try:
+        MW._available_ram = staticmethod(lambda: 64 * 1024 ** 3)
+        check("RAM alone would NOT have caught it (why the second ceiling exists)",
+              _big <= MW._recommended_max_size(),
+              f"limit {MW._human_size(MW._recommended_max_size())}")
+        small = 200 * 1024 ** 2
+        check("a genuinely small load stays under both ceilings",
+              small <= MW._recommended_max_size()
+              and MW._estimated_events(small) <= MW._RESPONSIVE_MAX_EVENTS,
+              f"{MW._estimated_events(small):,} events")
+    finally:
+        MW._available_ram = orig2
+
     # ── JM analysis gate: plenty of RAM must not nag ─────────────────────
     w = MainWindow()
     try:
