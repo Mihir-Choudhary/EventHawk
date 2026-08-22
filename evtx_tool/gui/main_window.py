@@ -11994,6 +11994,18 @@ class MainWindow(QMainWindow):
                         "result set may be incomplete.",
                         _JM_SESSION_ROW_LIMIT, logon_id,
                     )
+                    # A log line the analyst never sees is not disclosure: the
+                    # filtered view would silently omit events, and an absence
+                    # in a filtered view reads as evidence of absence.
+                    QMessageBox.warning(
+                        self, "Session Filter Truncated",
+                        f"This logon session matched at least "
+                        f"<b>{_JM_SESSION_ROW_LIMIT:,}</b> events, which is the "
+                        f"hard cap for session filtering.<br><br>"
+                        f"The filtered view below is <b>INCOMPLETE</b> — events "
+                        f"beyond the cap are not shown. Do not read an absence "
+                        f"here as evidence that something did not happen.",
+                    )
 
             if not composite_keys:
                 QMessageBox.information(self, "Logon Sessions",
