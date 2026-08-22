@@ -321,6 +321,136 @@ class NormalColValueWorker(QThread):
             self.finished.emit({})
 
 
+class NormalColValuePrewarmWorker(QThread):
+    """Normal-mode equivalent of ColValuePrewarmWorker: all columns, ONE thread.
+
+    Deliberately sequential.  Starting one thread per filterable column meant
+    ~15 threads each iterating the whole visible event list in Python; they
+    contend on the GIL and stutter the very UI this prewarm exists to keep
+    smooth.  One pass, one thread, results emitted per column.
+    """
+
+    column_ready = Signal(str, dict)
+    finished_all = Signal()
+
+    def __init__(self, events_by_col: dict, parent=None):
+        super().__init__(parent)
+        # {col_key: [events]} — the caller resolves the visible slice per
+        # column, because a column's own quick filter is excluded from it.
+        self._events_by_col = dict(events_by_col)
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        try:
+            for col_key, events in self._events_by_col.items():
+                if self._cancel:
+                    return
+                # Reuse NormalColValueWorker's counting verbatim rather than
+                # copying it: two implementations of "what values does this
+                # column have" would drift, and the popup would then disagree
+                # with itself depending on whether it came from the cache.
+                # run() is called directly, so it executes on THIS thread.
+                try:
+                    sub = NormalColValueWorker(events, col_key)
+                    box: dict = {}
+                    sub.finished.connect(box.update)
+                    sub.run()
+                    vals = dict(box)
+                except Exception as exc:
+                    logger.warning("normal prewarm: col=%r error: %s", col_key, exc)
+                    continue
+                if self._cancel:
+                    return
+                self.column_ready.emit(col_key, vals)
+        finally:
+            try:
+                self.finished_all.emit()
+            except RuntimeError:
+                pass
+
+
+class ColValuePrewarmWorker(QThread):
+    """Compute column-popup values for MANY columns up front, on one thread.
+
+    Clicking a column header used to start a query and only show the popup when
+    it came back.  Each query is fast (20-130 ms on 1.7M rows), but the click
+    path also builds up to 1000 checkboxes on the GUI thread (~99 ms), and
+    nothing at all appears in between -- so the popup feels like it lags.
+
+    Running the queries once when a filter settles, into a cache keyed by the
+    exact cascade, removes the query from the click path entirely.  One
+    connection is reused for every column; results are emitted per column so
+    the earliest ones are usable before the sweep finishes.
+    """
+
+    column_ready = Signal(str, dict)   # (col_key, {value: count})
+    finished_all = Signal()
+
+    def __init__(self, arrow_table: "pa.Table", col_keys: list,
+                 where_sql: "str | None" = None,
+                 where_params: "list | None" = None,
+                 parent=None):
+        super().__init__(parent)
+        self._table        = arrow_table
+        self._col_keys     = list(col_keys)
+        self._where_sql    = where_sql
+        self._where_params = list(where_params or [])
+        self._cancel       = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        con = None
+        try:
+            import duckdb
+            con = duckdb.connect()
+            con.register("events", self._table)
+            for col_key in self._col_keys:
+                if self._cancel:
+                    return
+                expr = resolve_col_expr(col_key)
+                if not expr:
+                    continue
+                try:
+                    clauses = []
+                    params  = list(self._where_params)
+                    if self._where_sql:
+                        clauses.append(f"({self._where_sql})")
+                    clauses.append(f"{expr} IS NOT NULL")
+                    rows = con.execute(
+                        f"SELECT {expr}, COUNT(*) FROM events "
+                        f"WHERE {' AND '.join(clauses)} "
+                        f"GROUP BY {expr} ORDER BY COUNT(*) DESC LIMIT 1000",
+                        params,
+                    ).fetchall()
+                except Exception as exc:
+                    # One bad column must not abandon the rest of the sweep.
+                    logger.warning("prewarm: col_key=%r error: %s", col_key, exc)
+                    continue
+                if self._cancel:
+                    return
+                self.column_ready.emit(
+                    col_key,
+                    {(str(r[0]) if r[0] is not None else ""): r[1] for r in rows},
+                )
+        except Exception as exc:
+            logger.warning("ColValuePrewarmWorker failed: %s", exc)
+        finally:
+            if con is not None:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+            try:
+                self.finished_all.emit()
+            except RuntimeError:
+                pass
+
+
 class ColValueWorker(QThread):
     """
     Run GROUP BY COUNT(*) on a background thread using an in-memory DuckDB

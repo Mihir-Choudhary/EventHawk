@@ -8642,6 +8642,11 @@ class MainWindow(QMainWindow):
         finally:
             if shown:
                 self._close_hw_loading_dialog()
+            # The visible slice just changed, so any cached popup values are
+            # for the OLD slice. Drop them and warm the new ones in the
+            # background, so the next header click is instant.
+            self._col_value_cache = {}
+            self._schedule_normal_col_prewarm()
 
     def _close_hw_loading_dialog(self) -> None:
         """Dismiss and destroy the 'Please Wait' loading dialog."""
@@ -8678,6 +8683,127 @@ class MainWindow(QMainWindow):
         if self._hw_filter_busy_timer is not None:
             self._hw_filter_busy_timer.stop()
         self._close_hw_loading_dialog()
+        # The view has settled — get the column popups ready NOW rather than
+        # when the analyst clicks a header.
+        self._schedule_col_prewarm()
+
+    # ── Column-popup prewarming ───────────────────────────────────────────
+    # Values are cached per (col_key, cascade WHERE), so the cache is
+    # self-invalidating: change the filter and the key changes with it. There
+    # is no staleness window and nothing to remember to clear.
+    # NOT a mutable class default: that would be shared by every MainWindow
+    # until someone happened to rebind it. _col_cache() hands out a per-instance
+    # dict on first use.
+    _col_prewarm_worker = None      # type: QThread | None
+    _col_prewarm_timer  = None      # type: QTimer | None
+
+    def _col_cache(self) -> dict:
+        _c = self.__dict__.get("_col_value_cache")
+        if _c is None:
+            _c = {}
+            self._col_value_cache = _c
+        return _c
+
+    def _col_cache_key(self, col_key: str):
+        try:
+            where_sql, where_params = self._build_col_cascade_where(col_key)
+        except Exception:
+            return None
+        return (col_key, where_sql or "", tuple(where_params or []))
+
+    def _schedule_col_prewarm(self) -> None:
+        """Debounced: rapid filter changes must not start a sweep each time."""
+        if self._hw_model is None:
+            return
+        if self._col_prewarm_timer is None:
+            self._col_prewarm_timer = QTimer(self)
+            self._col_prewarm_timer.setSingleShot(True)
+            self._col_prewarm_timer.timeout.connect(self._start_col_prewarm)
+        self._col_prewarm_timer.start(300)
+
+    def _start_col_prewarm(self) -> None:
+        from evtx_tool.gui.jm_col_worker import ColValuePrewarmWorker
+        if self._hw_model is None:
+            return
+        # Supersede an in-flight sweep: its results are for the previous filter.
+        _old = self._col_prewarm_worker
+        if _old is not None and _old.isRunning():
+            _old.cancel()
+        self._col_value_cache = {}
+
+        cols = list(ColumnFilterPopup.FILTERABLE.values())
+        if not cols:
+            return
+        # Every filterable column shares one cascade EXCEPT its own quick
+        # filter, so group by the WHERE each column actually needs.
+        by_where: dict = {}
+        for ck in cols:
+            key = self._col_cache_key(ck)
+            if key is None:
+                continue
+            by_where.setdefault((key[1], key[2]), []).append(ck)
+        for (where_sql, where_params), keys in by_where.items():
+            w = ColValuePrewarmWorker(
+                self._hw_model._full_table, keys,
+                where_sql=where_sql or None, where_params=list(where_params),
+                parent=self,
+            )
+            w.column_ready.connect(self._on_col_prewarmed)
+            self._col_prewarm_worker = w
+            w.start()
+            self._track_col_worker(w)
+
+    def _schedule_normal_col_prewarm(self) -> None:
+        """Debounced prewarm of the column popups for NORMAL mode."""
+        if self._hw_model is not None:
+            return                      # Juggernaut has its own sweep
+        if getattr(self, "_norm_prewarm_timer", None) is None:
+            self._norm_prewarm_timer = QTimer(self)
+            self._norm_prewarm_timer.setSingleShot(True)
+            self._norm_prewarm_timer.timeout.connect(self._start_normal_col_prewarm)
+        self._norm_prewarm_timer.start(350)
+
+    def _start_normal_col_prewarm(self) -> None:
+        from evtx_tool.gui.jm_col_worker import NormalColValuePrewarmWorker
+        if self._hw_model is not None or self._active_proxy is None:
+            return
+        _old = getattr(self, "_norm_prewarm_worker", None)
+        if _old is not None and _old.isRunning():
+            _old.cancel()
+        by_col: dict = {}
+        _sizes: dict = {}
+        for _idx, _ck in list(ColumnFilterPopup.FILTERABLE.items()):
+            try:
+                _evs = self._active_proxy.collect_source_events_for_popup(_ck)
+            except Exception:
+                continue
+            if not _evs:
+                continue
+            _sizes[_ck] = len(_evs)
+            if ("normal", _ck, len(_evs)) in self._col_cache():
+                continue
+            by_col[_ck] = _evs
+        if not by_col:
+            return
+        # ONE worker for all columns. One thread per column would be ~15
+        # threads each walking the event list in Python, contending on the GIL
+        # and stuttering the UI this prewarm exists to keep smooth.
+        _w = NormalColValuePrewarmWorker(by_col, parent=self)
+        _w.column_ready.connect(
+            lambda ck, vals, sz=_sizes: (
+                self._col_cache().__setitem__(("normal", ck, sz.get(ck, 0)), vals)
+                if vals else None
+            )
+        )
+        self._norm_prewarm_worker = _w
+        _w.start()
+        self._track_col_worker(_w)
+
+    @Slot(str, dict)
+    def _on_col_prewarmed(self, col_key: str, values: dict) -> None:
+        key = self._col_cache_key(col_key)
+        if key is not None:
+            self._col_cache()[key] = values
 
     def _on_hw_filter_busy_show(self) -> None:
         """Called 150 ms after busy_started if the query is still running."""
@@ -9161,6 +9287,14 @@ class MainWindow(QMainWindow):
 
     def _cleanup_juggernaut(self) -> None:
         """Release heavyweight resources and restore normal-mode UI state."""
+        # Prewarmed column values belong to the dataset being torn down.
+        if self._col_prewarm_timer is not None:
+            self._col_prewarm_timer.stop()
+        _pw = self._col_prewarm_worker
+        if _pw is not None and _pw.isRunning():
+            _pw.cancel()
+        self._col_prewarm_worker = None
+        self._col_value_cache = {}
         # Safety: close loading dialog and cancel any pending busy timer so
         # they don't fire into a torn-down model after cleanup.
         if self._hw_filter_busy_timer is not None:
@@ -9171,10 +9305,31 @@ class MainWindow(QMainWindow):
         # don't fire into a torn-down state after the connection is closed.
         for _w in getattr(self, "_col_value_workers", []):
             if _w.isRunning():
-                try:
-                    _w.finished.disconnect()  # detach so emit goes nowhere
-                except Exception:
-                    pass
+                # Detach every result signal this worker might carry so a late
+                # emit cannot land in torn-down state.  The prewarm workers
+                # expose column_ready/finished_all rather than finished, and
+                # disconnecting a signal with no connections raises — hence the
+                # per-signal guard rather than one blanket try.
+                # PySide emits a RuntimeWARNING (not an exception) when a
+                # signal has no connections, so try/except cannot silence it.
+                # Disconnecting defensively is the point here, so the warning
+                # is suppressed for exactly this block rather than globally.
+                import warnings as _warnings
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore", RuntimeWarning)
+                    for _sig_name in ("column_ready", "finished_all", "finished"):
+                        _sig = getattr(_w, _sig_name, None)
+                        if _sig is None:
+                            continue
+                        try:
+                            _sig.disconnect()
+                        except (RuntimeError, TypeError):
+                            pass
+                if hasattr(_w, "cancel"):
+                    try:
+                        _w.cancel()
+                    except Exception:
+                        pass
                 _w.quit()
                 _w.wait(500)  # fast GROUP BY — 500ms is generous
         self._col_value_workers = []
@@ -9460,12 +9615,21 @@ class MainWindow(QMainWindow):
         visible_events = self._active_proxy.collect_source_events_for_popup(col_key)
         if not visible_events:
             return
+        # Same deal as Juggernaut: prewarmed when the last filter settled.
+        # Keyed on the size of the visible slice as well as the column, so a
+        # different filter can never be served a previous filter's values.
+        _nk = ("normal", col_key, len(visible_events))
+        _cache = self._col_cache()
+        if _nk in _cache:
+            self._show_col_filter_popup(logical_index, _cache[_nk])
+            return
         worker = NormalColValueWorker(visible_events, col_key, parent=self)
-        worker.finished.connect(
-            lambda vals, idx=logical_index: (
-                self._show_col_filter_popup(idx, vals) if vals else None
-            )
-        )
+        def _done(vals, idx=logical_index, k=_nk):
+            if not vals:
+                return
+            self._col_cache()[k] = vals
+            self._show_col_filter_popup(idx, vals)
+        worker.finished.connect(_done)
         worker.start()
         if not hasattr(self, "_col_value_workers"):
             self._col_value_workers = []
@@ -9550,9 +9714,17 @@ class MainWindow(QMainWindow):
         return provider
 
     def _start_col_value_worker(self, logical_index: int, col_key: str) -> None:
-        """Start async ColValueWorker for Juggernaut Mode column filter popup."""
+        """Show the Juggernaut column filter popup, from cache when possible."""
         from evtx_tool.gui.jm_col_worker import ColValueWorker
         if self._hw_model is None:
+            return
+        # Prewarmed by _start_col_prewarm when the last filter settled: show it
+        # straight away instead of making the analyst wait for a query they
+        # have already paid for.
+        _ck = self._col_cache_key(col_key)
+        _cache = self._col_cache()
+        if _ck is not None and _ck in _cache:
+            self._show_col_filter_popup(logical_index, _cache[_ck])
             return
         where_sql, where_params = self._build_col_cascade_where(col_key)
 
