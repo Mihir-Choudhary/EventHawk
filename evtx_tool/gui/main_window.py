@@ -22,7 +22,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from PySide6.QtCore import (
-    QModelIndex, QPoint, QSortFilterProxyModel, Qt, QThread, QTimer, Signal, Slot,
+    QEvent, QModelIndex, QPoint, QSortFilterProxyModel, Qt, QThread, QTimer, Signal, Slot,
     QPropertyAnimation, QEasingCurve, QSettings, QFileSystemWatcher,
 )
 from PySide6.QtGui import (
@@ -110,8 +110,16 @@ class CheckableComboBox(QComboBox):
         if container and container.layout():
             container.layout().insertWidget(0, self._search_bar)
 
-        # Toggle check-state when the user clicks inside the dropdown
-        self.view().pressed.connect(self._on_item_pressed)
+        # Toggle check-state when the user clicks inside the dropdown.
+        #
+        # This MUST NOT use the view's pressed/clicked signals. Qt's own
+        # ItemIsUserCheckable handling in QAbstractItemView already toggles a
+        # checkable item on mouse RELEASE, so toggling again on press meant
+        # every click toggled twice: the profile flicked on and instantly back
+        # off, looking like it "deselects itself". Filtering the release and
+        # consuming it leaves exactly one toggle per click, whatever the style
+        # does with the indicator.
+        self.view().viewport().installEventFilter(self)
 
     def setFilterText(self, text: str) -> None:
         """Filter the displayed items based on search text."""
@@ -164,16 +172,32 @@ class CheckableComboBox(QComboBox):
 
     # ── popup stays open while clicking items ─────────────────────────────────
 
-    def _on_item_pressed(self, index) -> None:
+    def eventFilter(self, obj, event):  # noqa: N802  (Qt naming)
+        """Own the click that toggles a row, so Qt does not toggle it too."""
+        if (obj is self.view().viewport()
+                and event.type() == QEvent.Type.MouseButtonRelease
+                and event.button() == Qt.MouseButton.LeftButton):
+            index = self.view().indexAt(event.position().toPoint())
+            if index.isValid():
+                self._toggle_index(index)
+                self._skip_hide = True
+                return True          # consumed: Qt must not toggle it as well
+        return super().eventFilter(obj, event)
+
+    def _toggle_index(self, index) -> None:
         src_index = self._proxy_model.mapToSource(index)
         item = self._chk_model.itemFromIndex(src_index)
-        if item:
-            new_state = (
-                Qt.CheckState.Unchecked
-                if item.checkState() == Qt.CheckState.Checked
-                else Qt.CheckState.Checked
-            )
-            item.setCheckState(new_state)
+        if item is None:
+            return
+        item.setCheckState(
+            Qt.CheckState.Unchecked
+            if item.checkState() == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
+
+    def _on_item_pressed(self, index) -> None:
+        """Kept for any external caller; toggling now happens on release."""
+        self._toggle_index(index)
         self._skip_hide = True
 
     def hidePopup(self) -> None:
