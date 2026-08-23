@@ -2,11 +2,20 @@
 # EventHawk launcher (Linux/macOS).
 #
 # Uses the project virtualenv in .venv rather than the system Python.
-# On Debian/Ubuntu the system Python often carries TWO PySide6 installs --
-# the distro one in /usr/lib/python3/dist-packages and a pip --user one in
-# ~/.local -- which need different, mutually exclusive shiboken6 versions.
-# Installing either one breaks the other, so the app cannot start. A venv
-# sidesteps that entirely: it ignores ~/.local and pins one matched set.
+# Why a venv and not the system Python, on Debian/Ubuntu:
+#   1. The distro "PySide6" in /usr/lib/python3/dist-packages is only a
+#      NAMESPACE STUB -- it ships no QtWidgets/QtCore. Those live in separate
+#      apt packages (python3-pyside6.qtwidgets, .qtcore, .qtgui, ...).
+#   2. Installing PySide6 from pip alongside it puts a second copy in ~/.local
+#      that needs a different shiboken6 version than the distro one. Only one
+#      shiboken6 can exist, so each install breaks the other and the app will
+#      not start either way. --break-system-packages does not fix this; it
+#      just flips which half is broken, and damages the distro Python.
+# A venv ignores ~/.local entirely and pins one matched PySide6 + shiboken6.
+#
+# To run against the SYSTEM python instead, install the Qt modules from apt:
+#   sudo apt install python3-pyside6.qtcore python3-pyside6.qtwidgets \
+#                    python3-pyside6.qtgui
 #
 #   ./run.sh            → launch the GUI
 #   ./run.sh --cli ...  → run the CLI (evtx_tool.py) with the given arguments
