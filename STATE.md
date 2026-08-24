@@ -1116,4 +1116,11 @@ guards removed.
   fall back to `sample_logs/` and skip cleanly. Two reasons: `main` is a PUBLIC default
   branch (the same redaction was done before the 2026-08-11 push), and the suites could
   not be run by anyone who cloned the repo. No local paths remain in any tracked file.
+- **2026-08-24** — Shipped. Committed the session's work as three commits (correlation
+  causality; export escaping; the combined silent-evidence-loss fixes), stripped the
+  Claude trailers from all 29 previously-unpushed commits after confirming the rewrite
+  altered messages only, pushed `beta`, fast-forwarded `main` to it and pushed. Both
+  refs at `bbb3e66`. 28 suites, 437/437. 43 trailer lines remain in already-public
+  history at/below `971b7de` — untouched by choice, since removing them needs a
+  force-push of published commits.
 

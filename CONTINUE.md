@@ -3,29 +3,19 @@
 Read `STATE.md` first. Branch **`beta`**. Forensic integrity is paramount — never fabricate
 a duration, never silently drop evidence.
 
-**State as of 2026-08-23:** HEAD `8c67f33`, tree compiles. `main` was fast-forwarded to
-`beta` on 2026-08-11; since then `beta` is **29 commits ahead and unpushed**.
+**State as of 2026-08-24: SHIPPED.** `beta` and `main` are both at `bbb3e66` and both
+pushed. Working tree clean, 28 suites / 437 checks green, `compileall` clean.
 
-Uncommitted in the working tree right now:
-`evtx_tool/gui/main_window.py` (Signal(object) conversion + `_cleanup_juggernaut`
-worker teardown), plus new `tests/test_signal_int_overflow.py` and
-`tests/test_jm_teardown.py`. **Commit these first** — see below.
+The 32 commits pushed today carry **no Claude attribution** — the trailers were stripped
+from the 29 unpushed ones before the push (author and committer are mihir-choudhary
+throughout; verified the rewrite changed messages only, code identical). 43 Claude
+trailer lines remain in history at/below `971b7de` — those were already public, and
+rewriting them would need a force-push of published history, which was deliberately
+declined. Local safety ref `backup/pre-trailer-strip` still points at the pre-rewrite
+tip; delete it once you are happy.
 
-Test suites live in `tests/` and run with
-`QT_QPA_PLATFORM=offscreen .venv/bin/python tests/test_X.py`.
-
-**Point them at the sample corpus with an env var** — the paths are no longer
-hardcoded, because `main` is public and they also have to work for anyone who
-clones the repo:
-
-```
-export EVTX_TEST_LOGS=/mnt/NewVolume/Test_logs_Bulk/Logs
-export EVTX_TEST_WORKDIR=/mnt/NewVolume     # only for test_many_large_files_split
-```
-
-Unset, they fall back to `sample_logs/` and each suite SKIPS cleanly rather than
-failing. A suite can still take a path as argv[1]. Use `.venv`, never the
-system Python — the distro PySide6 is a namespace stub (`run.sh` documents why).
+Any NEW commit must keep author = mihir-choudhary only, no Co-Authored-By / Claude-Session
+trailers.
 
 Keep working on `beta` and fast-forward `main` when asked; do not commit to `main` directly.
 
