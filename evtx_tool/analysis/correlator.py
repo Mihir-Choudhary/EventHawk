@@ -670,6 +670,11 @@ def _rule_privilege_escalation_chain(idx: _EventIndex) -> list[dict]:
             p for p in privs_by_computer.get(computer, [])
             if _get_user(p) == user
             and _ts_delta(logon_ts, p.get("timestamp", "")) <= 30
+            # _ts_delta() is ABSOLUTE, so the window alone also matches a
+            # privilege assignment up to 30 s BEFORE the logon — reporting an
+            # effect that preceded its cause. Every other directional rule
+            # pairs the window with _ts_ge; these two were omissions.
+            and _ts_ge(p.get("timestamp", ""), logon_ts)
         ]
         if matches:
             found_privs = set()
@@ -1057,7 +1062,12 @@ def _rule_ps_exec_chain(idx: _EventIndex) -> list[dict]:
         ps_blocks = idx.get_by_computer_eid(computer, 4104)
         related_ps = [
             b for b in ps_blocks
-            if 0 <= _ts_delta(pe_ts, b.get("timestamp", "")) <= 60
+            # The `0 <=` here was dead: _ts_delta() returns abs(), never
+            # negative. Without an explicit ordering test a script block up to
+            # 60 s BEFORE the spawn was chained as "spawn -> PowerShell",
+            # inventing a causal link the log does not support.
+            if _ts_delta(pe_ts, b.get("timestamp", "")) <= 60
+            and _ts_ge(b.get("timestamp", ""), pe_ts)
         ]
         if related_ps:
             chains.append(_chain(
