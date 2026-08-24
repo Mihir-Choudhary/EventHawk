@@ -66,3 +66,10 @@ tmp_*/
 .idea/
 *.sublime-project
 *.sublime-workspace
+
+# Working journal — kept on disk, deliberately NOT published.
+# STATE.md / CONTINUE.md are the crash-resumable engineering notes. They record
+# open defects and the reasoning behind each fix, including reproduction details
+# for issues that are not fixed yet, so they do not belong on a public branch.
+STATE.md
+CONTINUE.md
