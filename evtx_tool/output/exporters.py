@@ -21,6 +21,7 @@ import csv
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -131,6 +132,28 @@ def export_json(events: list[dict], filepath: str, **_) -> int:
 
 # ── XML ────────────────────────────────────────────────────────────────────────
 
+# XML 1.0 permits only #x9, #xA, #xD, #x20-#xD7FF, #xE000-#xFFFD and
+# #x10000-#x10FFFF.  Windows event data is not so restricted: command lines,
+# registry values and attacker-controlled fields routinely carry raw control
+# bytes.  Feeding one to lxml raises ValueError (and export_xml only catches
+# ImportError, so the export died), while the stdlib path wrote them straight
+# through and produced a file that is NOT well-formed XML — a corrupt
+# deliverable with no error shown, which is the worse of the two.
+_XML_ILLEGAL = re.compile(
+    "[^\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD\U00010000-\U0010FFFF]"
+)
+
+
+def _xml_text(v) -> str:
+    r"""Make a value safe for XML WITHOUT silently discarding evidence.
+
+    An illegal codepoint is rendered as a visible, reversible ``\xNN`` escape
+    rather than dropped or replaced by U+FFFD, so the examiner can still see
+    exactly which byte was present in the log.
+    """
+    return _XML_ILLEGAL.sub(lambda m: "\\x%02X" % ord(m.group()), str(v))
+
+
 def export_xml(events: list[dict], filepath: str, **_) -> int:
     os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
     try:
@@ -157,9 +180,9 @@ def _export_xml_lxml(events: list[dict], filepath: str) -> None:
                          ("Task","task"),("Keywords","keywords"),
                          ("UserID","user_id")]:
             el = etree.SubElement(sys_el, tag)
-            el.text = str(ev.get(key, "") or "")
+            el.text = _xml_text(ev.get(key, "") or "")
         src_el = etree.SubElement(sys_el, "SourceFile")
-        src_el.text = os.path.basename(ev.get("source_file", ""))
+        src_el.text = _xml_text(os.path.basename(ev.get("source_file", "")))
         tags = ev.get("attack_tags") or []
         if tags:
             atk_el = etree.SubElement(event_el, "ATTACKTags")
@@ -167,22 +190,27 @@ def _export_xml_lxml(events: list[dict], filepath: str) -> None:
                 te = etree.SubElement(atk_el, "Technique")
                 te.set("id", t.get("tid",""))
                 te.set("tactic", t.get("tactic",""))
-                te.text = t.get("name","")
+                te.text = _xml_text(t.get("name",""))
         ed = ev.get("event_data", {}) or {}
         if ed:
             ed_el = etree.SubElement(event_el, "EventData")
             for k, v in ed.items():
                 data_el = etree.SubElement(ed_el, "Data")
                 data_el.set("Name", str(k))
-                data_el.text = str(v) if v is not None else ""
+                data_el.text = _xml_text(v) if v is not None else ""
     etree.ElementTree(root).write(filepath, xml_declaration=True,
                                   encoding="utf-8", pretty_print=True)
 
 
 def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
     def _esc(s):
-        return (str(s).replace("&","&amp;").replace("<","&lt;")
-                .replace(">","&gt;").replace('"',"&quot;"))
+        # _xml_text first: control bytes are illegal in XML 1.0 and html.escape
+        # would pass them through, yielding a file that will not parse.
+        # quote=True also escapes the apostrophe (as &#x27;, a valid XML
+        # numeric character reference) so the helper is safe in either
+        # single- or double-quoted attributes.
+        import html as _html
+        return _html.escape(_xml_text(s), quote=True)
     with open(filepath, "w", encoding="utf-8") as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
         f.write(f'<EVTXParserResults generated="{datetime.now(timezone.utc).isoformat()}" '
@@ -719,8 +747,24 @@ function sortTable(colIdx) {
 
 
 def _esc(s) -> str:
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
-            .replace(">", "&gt;").replace('"', "&quot;"))
+    """Escape a value for HTML text OR an attribute, single- or double-quoted.
+
+    The apostrophe matters: this report writes every attribute with SINGLE
+    quotes (``data-computer='...'``, ``value='...'``), and the old version
+    escaped only ``& < > "``.  A field containing an apostrophe therefore closed
+    the attribute early.  Event data is attacker-influenced — a hostname of
+
+        PC' onmouseover='alert(1)
+
+    escaped ``data-computer`` and injected a live event handler into the
+    analyst's report.  Verified: 6 handlers landed in one exported page.  Even
+    benign values break it — a host called ``O'Brien-PC`` silently corrupts the
+    row's attributes.
+
+    ``html.escape(quote=True)`` covers ``& < > " '``.
+    """
+    import html as _html
+    return _html.escape(str(s), quote=True)
 
 
 def _fmt_ts(ts: str) -> str:
