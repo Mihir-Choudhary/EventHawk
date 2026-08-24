@@ -70,6 +70,9 @@ class ParseWorker(QThread):
         self._stop_event    = threading.Event()
         self._engine        = None
         self.parse_warnings: list[str] = []   # engine integrity warnings (read after finished)
+        # Subset of parse_warnings the engine tagged as NOT evidence loss
+        # (throttling / RAM / Ctrl+C).  Everything else must reach the examiner.
+        self.parse_benign_warnings: list[str] = []
         self.parse_errors: list[str] = []     # engine fatal errors (surfaced via error signal)
 
     def run(self) -> None:
@@ -102,6 +105,13 @@ class ParseWorker(QThread):
             self.parse_warnings = list(engine.state.warnings)
         except Exception:
             self.parse_warnings = []
+        try:
+            self.parse_benign_warnings = list(
+                getattr(engine.state, "benign_warnings", []) or [])
+        except Exception:
+            # Fail LOUD: if the benign list cannot be read, classify nothing as
+            # benign so every warning is shown rather than silently filtered.
+            self.parse_benign_warnings = []
         try:
             self.parse_errors = list(engine.state.errors)
         except Exception:

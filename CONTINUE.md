@@ -3,10 +3,29 @@
 Read `STATE.md` first. Branch **`beta`**. Forensic integrity is paramount — never fabricate
 a duration, never silently drop evidence.
 
-**State as of 2026-08-20:** HEAD `bffb8d2`, working tree clean, tree compiles.
-`main` was fast-forwarded to `beta` on 2026-08-11; since then `beta` is **4 commits ahead
-and unpushed** (`46e348a` journal, plus the three performance commits below). Rounds 1-3 of the RDP audit are committed and
-were verified at 159 checks before the test scratchpad was wiped.
+**State as of 2026-08-23:** HEAD `8c67f33`, tree compiles. `main` was fast-forwarded to
+`beta` on 2026-08-11; since then `beta` is **29 commits ahead and unpushed**.
+
+Uncommitted in the working tree right now:
+`evtx_tool/gui/main_window.py` (Signal(object) conversion + `_cleanup_juggernaut`
+worker teardown), plus new `tests/test_signal_int_overflow.py` and
+`tests/test_jm_teardown.py`. **Commit these first** — see below.
+
+Test suites live in `tests/` and run with
+`QT_QPA_PLATFORM=offscreen .venv/bin/python tests/test_X.py`.
+
+**Point them at the sample corpus with an env var** — the paths are no longer
+hardcoded, because `main` is public and they also have to work for anyone who
+clones the repo:
+
+```
+export EVTX_TEST_LOGS=/mnt/NewVolume/Test_logs_Bulk/Logs
+export EVTX_TEST_WORKDIR=/mnt/NewVolume     # only for test_many_large_files_split
+```
+
+Unset, they fall back to `sample_logs/` and each suite SKIPS cleanly rather than
+failing. A suite can still take a path as argv[1]. Use `.venv`, never the
+system Python — the distro PySide6 is a namespace stub (`run.sh` documents why).
 
 Keep working on `beta` and fast-forward `main` when asked; do not commit to `main` directly.
 
@@ -114,7 +133,32 @@ asserts row counts, not just "no exception".
 
 ## Next concrete action
 
-**Fix the fabricated multi-hour INBOUND durations.** (`STATE.md` → "OPEN DEFECT")
+**Commit the crash + integrity work** (details in `STATE.md`). Finished and tested,
+just uncommitted:
+
+- five signals -> `Signal(object)`, plus `EventRef` in `gui/models.py` for the second
+  corruption site (`data(UserRole)` returning a bare dict);
+- `_cleanup_juggernaut` cancels the mat/export workers (narrow, per-worker disconnects
+  so a cancelled export still reports);
+- `_safe_int` EventID `Value` fallback — closes a latent JM/normal parity gap;
+- unique per-file tab labels (`unique_display_names`) so N same-named Security.evtx
+  files from different DCs are distinguishable in the UI (also used in the integrity dialog);
+- **warnings classified at the source** (`append_warning(msg, benign=True)`) — normal mode's
+  substring whitelist was hiding "parse aborted mid-file" and "were not parsed", the two
+  worst evidence-loss findings; plus elided-count text and a dialog when the integrity
+  check itself fails;
+- new suites: `test_signal_int_overflow` (18), `test_jm_teardown` (14),
+  `test_overflow_realdata` (10), `test_overflow_soak` (6),
+  `test_large_multifile_split` (10), `test_ad_same_name_large` (9),
+  `test_gui_launch_smoke` (6). All proven non-vacuous by injecting the bug.
+  **Full suite: 28 suites, 437/437.**
+
+`test_large_multifile_split.py` BUILDS its own >64 MB fixtures (no such file exists in
+the corpus) by replicating a real file's 64 KB chunks — so the >64 MB multi-file split
+is testable on any machine with the sample logs.
+
+**Then, the standing top defect: fix the fabricated multi-hour INBOUND durations.**
+(`STATE.md` → "OPEN DEFECT")
 
 Every LocalSessionManager `SessionID` in the sample log is `"1"`, so one explicit-key bucket
 stays open and swallows later unrelated logons — `_OPEN_KEY_CORR_SECS` gives an open keyed
@@ -130,10 +174,26 @@ Approach: give the inbound path its own state machine over LSM semantics
 same contract as outbound. It is a subsystem change, so confirm scope with the user before
 starting.
 
-**Before touching it, rebuild the test env** (recipe in `STATE.md`) and restore at least the
-real-log ground-truth check (7 outbound sessions, durations
+Restore the real-log ground-truth check (7 outbound sessions, durations
 `[6395, 29, 14, 16, 3, 4507, 383]`) so the inbound change is provably regression-free.
-Put the harnesses in `tests/` this time — `/tmp` is not durable.
+
+## Known, deliberately not fixed
+
+- **CSV formula injection** — a cell starting with `=` (e.g. `=cmd|'/c calc'!A1`, which
+  can legitimately appear in a logged command line) is exported verbatim and Excel will
+  evaluate it. The usual mitigation prefixes such cells with an apostrophe, which ALTERS
+  exported evidence — against this project's core rule. Needs the author's decision:
+  fidelity vs. safe-to-open-in-Excel. Flagged, not silently changed.
+
+- **`except Exception: ed = {}`** in `_JMAnalysisMaterializeWorker` — a malformed
+  `event_data_json` silently becomes empty event_data with no flag. 0 occurrences across
+  334,390 real rows, so latent, but it is a fail-silent path in evidence handling and
+  deserves an explicit marker instead of an empty dict.
+- **Worker classes shadow `QThread.finished`** with their own result-carrying signal.
+  Now worked around (reap by liveness, never `finished.connect(deleteLater)` — see
+  `_reap_finished_workers`), but the shadowing itself remains a trap for the next person:
+  renaming those signals to `rows_ready`/`data_ready` would remove it, at the cost of
+  touching every connect site.
 
 ## Also open
 

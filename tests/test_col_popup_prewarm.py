@@ -45,7 +45,7 @@ def main() -> int:
             except Exception: pass
         return False
 
-    LOGS = sys.argv[1] if len(sys.argv) > 1 else "/mnt/NewVolume/Test_logs_Bulk/Logs"
+    LOGS = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("EVTX_TEST_LOGS", "sample_logs")
     files = [os.path.join(LOGS, f) for f in
              ("Application.evtx",
               "Microsoft-Windows-TerminalServices-LocalSessionManager%4Operational.evtx")

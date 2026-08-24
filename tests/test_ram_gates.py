@@ -107,7 +107,8 @@ def main() -> int:
           w._chk_ioc.isEnabled() and w._chk_correlate.isEnabled())
 
     # ── materialisation actually produces analysable events ──────────────
-    files = sorted(glob.glob("/mnt/NewVolume/Test_logs_Bulk/Logs/*.evtx"))[:25]
+    _logs = os.environ.get("EVTX_TEST_LOGS", "sample_logs")
+    files = sorted(glob.glob(os.path.join(_logs, "*.evtx")))[:25]
     if not files:
         print("no logs — skipping materialisation checks")
     else:

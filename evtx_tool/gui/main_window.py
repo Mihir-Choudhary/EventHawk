@@ -79,6 +79,43 @@ def _escape_html(s: str) -> str:
 
 # ── CheckableComboBox ─────────────────────────────────────────────────────────
 
+def unique_display_names(paths) -> dict:
+    """Map each path to the shortest trailing path segment that is unambiguous.
+
+    Pull Security.evtx from every domain controller in a forest and every file
+    has the same basename. The DATA stays correct — the engine keys on the full
+    path — but three tabs all labelled "Security.evtx" leave the analyst unable
+    to say which host an event came from, which makes correct data unusable as
+    evidence.
+
+    So a label grows leftwards along its own path only as far as it must:
+
+        DC01/Security.evtx , DC02/Security.evtx  ->  "DC01/Security.evtx", "DC02/Security.evtx"
+        Security.evtx      , System.evtx         ->  "Security.evtx", "System.evtx"
+
+    Files with unique basenames are unaffected. A tooltip still carries the
+    full path; this is about what is readable without hovering.
+    """
+    seen: list = []
+    for p in paths:                       # dedupe, keep caller order
+        if p not in seen:
+            seen.append(p)
+    parts = {p: [seg for seg in os.path.normpath(str(p)).split(os.sep) if seg]
+             for p in seen}
+    out = {}
+    for p in seen:
+        segs = parts[p] or [str(p)]
+        label = segs[-1]
+        for depth in range(1, len(segs) + 1):
+            cand = os.sep.join(segs[-depth:])
+            label = cand
+            if not any(q != p and os.sep.join(parts[q][-depth:]) == cand
+                       for q in seen):
+                break
+        out[p] = label
+    return out
+
+
 class CheckableComboBox(QComboBox):
     """
     A QComboBox that shows checkable items in its popup.
@@ -249,7 +286,12 @@ class ColumnFilterPopup(QDialog):
     # Sending mode explicitly (instead of always emitting "excluded") fixes the
     # truncation bug: the popup caps at the top 1000 unique values, so events
     # with values outside that set used to slip past an EXCLUDE filter.
-    filterApplied = Signal(int, str, list)
+    # Signal(object) for the value list, not Signal(list): a QVariantList
+    # round-trip coerces ints to signed int64 (see _JMAnalysisMaterializeWorker).
+    # Today these values are always str(), so nothing is corrupted -- this is
+    # precautionary, so a future column that emits raw ints cannot silently
+    # filter on a mangled value and hide the matching rows.
+    filterApplied = Signal(int, str, object)
     sortRequested = Signal(int, Qt.SortOrder)  # (column_index, order)
 
     # Columns that support dropdown filtering  →  event-dict key
@@ -3402,7 +3444,16 @@ class _WifiJMFetchWorker(QThread):
     the built-in QThread.error() that exists on some Qt versions.)
     """
 
-    finished    = Signal(list, bool)  # (list[dict], was_truncated) — may be empty/False
+    finished    = Signal(object, bool)  # (list[dict], was_truncated)
+    # NOT Signal(list): Qt marshals a list through QVariantList and
+    # converts every int to a SIGNED 64-bit value. Windows event data
+    # contains unsigned 64-bit sentinels -- BITS writes
+    # bandwidthLimit/fileLength/bytesTotal as 18446744073709551615
+    # (2**64-1, "unlimited") -- which does not fit. That raised an
+    # OverflowError storm AND silently delivered -1 in its place:
+    # corrupted evidence, not just noise. Signal(object) passes the
+    # Python object by reference, untouched.
+
     fetch_error = Signal(str, str)    # (error_kind, detail_message)
 
     _WLAN_CHANNEL = "Microsoft-Windows-WLAN-AutoConfig/Operational"
@@ -5198,7 +5249,16 @@ class _RemoteAssistJMFetchWorker(QThread):
       fetch_error(str, str)  — (error_kind, detail_message)
     """
 
-    finished    = Signal(list, bool)   # (list[dict], truncated)
+    finished    = Signal(object, bool)   # (list[dict], truncated)
+    # NOT Signal(list): Qt marshals a list through QVariantList and
+    # converts every int to a SIGNED 64-bit value. Windows event data
+    # contains unsigned 64-bit sentinels -- BITS writes
+    # bandwidthLimit/fileLength/bytesTotal as 18446744073709551615
+    # (2**64-1, "unlimited") -- which does not fit. That raised an
+    # OverflowError storm AND silently delivered -1 in its place:
+    # corrupted evidence, not just noise. Signal(object) passes the
+    # Python object by reference, untouched.
+
     fetch_error = Signal(str, str)     # (error_kind, detail_message)
 
     _RA_CHANNELS = (
@@ -5422,7 +5482,15 @@ class _JMAnalysisMaterializeWorker(QThread):
     """
 
     progress    = Signal(int, int)     # (rows built, total)
-    finished_ok = Signal(list)
+    finished_ok = Signal(object)        # list[dict] — see note below
+    # NOT Signal(list): Qt marshals a list through QVariantList and
+    # converts every int to a SIGNED 64-bit value. Windows event data
+    # contains unsigned 64-bit sentinels -- BITS writes
+    # bandwidthLimit/fileLength/bytesTotal as 18446744073709551615
+    # (2**64-1, "unlimited") -- which does not fit. That raised an
+    # OverflowError storm AND silently delivered -1 in its place:
+    # corrupted evidence, not just noise. Signal(object) passes the
+    # Python object by reference, untouched.
     failed      = Signal(str)
 
     _CHUNK = 50_000
@@ -5624,7 +5692,11 @@ class _JMExportWorker(QThread):
                     for row in batch:
                         if not first:
                             fh.write(",\n")
-                        fh.write(_json.dumps(dict(zip(col_names, row)), default=str))
+                        # strict=True — col_names and row both come from the same cursor, so
+                        # they always match; without it a mismatch would silently
+                        # drop fields from an EXPORTED record.
+                        fh.write(_json.dumps(dict(zip(col_names, row, strict=True)),
+                                             default=str))
                         first = False
                     written += len(batch)
                     self.progress.emit(written)
@@ -5651,7 +5723,7 @@ class _JMExportWorker(QThread):
             if not rows:
                 break
             for r in rows:
-                d = dict(zip(col_names, r))
+                d = dict(zip(col_names, r, strict=True))   # see note above
                 events.append({
                     "record_id":      d.get("record_id"),
                     "event_id":       d.get("event_id"),
@@ -5724,7 +5796,15 @@ class _ComputerNormJMWorker(QThread):
       fetch_error(str,str) — (error_kind, detail_message)
     """
 
-    finished    = Signal(list)
+    finished    = Signal(object)        # list[dict] — see note below
+    # NOT Signal(list): Qt marshals a list through QVariantList and
+    # converts every int to a SIGNED 64-bit value. Windows event data
+    # contains unsigned 64-bit sentinels -- BITS writes
+    # bandwidthLimit/fileLength/bytesTotal as 18446744073709551615
+    # (2**64-1, "unlimited") -- which does not fit. That raised an
+    # OverflowError storm AND silently delivered -1 in its place:
+    # corrupted evidence, not just noise. Signal(object) passes the
+    # Python object by reference, untouched.
     fetch_error = Signal(str, str)
 
     def __init__(self, parquet_dir: str, parent=None) -> None:
@@ -8033,7 +8113,7 @@ class MainWindow(QMainWindow):
             return
 
         parquet_dir  = self._hw_db_path or ""
-        display_name = os.path.basename(filepath)
+        display_name = self._tab_label_for(filepath)
 
         # Pass the shared full arrow_table with a fixed source_file filter rather
         # than materialising a filtered copy — saves one copy of per-file rows.
@@ -8183,7 +8263,7 @@ class MainWindow(QMainWindow):
         proxy.setDynamicSortFilter(True)
         table.setUpdatesEnabled(True)
 
-        display_name = os.path.basename(filepath)
+        display_name = self._tab_label_for(filepath)
         tab_idx = self._events_tab_widget.addTab(table, display_name)
         self._events_tab_widget.setTabToolTip(tab_idx, filepath)
 
@@ -8832,7 +8912,7 @@ class MainWindow(QMainWindow):
             return
         # Supersede an in-flight sweep: its results are for the previous filter.
         _old = self._col_prewarm_worker
-        if _old is not None and _old.isRunning():
+        if self._thread_running(_old):
             _old.cancel()
         self._col_value_cache = {}
 
@@ -8873,7 +8953,7 @@ class MainWindow(QMainWindow):
         if self._hw_model is not None or self._active_proxy is None:
             return
         _old = getattr(self, "_norm_prewarm_worker", None)
-        if _old is not None and _old.isRunning():
+        if self._thread_running(_old):
             _old.cancel()
         by_col: dict = {}
         _sizes: dict = {}
@@ -9036,11 +9116,16 @@ class MainWindow(QMainWindow):
                 return "; ".join(bits)
 
             _problems = []
+            _labels = unique_display_names(
+                [k for k in _stats if k != "__shard_write_loss__"])
             for k, v in _stats.items():
                 desc = _file_problem(v)
                 if desc:
+                    # Unique label, not basename: three DCs' Security.evtx
+                    # would otherwise produce three identical prefixes in the
+                    # one dialog that says which evidence failed to load.
                     _name = ("[storage]" if k == "__shard_write_loss__"
-                             else os.path.basename(k))
+                             else _labels.get(k, os.path.basename(k)))
                     _problems.append(f"{_name}: {desc}")
 
             if _problems:
@@ -9049,13 +9134,24 @@ class MainWindow(QMainWindow):
                     "Some evidence did NOT fully load — results may be "
                     "incomplete:\n\n"
                     + "\n".join(_problems[:15])
-                    + ("\n…" if len(_problems) > 15 else "")
+                    + (f"\n…and {len(_problems) - 15:,} more (see parse_stats.json)"
+                       if len(_problems) > 15 else "")
                     + "\n\nA parse ABORT means all records after the failure "
                     "point are missing from this session.\n"
                     "Details: parse_stats.json in the session directory.",
                 )
-        except Exception:
-            logger.warning("Parse-integrity stats check failed", exc_info=True)
+        except Exception as _ie:
+            # The integrity check failing invisibly is worse than any single
+            # warning being dropped: a clean-looking parse reads as "nothing
+            # wrong" when in fact nothing was checked.
+            logger.warning("Parse-integrity check failed", exc_info=True)
+            QMessageBox.warning(
+                self, "Parse Integrity Check Failed",
+                "The parse-integrity check could not run, so this session is "
+                "NOT confirmed complete.\n\n"
+                f"Reason: {_ie}\n\n"
+                "Verify against parse_stats.json before relying on these results.",
+            )
 
         # Load all events into an in-memory Arrow table (~114 MB for 6M rows).
         # ArrowTableModel's _FilterThread owns the single DuckDB connection.
@@ -9390,13 +9486,86 @@ class MainWindow(QMainWindow):
             self._render_event_detail(ev)
             self._update_bookmark_button(ev)
 
+    def _tab_label_for(self, filepath: str) -> str:
+        """Tab label that stays distinguishable when basenames collide."""
+        pool = list(getattr(self, "_jm_pending", {}) or {}) or \
+               list(getattr(self, "_last_parsed_files", []) or [])
+        if filepath not in pool:
+            pool = list(pool) + [filepath]
+        return unique_display_names(pool).get(filepath, os.path.basename(filepath))
+
     def _cleanup_juggernaut(self) -> None:
         """Release heavyweight resources and restore normal-mode UI state."""
+        # Stop the Parquet-backed workers FIRST.  _col_value_workers below get
+        # a disconnect-cancel-wait "so their finished signals don't fire into a
+        # torn-down state"; the materialize/export workers were skipped, and
+        # that asymmetry is a real defect.  Both read the Parquet directory
+        # this method later rmtree's, and this method runs on "start a new
+        # parse", "parse error" and "clear results" -- not just on app exit.
+        #
+        # What is disconnected is deliberately NARROW, per worker:
+        #
+        #   _jm_mat_worker.finished_ok  MUST be dropped.  It starts a full
+        #       AnalysisRunner over events rebuilt from the OLD dataset, so
+        #       the IOC / Correlation tabs could show findings from the
+        #       previous logs while a different set is loaded -- evidence
+        #       attributed to the wrong source.  Its `progress` goes too (it
+        #       writes into the loading dialog cleanup just closed).
+        #       Its `failed` is KEPT: on cancel it only sets the status line.
+        #
+        #   _jm_export_worker keeps ALL of its signals.  They touch nothing
+        #       that is torn down here (just its own progress dialog and a
+        #       message box), and cancelling deletes the partial file -- so
+        #       silencing `failed` would delete an analyst's export with no
+        #       notification at all.  "Export was cancelled and the partial
+        #       file was deleted" must still reach them.
+        _drop_signals = {"_jm_mat_worker": ("finished_ok", "progress"),
+                         "_jm_export_worker": ()}
+        for _attr, _drop in _drop_signals.items():
+            _mw = getattr(self, _attr, None)
+            if _mw is None:
+                continue
+            if _mw.isRunning():
+                import warnings as _warnings
+                with _warnings.catch_warnings():
+                    # PySide emits a RuntimeWarning (not an exception) when a
+                    # signal has no connections; disconnecting defensively is
+                    # the point, so it is suppressed for this block only.
+                    _warnings.simplefilter("ignore", RuntimeWarning)
+                    for _sn in _drop:
+                        _sg = getattr(_mw, _sn, None)
+                        if _sg is None:
+                            continue
+                        try:
+                            _sg.disconnect()
+                        except (RuntimeError, TypeError):
+                            pass
+                try:
+                    _mw.cancel()
+                except Exception:
+                    pass
+                # 500 ms, matching the col-worker budget below -- NOT the 5 s
+                # that closeEvent can afford.  This runs on the GUI thread from
+                # the ✕ button and from "start a new parse", where a multi-
+                # second freeze is exactly the "is it stuck?" behaviour we were
+                # asked to remove.  Cancel latency here is not bounded by the
+                # 50k-row fetch loop: the worker's DuckDB `execute()` does an
+                # ORDER BY over the whole corpus before the first cancel check,
+                # and that is not interruptible at all.
+                #
+                # Waiting is therefore belt-and-braces, not the safety
+                # mechanism.  The disconnect above is what closes the hole, and
+                # `parent=self` keeps the QThread from being destroyed while it
+                # is still running, so letting it finish in the background is
+                # safe.  A shard opened after the rmtree just raises inside the
+                # worker, which its own error path already handles.
+                _mw.wait(500)
+            setattr(self, _attr, None)
         # Prewarmed column values belong to the dataset being torn down.
         if self._col_prewarm_timer is not None:
             self._col_prewarm_timer.stop()
         _pw = self._col_prewarm_worker
-        if _pw is not None and _pw.isRunning():
+        if self._thread_running(_pw):
             _pw.cancel()
         self._col_prewarm_worker = None
         self._col_value_cache = {}
@@ -9409,7 +9578,7 @@ class MainWindow(QMainWindow):
         # Stop any in-flight column popup workers FIRST so their finished signals
         # don't fire into a torn-down state after the connection is closed.
         for _w in getattr(self, "_col_value_workers", []):
-            if _w.isRunning():
+            if self._thread_running(_w):
                 # Detach every result signal this worker might carry so a late
                 # emit cannot land in torn-down state.  The prewarm workers
                 # expose column_ready/finished_all rather than finished, and
@@ -9437,6 +9606,9 @@ class MainWindow(QMainWindow):
                         pass
                 _w.quit()
                 _w.wait(500)  # fast GROUP BY — 500ms is generous
+        # Reap rather than just drop the list: parent=self means clearing the
+        # Python references leaves the QThreads alive as children of the window.
+        self._reap_finished_workers(getattr(self, "_col_value_workers", []))
         self._col_value_workers = []
 
         if self._hw_worker is not None:
@@ -9736,10 +9908,7 @@ class MainWindow(QMainWindow):
             self._show_col_filter_popup(idx, vals)
         worker.finished.connect(_done)
         worker.start()
-        if not hasattr(self, "_col_value_workers"):
-            self._col_value_workers = []
-        self._col_value_workers = [w for w in self._col_value_workers if w.isRunning()]
-        self._col_value_workers.append(worker)
+        self._track_col_worker(worker)   # tracks, prunes AND frees on finish
 
     def _build_col_cascade_where(self, col_key: str):
         """Build the (where_sql, where_params) that scopes a JM column popup to
@@ -9776,12 +9945,68 @@ class MainWindow(QMainWindow):
             where_params = list(where_params or []) + base_params
         return where_sql, where_params
 
+    @staticmethod
+    def _thread_running(w) -> bool:
+        """isRunning() that tolerates a worker whose C++ side is already gone.
+
+        Column workers are deleteLater()'d when they finish (see
+        _track_col_worker), so a Python reference can outlive the C++ QThread.
+        Calling isRunning() on that raises RuntimeError; a reaped worker is by
+        definition not running.
+        """
+        if w is None:
+            return False
+        try:
+            return bool(w.isRunning())
+        except RuntimeError:
+            return False
+
+    def _reap_finished_workers(self, workers) -> list:
+        """Return the still-running workers, deleting the finished ones.
+
+        Do NOT do this with ``finished.connect(worker.deleteLater)``.  Every one
+        of these worker classes DECLARES ITS OWN ``finished`` signal carrying
+        results (``Signal(object, bool)``, ``Signal(dict)``, ...), which SHADOWS
+        ``QThread.finished``.  Python attribute lookup resolves to the custom
+        one, and that one is only emitted on the SUCCESS path — a worker that
+        hits an error emits ``fetch_error``/``failed`` and returns, so the
+        deleteLater never fires and the thread leaks exactly when something has
+        already gone wrong.  Measured: 0 of 10 deletions fired on the error
+        path.
+
+        Reaping by liveness instead is independent of which signal exists and
+        of whether the run succeeded.  Cost: a finished worker survives until
+        the next call for that list, so at most one per list is outstanding.
+        """
+        alive = []
+        for w in workers or []:
+            if self._thread_running(w):
+                alive.append(w)
+                continue
+            try:
+                w.deleteLater()
+            except (RuntimeError, AttributeError):
+                pass          # already reaped, or not a QObject
+        return alive
+
     def _track_col_worker(self, worker) -> None:
-        """Keep a reference so the worker isn't GC'd before it finishes,
-        pruning already-finished workers to prevent unbounded accumulation."""
+        """Keep a reference so the worker isn't GC'd before it finishes, and
+        make sure it is actually FREED once it is.
+
+        These workers are constructed with ``parent=self``, so C++ owns them
+        and dropping the Python reference does not delete them: every column
+        popup, prewarm sweep and popup search left a QThread parented to the
+        MainWindow for the life of the session. Measured: 12 finished workers
+        still parented after 12 popups, and each one pins its input — the
+        visible-events list for normal mode, the Arrow table for JM — so the
+        previous dataset cannot be freed either. That is a real cost in a tool
+        whose parse path is already gated on available RAM.
+
+        deleteLater() hands them to the event loop to destroy once finished.
+        """
         if not hasattr(self, "_col_value_workers"):
             self._col_value_workers = []
-        self._col_value_workers = [w for w in self._col_value_workers if w.isRunning()]
+        self._col_value_workers = self._reap_finished_workers(self._col_value_workers)
         self._col_value_workers.append(worker)
 
     def _make_col_search_provider(self, col_key: str):
@@ -10293,9 +10518,18 @@ class MainWindow(QMainWindow):
         # engine.state.warnings carries per-file "N record(s) could not be
         # parsed" messages; unparsed evidence must be visible to the examiner.
         try:
+            # Show every warning EXCEPT the ones the engine tagged benign.
+            # This used to be a substring whitelist
+            # ("could not be parsed" / "ABORTED" / "TRUNCATED") and it silently
+            # dropped the two most severe findings: the engine writes
+            # "parse aborted mid-file" (lowercase — the whitelist tested
+            # "ABORTED") and "record(s) ... were not parsed" (the whitelist
+            # tested "could not be parsed").  Both mean lost evidence and
+            # neither ever reached the examiner.  A denylist fails the safe
+            # way: an unrecognised warning is shown, not hidden.
+            _benign = set(getattr(self._worker, "parse_benign_warnings", []) or [])
             _pw = [w for w in getattr(self._worker, "parse_warnings", [])
-                   if ("could not be parsed" in w or "ABORTED" in w
-                       or "TRUNCATED" in w)]
+                   if w not in _benign]
             # Engine-level errors on a PARTIAL success (some events came through,
             # but a file/pool error also occurred) must be visible too — they
             # are strictly more severe than the integrity warnings above.  The
@@ -10308,10 +10542,21 @@ class MainWindow(QMainWindow):
                     "Some evidence did NOT fully load — results may be "
                     "incomplete:\n\n"
                     + "\n".join(_lines[:15])
-                    + ("\n…" if len(_lines) > 15 else ""),
+                    + (f"\n…and {len(_lines) - 15:,} more (see the log)"
+                       if len(_lines) > 15 else ""),
                 )
-        except Exception:
-            logger.warning("Parse-integrity warning check failed", exc_info=True)
+        except Exception as _ie:
+            # The integrity check failing invisibly is worse than any single
+            # warning being dropped: a clean-looking parse reads as "nothing
+            # wrong" when in fact nothing was checked.
+            logger.warning("Parse-integrity check failed", exc_info=True)
+            QMessageBox.warning(
+                self, "Parse Integrity Check Failed",
+                "The parse-integrity check could not run, so this session is "
+                "NOT confirmed complete.\n\n"
+                f"Reason: {_ie}\n\n"
+                "Verify against the application log before relying on these results.",
+            )
 
         self._events         = events
         self._close_logon_sessions_dlg()   # close + invalidate session browser cache
@@ -11306,11 +11551,15 @@ class MainWindow(QMainWindow):
             worker.finished.connect(_on_ready)
             worker.fetch_error.connect(_on_err)
             worker.start()
-            # Keep a reference so the worker is not GC'd before it finishes.
+            # Keep a reference so the worker is not GC'd before it finishes,
+            # and free it once it is: parent=self means C++ owns it, so
+            # dropping the list entry alone leaves the QThread — and the event
+            # list it fetched — alive for the whole session, one per opening of
+            # the WiFi browser.  Same defect and same fix as the column
+            # workers; see _track_col_worker.
             if not hasattr(self, "_wifi_jm_workers"):
                 self._wifi_jm_workers = []
-            self._wifi_jm_workers = [w for w in self._wifi_jm_workers
-                                     if w.isRunning()]
+            self._wifi_jm_workers = self._reap_finished_workers(self._wifi_jm_workers)
             self._wifi_jm_workers.append(worker)
             return
 
@@ -11416,10 +11665,14 @@ class MainWindow(QMainWindow):
             worker.finished.connect(_on_ready)
             worker.fetch_error.connect(_on_err)
             worker.start()
-            # Keep a strong reference so the worker is not GC'd before it finishes.
+            # Keep a strong reference so the worker is not GC'd before it
+            # finishes — and free it once it has.  parent=self means C++ owns
+            # it, so pruning the list does NOT delete it: measured, 10 of these
+            # survive 10 dialog openings, each still holding the event list it
+            # fetched.  Same defect and same fix as _track_col_worker.
             if not hasattr(self, "_ra_jm_workers"):
                 self._ra_jm_workers = []
-            self._ra_jm_workers = [w for w in self._ra_jm_workers if w.isRunning()]
+            self._ra_jm_workers = self._reap_finished_workers(self._ra_jm_workers)
             self._ra_jm_workers.append(worker)
             return
 
@@ -11585,10 +11838,11 @@ class MainWindow(QMainWindow):
             worker.finished.connect(_on_ready)
             worker.fetch_error.connect(_on_err)
             worker.start()
-            # Keep a strong reference so the worker is not GC'd mid-flight.
-            self._computer_norm_jm_workers = [
-                w for w in self._computer_norm_jm_workers if w.isRunning()
-            ]
+            # Keep a strong reference so the worker is not GC'd mid-flight,
+            # and free it on finish — parent=self otherwise keeps every one of
+            # them alive for the session.  See _track_col_worker.
+            self._computer_norm_jm_workers = self._reap_finished_workers(
+                self._computer_norm_jm_workers)
             self._computer_norm_jm_workers.append(worker)
             return
 
@@ -14530,7 +14784,7 @@ class MainWindow(QMainWindow):
             try:
                 rids = full_table.column("record_id").to_pylist()
                 srcs = full_table.column("source_file").to_pylist()
-                for rid, src in zip(rids, srcs):
+                for rid, src in zip(rids, srcs, strict=True):   # equal-length by construction
                     if rid is not None:
                         by_file[src or "<unknown>"].append(int(rid))
             except Exception as exc:

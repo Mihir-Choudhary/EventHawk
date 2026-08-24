@@ -79,6 +79,41 @@ def _tz_offset_seconds() -> int:
     return 0
 
 
+def _system_tz_name() -> "str | None":
+    """Best-effort IANA name for the system timezone, e.g. "America/New_York".
+
+    Needed because a bare UTC OFFSET cannot express DST: the offset is only
+    correct for the moment it was read, so grouping a year of events by it puts
+    every event on the wrong side of a DST boundary by an hour.  A zone NAME
+    lets DuckDB's AT TIME ZONE resolve each event in its own DST period, the
+    same way "specific" mode already does.
+
+    Returns None when the name cannot be determined (caller falls back to the
+    fixed-offset expression, which is what this code did unconditionally
+    before).
+    """
+    import os as _os
+    tz = _os.environ.get("TZ")
+    if tz:
+        return tz
+    link = "/etc/localtime"
+    try:
+        if _os.path.islink(link):
+            target = _os.path.realpath(link)
+            if "/zoneinfo/" in target:
+                return target.split("/zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    try:
+        with open("/etc/timezone", encoding="utf-8") as fh:
+            name = fh.read().strip()
+            if name:
+                return name
+    except OSError:
+        pass
+    return None
+
+
 def _timestamp_date_expr() -> str:
     """DuckDB expression for the YYYY-MM-DD label in the display timezone.
 
@@ -89,9 +124,13 @@ def _timestamp_date_expr() -> str:
                          event's offset is computed in its OWN DST period.
                          INTERVAL arithmetic with a single offset would be off
                          by 1 hour at DST boundaries.
-      * ``local``      — fixed offset from the system's CURRENT local TZ.
-                         Acceptable for most forensic queries; DST-period
-                         drift at the time-of-call is a known limitation.
+      * ``local``      — resolved to the system's IANA zone name and handled
+                         by ``AT TIME ZONE`` exactly like ``specific``, so each
+                         event is converted in its OWN DST period.  Previously
+                         this used a single offset read at call time, which put
+                         events an hour out on the far side of a DST boundary;
+                         only if the zone name cannot be determined does it
+                         fall back to that offset.
       * ``custom``     — fixed offset by definition.
 
     Falls back to the UTC string slice on any error so a malformed TZ state
@@ -106,18 +145,26 @@ def _timestamp_date_expr() -> str:
     if mode == "utc":
         return "LEFT(CAST(timestamp_utc AS VARCHAR), 10)"
 
-    if mode == "specific":
-        tz_name = (_state.get("specific") or "UTC").replace("'", "''")
+    if mode in ("specific", "local"):
+        if mode == "local":
+            _sys = _system_tz_name()
+            if not _sys:
+                tz_name = None          # fall through to the offset form below
+            else:
+                tz_name = _sys.replace("'", "''")
+        else:
+            tz_name = (_state.get("specific") or "UTC").replace("'", "''")
         # CAST string → naive TIMESTAMP
         # AT TIME ZONE 'UTC' → TIMESTAMPTZ (treat the naive value as UTC)
         # AT TIME ZONE '<name>' → TIMESTAMP in that zone (DST-aware per event)
         # strftime → 'YYYY-MM-DD'
-        return (
-            "strftime("
-            "CAST(timestamp_utc AS TIMESTAMP) AT TIME ZONE 'UTC' "
-            f"AT TIME ZONE '{tz_name}', "
-            "'%Y-%m-%d')"
-        )
+        if tz_name:
+            return (
+                "strftime("
+                "CAST(timestamp_utc AS TIMESTAMP) AT TIME ZONE 'UTC' "
+                f"AT TIME ZONE '{tz_name}', "
+                "'%Y-%m-%d')"
+            )
 
     # local / custom — offset-based fallback (no per-event DST awareness).
     off = _tz_offset_seconds()

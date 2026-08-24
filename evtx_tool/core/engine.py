@@ -286,6 +286,15 @@ class EngineState:
     recent_events: list[dict] = field(default_factory=list)  # last 20 matches
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Warnings that are NOT evidence-loss findings: user-initiated stops and
+    # performance notices.  Classified HERE, at the call site that writes the
+    # message, rather than by substring-matching in the GUI.  A matcher drifts
+    # from the message the moment either side is reworded -- and it did: the
+    # GUI whitelisted "ABORTED" while the engine wrote "aborted", so
+    # "parse aborted mid-file" (every record after the failure point missing)
+    # never reached the analyst.  Anything not listed here is treated as an
+    # integrity finding and shown, so a NEW warning fails loud, not silent.
+    benign_warnings: list[str] = field(default_factory=list)
     resource_stats: ResourceStats | None = None
     is_running: bool = False
     is_throttling: bool = False
@@ -304,10 +313,17 @@ class EngineState:
         with self._lock:
             self.errors = self.errors + [msg]
 
-    def append_warning(self, msg: str) -> None:
-        """Append to warnings list inside the lock (avoids read-outside-lock race)."""
+    def append_warning(self, msg: str, benign: bool = False) -> None:
+        """Append to warnings list inside the lock (avoids read-outside-lock race).
+
+        benign=True marks a message that is NOT evidence loss (throttling, RAM
+        pressure, user-initiated stop).  Everything else is an integrity
+        finding and MUST reach the examiner.
+        """
         with self._lock:
             self.warnings = self.warnings + [msg]
+            if benign:
+                self.benign_warnings = self.benign_warnings + [msg]
 
     def snapshot(self) -> dict:
         """Return a plain dict copy (for TUI reads)."""
@@ -390,7 +406,7 @@ class ProcessingEngine:
 
     def _sigint_handler(self, sig, frame) -> None:
         logger.warning("SIGINT received — initiating graceful shutdown")
-        self.state.append_warning("Ctrl+C detected — stopping...")
+        self.state.append_warning("Ctrl+C detected — stopping...", benign=True)
         self._stop_event.set()
 
     # ── Public run method ────────────────────────────────────────────────────────
@@ -542,7 +558,8 @@ class ProcessingEngine:
                         # Proceed anyway after max retries — warn but don't block forever
                         if mem_pauses == 4:
                             logger.warning("Memory pressure persists — proceeding anyway to avoid stalling")
-                            self.state.append_warning("RAM pressure persists — continuing with reduced throughput")
+                            self.state.append_warning("RAM pressure persists — continuing with reduced throughput",
+                                                  benign=True)
                         self._mem_pause_count = 0  # reset for next file
 
                 # CPU throttling: reduce workers temporarily
@@ -552,7 +569,8 @@ class ProcessingEngine:
                         logger.warning("CPU throttle: reducing workers %d → %d", workers, reduced)
                         self.state.update(phase="throttled", is_throttling=True)
                         self.state.append_warning(
-                            f"CPU > {self._monitor._cpu_limit:.0f}% — throttled to {reduced} workers"
+                            f"CPU > {self._monitor._cpu_limit:.0f}% — throttled to {reduced} workers",
+                            benign=True
                         )
                         # Recreate executor with fewer workers (non-blocking to avoid hangs)
                         try:

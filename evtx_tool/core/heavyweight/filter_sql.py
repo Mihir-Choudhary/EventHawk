@@ -622,11 +622,20 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             from datetime import datetime as _dt_cls, timezone as _tz, timedelta as _td
 
             _mode = _tz_state.get("mode", "utc")
-            _disp_tz = None  # None = UTC, no conversion needed
+            _disp_tz = None       # None = UTC, no conversion needed
+            _use_system_local = False
             if _mode == "local":
-                _local_off = _dt_cls.now().astimezone().utcoffset()
-                if _local_off:
-                    _disp_tz = _tz(offset=_local_off)
+                # Do NOT freeze today's UTC offset into a fixed-offset tzinfo.
+                # The boundary belongs to the LOG's date, not to today, and in
+                # a DST zone those differ: filtering January logs while sitting
+                # in July (EDT) converted midnight to 04:00Z while the table
+                # displayed it as 05:00Z — a silent one-hour disagreement
+                # between what is filtered and what is shown, i.e. events
+                # landing on the wrong day of the timeline.
+                # A naive datetime passed to astimezone() is interpreted as
+                # system local time and resolved with the rules in force ON
+                # THAT DATE, which is what the display already does.
+                _use_system_local = True
             elif _mode == "specific":
                 try:
                     from zoneinfo import ZoneInfo
@@ -636,15 +645,19 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             elif _mode == "custom":
                 _disp_tz = _tz(offset=_td(minutes=_tz_state.get("custom_offset_min", 0)))
 
-            if _disp_tz is not None:
+            if _disp_tz is not None or _use_system_local:
                 def _to_utc(s: str) -> str:
                     """Re-interpret a 'YYYY-MM-DD HH:MM:SS' string from display TZ as UTC."""
                     if not s or len(s) < 19:
                         return s
                     try:
                         naive = _dt_cls.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
-                        aware = naive.replace(tzinfo=_disp_tz)
-                        utc_dt = aware.astimezone(_tz.utc)
+                        if _use_system_local:
+                            # naive -> treated as system local, DST resolved
+                            # for the boundary's own date.
+                            utc_dt = naive.astimezone(_tz.utc)
+                        else:
+                            utc_dt = naive.replace(tzinfo=_disp_tz).astimezone(_tz.utc)
                         return utc_dt.strftime("%Y-%m-%d %H:%M:%S")
                     except Exception:
                         return s

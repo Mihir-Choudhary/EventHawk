@@ -22,7 +22,7 @@ from evtx_tool.gui.heavyweight_model import ArrowTableModel, _FilterThread
 # Guarded: the engine parses in worker processes, and an unguarded
 # module body would be re-imported by each child.
 def main() -> int:
-    LOGS = sys.argv[1] if len(sys.argv) > 1 else "/mnt/NewVolume/Test_logs_Bulk/Logs"
+    LOGS = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("EVTX_TEST_LOGS", "sample_logs")
 
     res = []
     def check(name, ok, detail=""):

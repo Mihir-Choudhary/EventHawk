@@ -230,6 +230,38 @@ def apply_tz(raw_ts: str) -> str:
         )
 
 
+class EventRef:
+    """Opaque carrier for an event dict returned via ``Qt.ItemDataRole.UserRole``.
+
+    Returning the bare dict looks natural but is a data-corruption trap.  When
+    Qt fetches a role through C++ -- ``index.data(role)``, which is the
+    idiomatic call -- PySide converts a Python ``dict`` to a ``QVariantMap``,
+    and that coerces every int to a SIGNED 64-bit value.  Windows event data
+    carries UNSIGNED 64-bit values: BITS writes ``bandwidthLimit`` /
+    ``fileLength`` / ``bytesTotal`` as 18446744073709551615 (2**64-1), which
+    does not fit.  Measured on the real logs, ``index.data(UserRole)`` raises
+    ``OverflowError`` on those events.
+
+    An instance of an unknown Python class is passed through by reference
+    instead of being converted, so the dict arrives untouched.  Read it with
+    ``.event``.
+
+    The app's own code paths use ``get_source_event()`` / ``get_event()``
+    directly and never hit the C++ boundary, so this was latent -- but the
+    obvious Qt call must not be a landmine.  See
+    ``tests/test_signal_int_overflow.py``.
+    """
+
+    __slots__ = ("event",)
+
+    def __init__(self, event: dict):
+        self.event = event
+
+    def __repr__(self) -> str:            # keeps debugger output readable
+        ev = self.event or {}
+        return f"<EventRef record_id={ev.get('record_id')!r} eid={ev.get('event_id')!r}>"
+
+
 class EventTableModel(QAbstractTableModel):
     """
     Virtual model — stores list[dict] events, never copies data into Qt items.
@@ -310,8 +342,10 @@ class EventTableModel(QAbstractTableModel):
                 return _MONO_FONT
 
         if role == Qt.ItemDataRole.UserRole:
-            # Return the raw event dict so the detail panel can use it
-            return ev
+            # Wrapped, NOT the bare dict — a dict is coerced to QVariantMap on
+            # the C++ round trip and overflows on unsigned 64-bit event values.
+            # See EventRef.
+            return EventRef(ev)
 
         return None
 
@@ -1088,12 +1122,15 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             from datetime import timezone as _tz, timedelta as _td
             mode = _tz_state["mode"]
             display_tz = None  # None means UTC — no shift needed
+            use_system_local = False
             if mode == "local":
-                from datetime import datetime as _dt_now
-                # Get the system's local UTC offset right now
-                _local_offset = _dt_now.now().astimezone().utcoffset()
-                if _local_offset:
-                    display_tz = _tz(offset=_local_offset)
+                # NOT a fixed offset captured "right now": the boundary belongs
+                # to the LOG's date. In a DST zone, filtering January logs from
+                # July shifted the boundary by an hour relative to the table
+                # display — events silently landing on the wrong day. A naive
+                # datetime passed to astimezone() is read as system local time
+                # with the rules in force on ITS OWN date, matching apply_tz().
+                use_system_local = True
             elif mode == "specific":
                 try:
                     from zoneinfo import ZoneInfo
@@ -1104,17 +1141,19 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 display_tz = _tz(offset=_td(minutes=_tz_state["custom_offset_min"]))
             # mode == "utc" → display_tz stays None → no conversion needed.
 
-            if display_tz is not None:
-                # Re-interpret: replace the (wrong) UTC tzinfo with the display
-                # timezone, then convert to true UTC.
+            if display_tz is not None or use_system_local:
+                # Re-interpret: read the boundary in the display timezone, then
+                # convert to true UTC.
+                def _boundary_to_utc(_d):
+                    naive = _d.replace(tzinfo=None)
+                    if use_system_local:
+                        return naive.astimezone(_tz.utc)
+                    return naive.replace(tzinfo=display_tz).astimezone(_tz.utc)
+
                 if self._adv_date_from:
-                    self._adv_date_from = self._adv_date_from.replace(
-                        tzinfo=display_tz
-                    ).astimezone(_tz.utc)
+                    self._adv_date_from = _boundary_to_utc(self._adv_date_from)
                 if self._adv_date_to:
-                    self._adv_date_to = self._adv_date_to.replace(
-                        tzinfo=display_tz
-                    ).astimezone(_tz.utc)
+                    self._adv_date_to = _boundary_to_utc(self._adv_date_to)
                 # Force to "range" mode.  The date_only / time_only / separate
                 # modes extract .date() / .time() from the UTC-converted
                 # boundaries, but those parts do NOT correspond to the user's

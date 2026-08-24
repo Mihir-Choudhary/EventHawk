@@ -25,7 +25,7 @@ def main() -> int:
     from evtx_tool.gui.heavyweight_model import ArrowTableModel
     from evtx_tool.gui.models import EventTableModel, EventFilterProxyModel
 
-    LOGS = sys.argv[1] if len(sys.argv) > 1 else "/mnt/NewVolume/Test_logs_Bulk/Logs"
+    LOGS = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("EVTX_TEST_LOGS", "sample_logs")
     src = os.path.join(LOGS, "Application.evtx")
     if not os.path.exists(src):
         cands = sorted(glob.glob(os.path.join(LOGS, "*.evtx")))

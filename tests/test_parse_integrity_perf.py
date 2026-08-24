@@ -20,7 +20,7 @@ def main() -> int:
     import evtx
     from evtx_tool.core.heavyweight.engine import HeavyweightEngine, load_arrow_table
 
-    LOGS  = sys.argv[1] if len(sys.argv) > 1 else "/mnt/NewVolume/Test_logs_Bulk/Logs"
+    LOGS  = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("EVTX_TEST_LOGS", "sample_logs")
     LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
     res = []

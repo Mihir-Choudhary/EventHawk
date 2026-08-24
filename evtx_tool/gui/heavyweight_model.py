@@ -744,7 +744,14 @@ class ArrowTableModel(QAbstractTableModel):
             if col == COL_SOURCE:
                 return _MONO_FONT
         if role == Qt.ItemDataRole.UserRole:
-            return self.get_event(row)
+            # Wrapped, NOT the bare dict — see EventRef in gui/models.py.
+            # get_event() returns None for an out-of-range row, and this must
+            # keep returning a FALSY None in that case: EventRef(None) is
+            # truthy, so `if index.data(UserRole):` would flip from "no event"
+            # to "an event that is None" and blow up one dereference later.
+            from evtx_tool.gui.models import EventRef
+            _ev = self.get_event(row)
+            return EventRef(_ev) if _ev is not None else None
 
         return None
 

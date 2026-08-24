@@ -34,7 +34,7 @@ def main() -> int:
         res.append((name, bool(ok)))
         print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"\n      {detail}" if detail else ""))
 
-    LOGS = sys.argv[1] if len(sys.argv) > 1 else "/mnt/NewVolume/Test_logs_Bulk/Logs"
+    LOGS = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("EVTX_TEST_LOGS", "sample_logs")
     wanted = ["Application.evtx", "Security.evtx",
               "Microsoft-Windows-TerminalServices-RDPClient%4Operational.evtx",
               "Microsoft-Windows-TerminalServices-LocalSessionManager%4Operational.evtx"]

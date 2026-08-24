@@ -31,7 +31,7 @@ def main() -> int:
         res.append((name, bool(ok)))
         print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"\n      {detail}" if detail else ""))
 
-    LOGS = sys.argv[1] if len(sys.argv) > 1 else "/mnt/NewVolume/Test_logs_Bulk/Logs"
+    LOGS = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("EVTX_TEST_LOGS", "sample_logs")
     names = ("Application.evtx", "Security.evtx",
              "Microsoft-Windows-TerminalServices-LocalSessionManager%4Operational.evtx")
     files = [os.path.join(LOGS, n) for n in names if os.path.exists(os.path.join(LOGS, n))]

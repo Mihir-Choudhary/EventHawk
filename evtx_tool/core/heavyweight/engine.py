@@ -138,7 +138,12 @@ def _safe_int(val, default: int = 0) -> int:
     if val is None:
         return default
     if isinstance(val, dict):
-        return int(val.get("#text", default) or default)
+        # "#text" then "Value" — mirrors core/parser.py exactly so an EventID
+        # shaped {"Value": N} cannot resolve to a different number in
+        # Juggernaut than in normal mode. No such record exists in the sample
+        # corpus (210,234 dict EventIDs, all with "#text"), so this closes a
+        # latent parity gap rather than a live bug.
+        return int(val.get("#text", default) or val.get("Value", default) or default)
     try:
         return int(val)
     except (ValueError, TypeError):
@@ -465,7 +470,12 @@ def _write_parquet_batch(rows: list[tuple], out_path: str, schema) -> None:
             # Fallback: cast to string for any type that fails
             arrays.append(pa.array([str(v) if v is not None else None for v in cols[i]], type=pa.string()))
 
-    table = pa.table(dict(zip([f.name for f in schema], arrays)), schema=schema)
+    # strict=True: arrays is built one-per-schema-field just above, so a
+    # mismatch is impossible today — but zip() would silently DROP the extra
+    # columns rather than complain, and a Parquet table quietly missing a
+    # column is lost evidence. Fail loud instead.
+    table = pa.table(dict(zip([f.name for f in schema], arrays, strict=True)),
+                     schema=schema)
 
     pq.write_table(
         table, out_path,
@@ -768,15 +778,28 @@ def _hw_worker_stream(
         del parser   # release Rust file handle immediately; do not rely on GC timing
 
     # ── Chunk-isolated salvage after an abort ─────────────────────────────────
-    # ONLY for unsplit files.  A split sub-file (_hw_split_*) is one slice of a
-    # larger file: its chunk headers still carry the ORIGINAL file's record-ID
-    # ranges, so per-sub-file expected/salvage accounting would be wrong, and
-    # the split path ALREADY gives chunk isolation (a bad chunk only aborts its
-    # own sub-file, the others are independent).  is_split marks these tasks.
+    # Runs for SPLIT SHARDS TOO.  This used to be gated on `not is_split`, on
+    # the reasoning that splitting already isolates damage — a bad chunk only
+    # aborts its own sub-file.  True, but not sufficient: measured on a 100 MB
+    # file with ONE corrupted chunk, splitting recovered 177,983 of 193,435
+    # records and still dropped 15,452 (8%) — the whole shard that contained
+    # the bad chunk. Those records are individually intact and recoverable, and
+    # for one damaged chunk in an AD Security.evtx that is thousands of events
+    # of real evidence thrown away.
+    #
+    # Salvage is safe on a shard: it reads the chunk index of the FILE IT IS
+    # GIVEN, isolates each chunk into its own single-chunk file, and dedupes
+    # against `already_emitted` by record ID. Nothing in that depends on the
+    # shard being a whole log.
+    #
+    # The ORIGINAL objection was about expected-vs-actual ACCOUNTING, which is
+    # a different gate and is still `not is_split` below: a shard's header
+    # declares the original file's ranges, so `expected_record_count` on a
+    # shard would compare against the wrong total.
     is_split = bool(task.get("is_split"))
     n_salvaged = 0
     salvage_unrec = 0
-    if stream_error and not is_split:
+    if stream_error:
         try:
             from evtx_tool.core.chunk_salvage import salvage_records_json
             gen = salvage_records_json(fpath, already_emitted=emitted)
