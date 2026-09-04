@@ -269,6 +269,82 @@ class CheckableComboBox(QComboBox):
 
 # ── Column Filter Popup (Excel-style header dropdown) ─────────────────────────
 
+# ── Date-tree support for the timestamp column filter ────────────────────────
+# Roles used by the Year → Month → Day QTreeWidget built for the timestamp
+# column.  Kept off Qt.DisplayRole so the visible label ("May  (1,203)") and
+# the value the filter actually emits ("2024-05-14") can never drift apart.
+_ROLE_FILTER_VALUE = Qt.ItemDataRole.UserRole + 1
+_ROLE_SORT_KEY     = Qt.ItemDataRole.UserRole + 2
+# Counts are stored as STRINGS, not ints.  Pushing a Python int through
+# QTreeWidgetItem.setData goes via shiboken, which raises OverflowError for
+# anything above 2**63-1 -- the same marshalling limit that produced the
+# unsigned-64-bit corruption fixed elsewhere in this file.  A count that big is
+# not realistic for COUNT(*), but the flat checkbox list survives it (it only
+# formats a label), and the timestamp popup must not be the one column that
+# fails to open.
+_ROLE_COUNT        = Qt.ItemDataRole.UserRole + 3
+_ROLE_SEARCH_KEY   = Qt.ItemDataRole.UserRole + 4
+
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+# Dates that do not parse as YYYY-MM-DD are grouped here rather than dropped.
+# Forensic integrity: an unparseable date is still evidence and must remain
+# selectable, so the analyst can see it exists instead of it silently
+# vanishing from the filter list.
+_DATE_UNKNOWN_GROUP = "(unparsed date)"
+
+
+class _DateLeafProxy:
+    """Makes one day-leaf of the date tree quack like the flat list's QCheckBox.
+
+    ``ColumnFilterPopup`` was written against a flat ``list[QCheckBox]``:
+    ``_apply``, ``_check_all``, ``_check_none`` and the pre-check reflection in
+    ``MainWindow._show_col_filter_popup`` all iterate ``self._checkboxes`` and
+    call ``property("filter_value")`` / ``isChecked`` / ``setChecked`` /
+    ``isVisible`` / ``setVisible``.
+
+    Rather than fork that logic (it carries fixes for the popup-truncation bug
+    and the include-vs-exclude mode heuristic, both of which users hit in the
+    field), each *day* item is wrapped in this adapter and appended to
+    ``_checkboxes``.  Every existing caller keeps working unchanged and still
+    sees exactly the same flat ``YYYY-MM-DD`` values it saw before.
+
+    Only leaves are wrapped.  Year and month rows are pure UI and are
+    deliberately NOT in ``_checkboxes`` — emitting "2024" or "2024-05" as if it
+    were a date would produce a filter that matches no rows.
+    """
+
+    __slots__ = ("_item", "_popup")
+
+    def __init__(self, item: QTreeWidgetItem, popup: "ColumnFilterPopup"):
+        self._item = item
+        self._popup = popup
+
+    def property(self, name: str):
+        if name == "filter_value":
+            return self._item.data(0, _ROLE_FILTER_VALUE)
+        return None
+
+    def isChecked(self) -> bool:
+        return self._item.checkState(0) == Qt.CheckState.Checked
+
+    def setChecked(self, checked: bool) -> None:
+        # Routed through the popup so the parent month/year rows pick up the
+        # resulting tri-state.  External callers (the pre-check reflection)
+        # therefore leave the tree visually consistent without knowing it is
+        # a tree at all.
+        self._popup._set_leaf_checked(self._item, bool(checked))
+
+    def isVisible(self) -> bool:
+        return not self._item.isHidden()
+
+    def setVisible(self, visible: bool) -> None:
+        self._item.setHidden(not visible)
+
+
 class ColumnFilterPopup(QDialog):
     """
     Excel-style dropdown that appears when clicking a filterable column header.
@@ -336,7 +412,17 @@ class ColumnFilterPopup(QDialog):
         self._all_values = values
         self._search_provider = search_provider
         self._pending_search_term = ""
-        self.setMinimumWidth(220)
+        # The timestamp column renders as an expandable Year → Month → Day tree
+        # instead of one flat row per date.  Every other column keeps the flat
+        # checkbox list (whose search/check semantics carry field-reported bug
+        # fixes that must not be disturbed).
+        self._is_date_tree = self.FILTERABLE.get(col_index) == "timestamp_date"
+        self._tree: QTreeWidget | None = None
+        self._year_items: dict[str, QTreeWidgetItem] = {}
+        self._month_items: dict[tuple[str, str], QTreeWidgetItem] = {}
+        self._tree_sync = False          # re-entrancy guard for itemChanged
+        self._tree_pre_search = None     # {value: was_checked}, see _filter_tree
+        self.setMinimumWidth(260 if self._is_date_tree else 220)
         self.setMaximumHeight(400)
         self._build_ui()
         self._apply_popup_style()
@@ -386,28 +472,31 @@ class ColumnFilterPopup(QDialog):
         btn_row.addStretch()
         root.addLayout(btn_row)
 
-        # Checkbox list (scrollable)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._list_widget = QWidget()
-        self._list_layout = QVBoxLayout(self._list_widget)
-        self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(1)
+        self._checkboxes: list = []
+        if self._is_date_tree:
+            self._build_date_tree(root)
+        else:
+            # Checkbox list (scrollable) — flat columns only.
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            self._list_widget = QWidget()
+            self._list_layout = QVBoxLayout(self._list_widget)
+            self._list_layout.setContentsMargins(0, 0, 0, 0)
+            self._list_layout.setSpacing(1)
 
-        self._checkboxes: list[QCheckBox] = []
-        sorted_values = sorted(self._all_values.items(), key=lambda kv: (-kv[1], str(kv[0])))
-        for val, count in sorted_values:
-            display = str(val) if val else "(empty)"
-            chk = QCheckBox(f"{display}  ({count})")
-            chk.setChecked(True)
-            chk.setProperty("filter_value", str(val))
-            self._checkboxes.append(chk)
-            self._list_layout.addWidget(chk)
+            sorted_values = sorted(self._all_values.items(), key=lambda kv: (-kv[1], str(kv[0])))
+            for val, count in sorted_values:
+                display = str(val) if val else "(empty)"
+                chk = QCheckBox(f"{display}  ({count})")
+                chk.setChecked(True)
+                chk.setProperty("filter_value", str(val))
+                self._checkboxes.append(chk)
+                self._list_layout.addWidget(chk)
 
-        self._list_layout.addStretch()
-        scroll.setWidget(self._list_widget)
-        root.addWidget(scroll)
+            self._list_layout.addStretch()
+            scroll.setWidget(self._list_widget)
+            root.addWidget(scroll)
 
         # OK / Cancel
         btn_row2 = QHBoxLayout()
@@ -423,6 +512,371 @@ class ColumnFilterPopup(QDialog):
         btn_row2.addWidget(btn_ok)
         btn_row2.addWidget(btn_cancel)
         root.addLayout(btn_row2)
+
+    # ── Date tree (timestamp column only) ────────────────────────────────────
+
+    def _build_date_tree(self, root: QVBoxLayout) -> None:
+        """Build the Year → Month → Day tree for the timestamp column.
+
+        Ordering is chronological, not by frequency: years newest-first (the
+        analyst almost always wants the recent end of the timeline), months in
+        calendar order, days ascending.  The flat list's "sort by count
+        descending" would put July above January inside a year, which makes a
+        date tree unreadable.
+
+        Year and month rows carry the summed event count of everything beneath
+        them, so the busy day is visible while the tree is still collapsed.
+        """
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setRootIsDecorated(True)
+        self._tree.setUniformRowHeights(True)
+        self._tree.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        # "(Select All)" mirrors the spreadsheet idiom.  It is a pure UI row:
+        # it never enters _checkboxes, so it can never be emitted as a filter
+        # value.  The All / None buttons above remain and do the same job.
+        self._all_item = QTreeWidgetItem(self._tree)
+        self._all_item.setText(0, "(Select All)")
+        self._all_item.setFlags(
+            Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+        )
+        self._all_item.setCheckState(0, Qt.CheckState.Checked)
+        self._all_item.setData(0, _ROLE_SORT_KEY, "")
+        self._all_item.setData(0, _ROLE_SEARCH_KEY, "")
+
+        for val, count in self._all_values.items():
+            self._tree_add_value(str(val), count)
+
+        self._refresh_group_labels()
+        self._all_item.setExpanded(True)   # years visible; months stay collapsed
+        self._tree.itemChanged.connect(self._on_tree_item_changed)
+        root.addWidget(self._tree)
+
+    @staticmethod
+    def _split_date(sval: str):
+        """``"2024-05-14"`` → ``("2024", "05", "14")``; unparseable → ``None``.
+
+        Deliberately strict: anything that is not a real Y-M-D goes to the
+        "(unparsed date)" group rather than being coerced into a plausible
+        bucket.  A wrong bucket would silently move an event to another day.
+        """
+        parts = sval.split("-")
+        if len(parts) != 3:
+            return None
+        y, m, d = parts
+        if not (len(y) == 4 and len(m) == 2 and len(d) == 2):
+            return None
+        if not (y.isdigit() and m.isdigit() and d.isdigit()):
+            return None
+        if not (1 <= int(m) <= 12 and 1 <= int(d) <= 31):
+            return None
+        return y, m, d
+
+    @staticmethod
+    def _insert_sorted(parent, child, key, reverse: bool) -> None:
+        """Insert *child* under *parent* keeping children ordered by *key*."""
+        idx = parent.childCount()
+        for i in range(parent.childCount()):
+            other = parent.child(i).data(0, _ROLE_SORT_KEY) or ""
+            if (key > other) if reverse else (key < other):
+                idx = i
+                break
+        parent.insertChild(idx, child)
+
+    def _tree_add_value(self, sval: str, count: int):
+        """Find-or-create the Year/Month rows for *sval* and add its day leaf.
+
+        Returns the ``_DateLeafProxy`` for the new leaf, or ``None`` if this
+        value is already present (so a merged search result never duplicates a
+        day that the initial top-1000 already supplied).
+        """
+        parsed = self._split_date(sval)
+        if parsed is None:
+            # Unparseable → single flat leaf under an "(unparsed date)" group.
+            ykey, mkey = _DATE_UNKNOWN_GROUP, ""
+            leaf_text = sval if sval else "(empty)"
+            search_key = sval.lower()
+        else:
+            y, m, d = parsed
+            ykey, mkey = y, m
+            leaf_text = d
+            # Lets the analyst type "2024", "may", "2024-05" or the full date.
+            search_key = f"{sval} {_MONTH_NAMES[int(m) - 1]} {y}".lower()
+
+        year_item = self._year_items.get(ykey)
+        if year_item is None:
+            year_item = QTreeWidgetItem()
+            year_item.setText(0, ykey)
+            year_item.setFlags(
+                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+            )
+            year_item.setCheckState(0, Qt.CheckState.Checked)
+            # Unparsed group sorts last; real years newest-first.
+            year_item.setData(0, _ROLE_SORT_KEY,
+                              "" if ykey == _DATE_UNKNOWN_GROUP else ykey)
+            year_item.setData(0, _ROLE_SEARCH_KEY, ykey.lower())
+            self._insert_sorted(self._all_item, year_item, 
+                                "" if ykey == _DATE_UNKNOWN_GROUP else ykey,
+                                reverse=True)
+            self._year_items[ykey] = year_item
+
+        if parsed is None:
+            parent = year_item
+        else:
+            month_item = self._month_items.get((ykey, mkey))
+            if month_item is None:
+                month_item = QTreeWidgetItem()
+                month_item.setText(0, _MONTH_NAMES[int(mkey) - 1])
+                month_item.setFlags(
+                    Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+                )
+                month_item.setCheckState(0, Qt.CheckState.Checked)
+                month_item.setData(0, _ROLE_SORT_KEY, mkey)
+                month_item.setData(
+                    0, _ROLE_SEARCH_KEY,
+                    f"{_MONTH_NAMES[int(mkey) - 1]} {ykey}".lower(),
+                )
+                self._insert_sorted(year_item, month_item, mkey, reverse=False)
+                self._month_items[(ykey, mkey)] = month_item
+            parent = month_item
+
+        for i in range(parent.childCount()):
+            if parent.child(i).data(0, _ROLE_FILTER_VALUE) == sval:
+                return None          # already present
+
+        leaf = QTreeWidgetItem()
+        leaf.setText(0, f"{leaf_text}  ({count:,})")
+        leaf.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+        leaf.setCheckState(0, Qt.CheckState.Checked)
+        leaf.setData(0, _ROLE_FILTER_VALUE, sval)
+        leaf.setData(0, _ROLE_SORT_KEY, leaf_text)
+        leaf.setData(0, _ROLE_COUNT, str(int(count)))
+        leaf.setData(0, _ROLE_SEARCH_KEY, search_key)
+        self._insert_sorted(parent, leaf, leaf_text, reverse=False)
+
+        proxy = _DateLeafProxy(leaf, self)
+        self._checkboxes.append(proxy)
+        return proxy
+
+    def _refresh_group_labels(self) -> None:
+        """Re-stamp year/month rows with the summed count beneath them."""
+        for (ykey, mkey), month_item in self._month_items.items():
+            total = sum(
+                int(month_item.child(i).data(0, _ROLE_COUNT) or 0)
+                for i in range(month_item.childCount())
+            )
+            name = _MONTH_NAMES[int(mkey) - 1]
+            month_item.setText(0, f"{name}  ({total:,})")
+        for ykey, year_item in self._year_items.items():
+            total = 0
+            for i in range(year_item.childCount()):
+                child = year_item.child(i)
+                if child.childCount():
+                    total += sum(
+                        int(child.child(j).data(0, _ROLE_COUNT) or 0)
+                        for j in range(child.childCount())
+                    )
+                else:
+                    total += int(child.data(0, _ROLE_COUNT) or 0)
+            year_item.setText(0, f"{ykey}  ({total:,})")
+
+    def _set_leaf_checked(self, item: QTreeWidgetItem, checked: bool) -> None:
+        """Set one leaf's check state and refresh its ancestors' tri-state."""
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        self._tree_sync = True
+        try:
+            item.setCheckState(0, state)
+        finally:
+            self._tree_sync = False
+        self._refresh_ancestors(item)
+
+    def _refresh_ancestors(self, item: QTreeWidgetItem) -> None:
+        """Walk up from *item*, setting each parent Checked/Unchecked/Partial."""
+        self._tree_sync = True
+        try:
+            node = item.parent()
+            while node is not None:
+                n = node.childCount()
+                checked = sum(
+                    1 for i in range(n)
+                    if node.child(i).checkState(0) == Qt.CheckState.Checked
+                )
+                partial = any(
+                    node.child(i).checkState(0) == Qt.CheckState.PartiallyChecked
+                    for i in range(n)
+                )
+                if partial or (0 < checked < n):
+                    node.setCheckState(0, Qt.CheckState.PartiallyChecked)
+                elif checked == n and n > 0:
+                    node.setCheckState(0, Qt.CheckState.Checked)
+                else:
+                    node.setCheckState(0, Qt.CheckState.Unchecked)
+                node = node.parent()
+        finally:
+            self._tree_sync = False
+
+    def _refresh_all_groups(self) -> None:
+        """Recompute every parent's tri-state from the leaves, bottom-up.
+
+        One pass over the tree, not one ancestor-walk per leaf: the naive
+        version re-scanned a month's 31 siblings once for each of its days,
+        which cost ~650 ms to clear the search box on a 3000-date corpus.
+        This is O(nodes).
+        """
+        self._tree_sync = True
+        try:
+            self._recompute_state(self._all_item)
+        finally:
+            self._tree_sync = False
+
+    def _recompute_state(self, node: QTreeWidgetItem):
+        """Set *node* from its descendants and return its resulting state."""
+        n = node.childCount()
+        if n == 0:
+            return node.checkState(0)
+        checked = partial = 0
+        for i in range(n):
+            st = self._recompute_state(node.child(i))
+            if st == Qt.CheckState.Checked:
+                checked += 1
+            elif st == Qt.CheckState.PartiallyChecked:
+                partial += 1
+        if partial or 0 < checked < n:
+            state = Qt.CheckState.PartiallyChecked
+        elif checked == n:
+            state = Qt.CheckState.Checked
+        else:
+            state = Qt.CheckState.Unchecked
+        node.setCheckState(0, state)
+        return state
+
+    def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        """User clicked a checkbox in the tree → cascade down, then roll up.
+
+        Clicking a year or month sets every day beneath it, which is the whole
+        point of the hierarchy.  Hidden rows are skipped so that toggling a
+        month while a search is active only affects the days the user can
+        actually see.
+        """
+        if self._tree_sync or column != 0:
+            return
+        state = item.checkState(0)
+        if state == Qt.CheckState.PartiallyChecked:
+            return
+        touched = []
+        self._tree_sync = True
+        try:
+            stack = [item.child(i) for i in range(item.childCount())]
+            while stack:
+                node = stack.pop()
+                if node.isHidden():
+                    continue
+                node.setCheckState(0, state)
+                if node.childCount():
+                    stack.extend(node.child(i) for i in range(node.childCount()))
+                else:
+                    touched.append(node)
+        finally:
+            self._tree_sync = False
+        self._refresh_ancestors(item)
+        if item.childCount() == 0:
+            touched.append(item)
+        self._record_search_edit(touched)
+
+    def _record_search_edit(self, items) -> None:
+        """Fold a mid-search check/uncheck into the pre-search snapshot.
+
+        Without this the snapshot still holds the state from before the search
+        began, so clearing the box silently reverts the edit: the analyst
+        unchecks a date while filtered, clears the search, and the date is
+        back in the results.  Only the leaves the user actually touched are
+        updated — the ones the search is hiding keep their pre-search state.
+        """
+        if self._tree_pre_search is None:
+            return
+        for it in items:
+            val = it.data(0, _ROLE_FILTER_VALUE)
+            if val is not None:
+                self._tree_pre_search[val] = (
+                    it.checkState(0) == Qt.CheckState.Checked
+                )
+
+    def _filter_tree(self, text: str) -> None:
+        """Search box handler for the date tree.
+
+        Differs deliberately from the flat list's ``_filter_list``:
+
+        * Clearing the box must NOT check everything.  The flat branch does
+          ``setChecked(True)`` on every row, which through the tree would wipe
+          a carefully-picked month the instant the user cleared their search.
+          Instead the check state from just before the search began is
+          snapshotted and restored.
+        * While a term is active the visible (matching) days are checked and
+          the rest unchecked, so "type a month, press OK" filters to exactly
+          what is on screen — the behaviour the flat list gets from its
+          exact-match rule.
+        """
+        text_lower = text.strip().lower()
+
+        if text_lower and self._tree_pre_search is None:
+            # Keyed by value, not a flat list, so a mid-search edit can be
+            # folded into it per-leaf (see _record_search_edit).  Re-snapshotting
+            # wholesale would be wrong: leaves hidden by the search are
+            # currently unchecked, and would come back unchecked on clear even
+            # though the user never touched them.
+            self._tree_pre_search = {
+                p.property("filter_value"): p.isChecked()
+                for p in self._checkboxes
+            }
+
+        self._tree_sync = True
+        try:
+            for proxy in self._checkboxes:
+                item = proxy._item
+                key = str(item.data(0, _ROLE_SEARCH_KEY) or "")
+                match = (not text_lower) or (text_lower in key)
+                item.setHidden(not match)
+                if text_lower:
+                    item.setCheckState(
+                        0,
+                        Qt.CheckState.Checked if match else Qt.CheckState.Unchecked,
+                    )
+            # A month/year row is visible when any day under it is.
+            for month_item in self._month_items.values():
+                vis = any(not month_item.child(i).isHidden()
+                          for i in range(month_item.childCount()))
+                month_item.setHidden(not vis)
+            for year_item in self._year_items.values():
+                vis = any(not year_item.child(i).isHidden()
+                          for i in range(year_item.childCount()))
+                year_item.setHidden(not vis)
+        finally:
+            self._tree_sync = False
+
+        if not text_lower and self._tree_pre_search is not None:
+            snap = self._tree_pre_search
+            self._tree_sync = True
+            try:
+                for proxy in self._checkboxes:
+                    was = snap.get(proxy.property("filter_value"))
+                    if was is None:
+                        continue
+                    proxy._item.setCheckState(
+                        0,
+                        Qt.CheckState.Checked if was else Qt.CheckState.Unchecked,
+                    )
+            finally:
+                self._tree_sync = False
+            self._tree_pre_search = None
+
+        self._refresh_all_groups()
+        if text_lower:
+            self._tree.expandAll()
+        else:
+            self._tree.collapseAll()
+            self._all_item.setExpanded(True)
 
     def _apply_popup_style(self) -> None:
         self.setStyleSheet("""
@@ -443,6 +897,15 @@ class ColumnFilterPopup(QDialog):
                 border-radius: 2px; padding: 2px 8px; font-size: 8pt; }
             QPushButton:hover { background: #d8d1c5; }
             QScrollArea { border: none; background: transparent; }
+            QTreeWidget { background: #faf7f2; color: #1e1a14; font-size: 9pt;
+                border: 1px solid #c4bba8; border-radius: 2px; outline: none; }
+            QTreeWidget::item { height: 18px; }
+            QTreeWidget::item:hover { background: #e4ddd3; }
+            QTreeWidget::indicator { width: 13px; height: 13px; border: 1px solid #c4bba8;
+                border-radius: 2px; background: #faf7f2; }
+            QTreeWidget::indicator:checked { background: #7a5c1e; border-color: #9b7a2e; }
+            QTreeWidget::indicator:indeterminate { background: #b8924a; border-color: #9b7a2e; }
+            QTreeWidget::indicator:hover { border-color: #9a8878; }
         """)
 
     def _filter_list(self, text: str) -> None:
@@ -467,6 +930,12 @@ class ColumnFilterPopup(QDialog):
         the popup behaves like "no filter active" the moment the search is
         cleared.
         """
+        if self._is_date_tree:
+            # The tree has its own search semantics -- notably, clearing the
+            # box restores the previous selection instead of checking every
+            # row.  See _filter_tree.
+            self._filter_tree(text)
+            return
         text_lower = text.lower()
         for chk in self._checkboxes:
             val = str(chk.property("filter_value") or "").lower()
@@ -538,6 +1007,9 @@ class ColumnFilterPopup(QDialog):
             return
         if not values:
             return
+        if self._is_date_tree:
+            self._merge_search_results_tree(values)
+            return
         existing = {chk.property("filter_value") for chk in self._checkboxes}
         added = False
         for val, count in sorted(values.items(), key=lambda kv: (-kv[1], str(kv[0]))):
@@ -560,15 +1032,64 @@ class ColumnFilterPopup(QDialog):
             # exclude, so nothing extra needs to be recorded here.
             self._filter_list(self._inp_search.text())
 
+    def _merge_search_results_tree(self, values: dict) -> None:
+        """Merge full-dataset search hits into the date tree.
+
+        Dates beyond the popup's top-1000 cap (a corpus spanning more than
+        ~3 years of daily activity) would otherwise be unreachable.  New days
+        are grafted into the right Year/Month rows, start UNCHECKED like the
+        flat branch, and then _filter_tree re-applies the search so the
+        matching ones become checked.
+        """
+        added = False
+        for val, count in values.items():
+            proxy = self._tree_add_value(str(val), count)
+            if proxy is not None:
+                self._tree_sync = True
+                try:
+                    proxy._item.setCheckState(0, Qt.CheckState.Unchecked)
+                finally:
+                    self._tree_sync = False
+                # Keep a pre-search snapshot consistent: a day the user never
+                # saw must not be restored as checked when the box is cleared.
+                if self._tree_pre_search is not None:
+                    self._tree_pre_search[str(val)] = False
+                added = True
+        if added:
+            self._refresh_group_labels()
+            self._filter_tree(self._inp_search.text())
+
     def _check_all(self) -> None:
-        for chk in self._checkboxes:
-            if chk.isVisible():
-                chk.setChecked(True)
+        self._set_visible_checked(True)
 
     def _check_none(self) -> None:
+        self._set_visible_checked(False)
+
+    def _set_visible_checked(self, checked: bool) -> None:
+        """All / None buttons — act on the rows the user can currently see."""
+        if self._is_date_tree:
+            # Batch: flip the leaves with the signal guard held, then roll the
+            # tri-state up once, instead of once per leaf.
+            self._tree_sync = True
+            try:
+                state = (Qt.CheckState.Checked if checked
+                         else Qt.CheckState.Unchecked)
+                for proxy in self._checkboxes:
+                    if not proxy._item.isHidden():
+                        proxy._item.setCheckState(0, state)
+            finally:
+                self._tree_sync = False
+            self._refresh_all_groups()
+            # A snapshot taken for an active search must not undo this the
+            # moment the search box is cleared.  Only the rows this acted on
+            # (the visible ones) are folded in.
+            self._record_search_edit(
+                [p._item for p in self._checkboxes if not p._item.isHidden()]
+            )
+            return
         for chk in self._checkboxes:
             if chk.isVisible():
-                chk.setChecked(False)
+                chk.setChecked(checked)
 
     def _apply(self) -> None:
         """Emit the filter selection in the most efficient *and* correct mode.
