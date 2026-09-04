@@ -15004,6 +15004,18 @@ class MainWindow(QMainWindow):
             self._tz_custom_offset_min,
         )
 
+        # Drop the cached column-popup values.  "timestamp_date" is the one
+        # column whose values depend on the display timezone, and neither cache
+        # key carries the timezone -- normal mode keys on
+        # ("normal", col_key, len(visible_events)) and Juggernaut on
+        # (col_key, where_sql, where_params).  Neither changes when the analyst
+        # switches zone, so the popup was served the PREVIOUS zone's dates:
+        # measured on 12,000 real events, a UTC -> UTC+14 switch left every one
+        # of the 23 dates with a wrong count, offered 2 dates that no longer
+        # existed (0 rows) and hid 2 that did.  The prewarm recomputes in the
+        # new zone on the next settle.
+        self._col_value_cache = {}
+
         # Re-apply the active advanced filter now that _tz_state is updated.
         # This recomputes _adv_date_from / _adv_date_to in the new timezone so
         # a specific-day or date-range filter continues to match the dates the

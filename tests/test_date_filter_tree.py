@@ -437,7 +437,12 @@ _e2e_logs = os.environ.get("EVTX_TEST_LOGS", "sample_logs")
 _events = []
 if os.path.isdir(_e2e_logs):
     try:
-        import evtx as _evtx
+        # iter_events, NOT PyEvtxParser.records_json(): the raw parser emits
+        # "...Z UTC", which apply_tz cannot parse and silently returns
+        # unconverted.  The app reads the System/TimeCreated SystemTime
+        # attribute, so the test must exercise that same shape or it proves
+        # nothing about real timestamps.
+        from evtx_tool.core.parser import iter_events as _iter_events  # noqa: E402
         _fs = sorted(
             os.path.join(r, f)
             for r, _d, fl in os.walk(_e2e_logs) for f in fl
@@ -445,17 +450,20 @@ if os.path.isdir(_e2e_logs):
         )[:2]
         for _f in _fs:
             try:
-                for _rec in _evtx.PyEvtxParser(_f).records_json():
-                    _events.append({
-                        "timestamp": _rec["timestamp"], "event_id": "",
-                        "computer": "", "channel": "", "level_name": "",
-                        "user_id": "", "source_file": os.path.basename(_f),
-                        "message": "", "provider": "",
-                    })
+                for _ev in _iter_events(_f):
+                    _events.append(_ev)
             except Exception:
                 continue
     except Exception as _exc:
         print(f"  (corpus read skipped: {_exc})")
+
+if _events:
+    _suffixed = sum(1 for _e in _events
+                    if str(_e.get("timestamp", "")).rstrip().endswith("UTC"))
+    CHECKS.append(("engine timestamps are ISO, not the parser's '...Z UTC' form",
+                   _suffixed == 0, f"{_suffixed} suffixed"))
+    print(f"  {'PASS' if _suffixed == 0 else 'FAIL'}  "
+          f"engine timestamps are ISO, not the parser's '...Z UTC' form")
 
 if _events:
     from evtx_tool.gui.models import (                                # noqa: E402
@@ -518,6 +526,160 @@ if _events:
     _e2e(ColumnFilterPopup(DATE_COL, dict(_truth)), "untouched popup clears")
     _p6 = ColumnFilterPopup(DATE_COL, dict(_truth)); _p6._check_none()
     _e2e(_p6, "nothing checked matches no rows")
+else:
+    print(f"  (no corpus at {_e2e_logs!r} - skipped)")
+
+print("\n=== 20. changing the timezone must invalidate the popup value cache ===")
+# "timestamp_date" is the only column whose popup values depend on the display
+# timezone, but neither cache key carries the zone -- normal mode keys on
+# ("normal", col_key, len(visible_events)), Juggernaut on
+# (col_key, where_sql, where_params).  Without an explicit invalidation the
+# date tree is served the PREVIOUS zone's dates after a switch.
+from evtx_tool.gui import models as _M2                            # noqa: E402
+
+_prev = dict(_M2._tz_state)
+_RAW = "2025-07-07T22:33:01.000000Z"          # 22:33Z -> next day at +14
+_M2.set_tz_config("utc", None, 0)
+_d_utc = _M2.apply_tz(_RAW)[:10]
+_M2.set_tz_config("specific", "Pacific/Kiritimati", 0)
+_d_p14 = _M2.apply_tz(_RAW)[:10]
+check("a timezone switch really does move an event's date",
+      _d_utc != _d_p14, f"{_d_utc} vs {_d_p14}")
+check("the two zones' cache keys are indistinguishable",
+      ("normal", "timestamp_date", 12000) == ("normal", "timestamp_date", 12000))
+_M2._tz_state.clear(); _M2._tz_state.update(_prev)
+
+try:
+    from evtx_tool.gui.main_window import MainWindow as _MW          # noqa: E402
+    _w = _MW()
+    _sentinel = {("normal", "timestamp_date", 123): {"2025-01-01": 5}}
+    _w._col_value_cache = dict(_sentinel)
+    _w._tz_mode, _w._tz_specific, _w._tz_custom_offset_min = (
+        "specific", "Asia/Kolkata", 330)
+    _w._apply_tz_to_all_models()
+    check("switching to a named zone clears the cached popup values",
+          not _w._col_value_cache, str(_w._col_value_cache))
+    _w._col_value_cache = dict(_sentinel)
+    _w._tz_mode, _w._tz_specific, _w._tz_custom_offset_min = "utc", None, 0
+    _w._apply_tz_to_all_models()
+    check("switching back to UTC clears it too", not _w._col_value_cache)
+    _w._col_value_cache = dict(_sentinel)
+    _w._tz_mode, _w._tz_specific, _w._tz_custom_offset_min = "custom", None, -480
+    _w._apply_tz_to_all_models()
+    check("switching to a custom offset clears it too", not _w._col_value_cache)
+    _w.close()
+except Exception as _exc:
+    check("MainWindow tz-cache check ran", False, f"{type(_exc).__name__}: {_exc}")
+_M2._tz_state.clear(); _M2._tz_state.update(_prev)
+
+print("\n=== 21. Juggernaut mode: the same values filter the same way ===")
+# Normal mode proves nothing about JM: it filters in DuckDB via
+# _timestamp_date_expr(), not by comparing Python strings.  The tree emits one
+# flat value set for both, so both must land on the same rows.
+_jm_ok = False
+if _events:                       # same corpus gate as section 19
+    import tempfile as _tf, shutil as _sh, collections as _co   # noqa: E402
+    from PySide6.QtCore import QEventLoop as _QEL, QTimer as _QT  # noqa: E402
+    _tmp = _tf.mkdtemp(prefix="jm_datetree_")
+    _mdl = None
+    try:
+        from evtx_tool.core.heavyweight.engine import (               # noqa: E402
+            HeavyweightEngine as _HE, load_arrow_table as _lat,
+        )
+        from evtx_tool.gui.heavyweight_model import (                 # noqa: E402
+            ArrowTableModel as _ATM,
+        )
+        _jm_files = sorted(
+            os.path.join(r, f)
+            for r, _d, fl in os.walk(_e2e_logs) for f in fl
+            if f.lower().endswith(".evtx")
+        )[:2]
+        _pq = _HE(parquet_dir=_tmp).run(_jm_files)
+        _tbl = _lat(_pq)
+        _tot = len(_tbl)
+        _mdl = _ATM(_tbl, parquet_dir=_pq)
+
+        def _settle(ms=300000):
+            _lp = _QEL(); _st = {"h": False}
+            def _fin():
+                _st["h"] = True; _lp.quit()
+            _mdl.busy_finished.connect(_fin)
+            _QT.singleShot(ms, _lp.quit)
+            if not _st["h"]:
+                _lp.exec()
+            try:
+                _mdl.busy_finished.disconnect(_fin)
+            except Exception:
+                pass
+
+        _settle()
+        _tcol = "timestamp_utc"
+        _jt = _co.Counter(
+            apply_tz(str(t))[:10].lower() for t in _tbl[_tcol].to_pylist()
+        )
+        check(f"JM table built ({_tot} rows, {len(_jt)} dates)", _tot > 0)
+
+        def _jm(pop, label):
+            got = {}
+            pop.filterApplied.connect(
+                lambda c, mo, v: got.update(mode=mo, values=list(v)))
+            pop._apply()
+            if got["mode"] == "clear" or (got["mode"] == "exclude"
+                                          and not got["values"]):
+                qf = []
+            else:
+                qf = [{"key": "timestamp_date", "value": v,
+                       "include": got["mode"] == "include"}
+                      for v in got["values"]]
+            _mdl.set_quick_filters(qf); _settle()
+            _S = set(got["values"])
+            if not qf:
+                exp = _tot
+            elif got["mode"] == "include":
+                exp = sum(c for d, c in _jt.items() if d in _S)
+            else:
+                exp = sum(c for d, c in _jt.items() if d not in _S)
+            check(f"JM {label}", _mdl.rowCount() == exp,
+                  f"{got['mode']} n={len(got['values'])} "
+                  f"rows={_mdl.rowCount()} expected={exp}")
+
+        _jp = ColumnFilterPopup(DATE_COL, dict(_jt))
+        _jtwo = sorted(_jt)[:2]
+        for _x in _jp._checkboxes:
+            _x.setChecked(_x.property("filter_value") in _jtwo)
+        _jm(_jp, "two specific days")
+
+        _jp2 = ColumnFilterPopup(DATE_COL, dict(_jt)); _jp2._check_none()
+        _jy = sorted(_jp2._year_items)[0]
+        _jp2._year_items[_jy].setCheckState(0, Qt.CheckState.Checked)
+        _jm(_jp2, f"whole year {_jy}")
+
+        _jym = sorted(_jp2._month_items)[0]
+        _jp3 = ColumnFilterPopup(DATE_COL, dict(_jt)); _jp3._check_none()
+        _jp3._month_items[_jym].setCheckState(0, Qt.CheckState.Checked)
+        _jm(_jp3, f"whole month {_jym[0]}-{_jym[1]}")
+
+        _jp4 = ColumnFilterPopup(DATE_COL, dict(_jt))
+        _jone = sorted(_jt)[0]
+        for _x in _jp4._checkboxes:
+            if _x.property("filter_value") == _jone:
+                _x.setChecked(False)
+        _jm(_jp4, "exclude a single day")
+        _jm(ColumnFilterPopup(DATE_COL, dict(_jt)), "untouched popup clears")
+        _jp6 = ColumnFilterPopup(DATE_COL, dict(_jt)); _jp6._check_none()
+        _jm(_jp6, "nothing checked matches no rows")
+        _jm_ok = True
+    except Exception as _exc:
+        check("JM end-to-end ran", False, f"{type(_exc).__name__}: {_exc}")
+    finally:
+        # close() stops the filter thread; without it the interpreter aborts
+        # with "QThread: Destroyed while thread is still running".
+        if _mdl is not None:
+            try:
+                _mdl.set_quick_filters([]); _mdl.close()
+            except Exception:
+                pass
+        _sh.rmtree(_tmp, ignore_errors=True)
 else:
     print(f"  (no corpus at {_e2e_logs!r} - skipped)")
 
