@@ -683,6 +683,76 @@ if _events:                       # same corpus gate as section 19
 else:
     print(f"  (no corpus at {_e2e_logs!r} - skipped)")
 
+print("\n=== 22. every filter change must drop the cached popup values ===")
+# The normal-mode cache key is ("normal", col_key, len(visible_events)) -- a
+# COUNT, not the filter's identity.  Two filters selecting the same number of
+# events collide, so any path that changes the visible slice without dropping
+# the cache can serve the previous filter's dates.
+if _events:
+    import collections as _c22                                     # noqa: E402
+    _per = {}
+    for _e in _events:
+        _k = str(_e.get("event_id", ""))
+        _per.setdefault(_k, _c22.Counter())[
+            apply_tz(_e["timestamp"])[:10].lower()] += 1
+    _byn = _c22.defaultdict(list)
+    for _k, _cc in _per.items():
+        _byn[sum(_cc.values())].append(_k)
+    _collide = None
+    for _n, _ids in _byn.items():
+        if len(_ids) < 2 or _n < 30:
+            continue
+        for _i in range(len(_ids)):
+            for _j in range(_i + 1, len(_ids)):
+                if _per[_ids[_i]] != _per[_ids[_j]]:
+                    _collide = (_n, _ids[_i], _ids[_j])
+                    break
+            if _collide:
+                break
+        if _collide:
+            break
+    if _collide:
+        _n, _a, _b = _collide
+        _da, _db = _per[_a], _per[_b]
+        check(f"real collision exists: event_id {_a} and {_b} both select "
+              f"{_n} events but span {len(_da)} vs {len(_db)} dates",
+              ("normal", "timestamp_date", _n) == ("normal", "timestamp_date", _n)
+              and _da != _db,
+              f"{len(set(_da) ^ set(_db))} dates differ")
+    else:
+        print("  (no same-count/different-date pair in this corpus slice)")
+
+try:
+    from evtx_tool.gui.main_window import MainWindow as _MW22        # noqa: E402
+    _w22 = _MW22()
+    _SENT = {("normal", "timestamp_date", 402): {"2025-01-01": 5}}
+
+    def _drops(label, fn):
+        _w22._col_value_cache = dict(_SENT)
+        try:
+            fn()
+            check(f"{label} drops the cached popup values",
+                  not _w22._col_value_cache, str(_w22._col_value_cache))
+        except Exception as _e:
+            check(f"{label} drops the cached popup values", False,
+                  f"{type(_e).__name__}: {_e}")
+
+    # These four change the visible slice but do NOT route through
+    # _normal_filter_busy, which is what drops the cache for every other path.
+    _drops("context-menu quick filter",
+           lambda: _w22._apply_quick_filter("event_id", "4624", True))
+    _drops("clearing all quick filters", lambda: _w22._clear_quick_filters())
+    _drops("computer-normalisation filter",
+           lambda: _w22._apply_computer_norm_filter(["HOST-A"]))
+    _drops("session filter",
+           lambda: _w22._set_session_filter_impl("0x3e7", None))
+    _drops("the invalidation helper itself",
+           lambda: _w22._invalidate_col_value_cache())
+    _w22.close()
+except Exception as _exc:
+    check("MainWindow cache-invalidation checks ran", False,
+          f"{type(_exc).__name__}: {_exc}")
+
 ok = sum(1 for _n, c, _d in CHECKS if c)
 print(f"\n{'='*60}\n{ok}/{len(CHECKS)} checks passed")
 for n, c, d in CHECKS:

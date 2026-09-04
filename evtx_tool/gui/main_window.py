@@ -9403,6 +9403,24 @@ class MainWindow(QMainWindow):
     _col_prewarm_worker = None      # type: QThread | None
     _col_prewarm_timer  = None      # type: QTimer | None
 
+    def _invalidate_col_value_cache(self) -> None:
+        """Drop cached column-popup values: the visible slice just changed.
+
+        The normal-mode cache key is ("normal", col_key, len(visible_events)) --
+        a COUNT, not the filter's identity -- so two different filters that
+        happen to select the same number of events collide, and the second is
+        served the first's values.  On the real corpus event_id 8193 and 1025
+        both select 402 events but span 50 and 2 dates: every one of the 52
+        dates would carry a wrong count, and 48 of the dates offered would
+        match no rows at all.  ``_normal_filter_busy`` already drops the cache
+        for the paths that route through it; these are the ones that do not.
+
+        Clearing (rather than widening the key) is deliberate -- a wider key
+        still breaks silently the moment a filter dimension is forgotten,
+        whereas an empty cache can only cost a recompute.
+        """
+        self._col_value_cache = {}
+
     def _col_cache(self) -> dict:
         _c = self.__dict__.get("_col_value_cache")
         if _c is None:
@@ -11905,6 +11923,7 @@ class MainWindow(QMainWindow):
                         state.model.add_quick_filter(key, value, include)
                     else:
                         state.proxy.add_quick_filter(key, value, include)
+                self._invalidate_col_value_cache()
                 self._update_quick_filter_badge()
                 self._update_count_label()
                 return
@@ -11912,10 +11931,12 @@ class MainWindow(QMainWindow):
         # Merged mode — apply to active model as before
         if self._hw_model is not None:
             self._hw_model.add_quick_filter(key, value, include)
+            self._invalidate_col_value_cache()
             self._update_quick_filter_badge()
             self._update_count_label()
             return
         self._active_proxy.add_quick_filter(key, value, include)
+        self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
         self._update_count_label()
 
@@ -11931,6 +11952,7 @@ class MainWindow(QMainWindow):
             self._proxy_model.clear_quick_filters()
             for _st in self._file_tabs.values():
                 _st.proxy.clear_quick_filters()
+        self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
         self._update_count_label()
 
@@ -12441,6 +12463,7 @@ class MainWindow(QMainWindow):
             self._proxy_model.set_quick_filters(filters)
             for _st in self._file_tabs.values():
                 _st.proxy.set_quick_filters(filters)
+        self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
         self._update_count_label()
         n = len(filters)
@@ -12927,6 +12950,7 @@ class MainWindow(QMainWindow):
                 logon_id, computer, scope_start_ts, scope_end_ts, scope_end_inclusive,
                 linked_lid=linked_lid,
             )
+        self._invalidate_col_value_cache()
         self._update_session_filter_badge(logon_id, session_info)
         self._update_count_label()
 
