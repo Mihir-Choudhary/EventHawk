@@ -133,7 +133,51 @@ def main() -> int:
     px.set_quick_filters([])
     check("clearing restores the full table", px.rowCount() == TOTAL)
 
-    print("\n=== 4. separate-tabs mode keeps tabs independent ===")
+    print("\n=== 4. bookmarks follow the event, not the row position ===")
+    # Sorting physically reorders the event list, so anything keyed by row
+    # index would break the moment a column became sortable.  Bookmarks use a
+    # (source_file, record_id) composite key; this proves it holds across every
+    # newly-sortable column.
+    def bkey(e):
+        return (str(e.get("source_file", "")), int(e.get("record_id") or -1))
+
+    marks = frozenset(bkey(evs[i]) for i in range(0, len(evs), max(1, len(evs) // 50)))
+    m.set_bookmark_highlights(marks)
+    bad_f, bad_h = [], []
+    for c in COLS:
+        for o, nm in ((Qt.SortOrder.AscendingOrder, "asc"),
+                      (Qt.SortOrder.DescendingOrder, "desc")):
+            px.clear_bookmark_filter()
+            px.sort(c, o)
+            px.set_bookmark_filter(marks)
+            got = {bkey(px.get_source_event(r)) for r in range(px.rowCount())}
+            if got != marks:
+                bad_f.append(f"{COLUMNS[c]}/{nm}: {len(got ^ marks)} differ")
+            px.clear_bookmark_filter()
+            starred = set()
+            for r in range(px.rowCount()):
+                v = px.data(px.index(r, 0), Qt.ItemDataRole.DisplayRole)
+                if v and str(v).startswith("\u2605"):
+                    starred.add(bkey(px.get_source_event(r)))
+            if starred and starred != marks:
+                bad_h.append(f"{COLUMNS[c]}/{nm}: {len(starred)}")
+    check(f"the bookmark filter returns exactly the {len(marks)} bookmarks "
+          f"after each of {2*len(COLS)} sorts", not bad_f, "; ".join(bad_f[:3]))
+    check("the bookmark star stays on the same events after every sort",
+          not bad_h, "; ".join(bad_h[:3]))
+    # The bookmark filter is Layer 0a in _filterAcceptsRow_impl and returns
+    # unconditionally, exactly like the IOC pivot below it: it is a PIVOT view,
+    # not a stacking filter.  Pinned so the intent is not "fixed" by mistake.
+    px.set_bookmark_filter(marks)
+    px.set_quick_filters([{"key": "timestamp_date", "value": top_d, "include": True}])
+    check("the bookmark pivot deliberately overrides other filters",
+          px.rowCount() == len(marks), f"{px.rowCount()} vs {len(marks)}")
+    px.set_quick_filters([])
+    px.clear_bookmark_filter()
+    m.set_bookmark_highlights(frozenset())
+    check("clearing the pivot restores the table", px.rowCount() == TOTAL)
+
+    print("\n=== 5. separate-tabs mode keeps tabs independent ===")
     try:
         from evtx_tool.gui.main_window import MainWindow, FileTabState  # noqa: E402
         w = MainWindow()
