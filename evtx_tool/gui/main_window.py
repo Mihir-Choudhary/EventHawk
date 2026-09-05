@@ -10459,8 +10459,14 @@ class MainWindow(QMainWindow):
         if not visible_events:
             return
         # Same deal as Juggernaut: prewarmed when the last filter settled.
-        # Keyed on the size of the visible slice as well as the column, so a
-        # different filter can never be served a previous filter's values.
+        # Keyed on the column plus the SIZE of the visible slice.  Note that a
+        # size is not an identity: two different filters selecting the same
+        # number of events produce the same key (on the reference corpus,
+        # event_id 8193 and 1025 both select 402 events but span 50 dates and
+        # 2).  What makes the cache safe is that every path which changes the
+        # visible slice drops it -- _normal_filter_busy in its finally, and
+        # _invalidate_col_value_cache everywhere else -- so only one slice is
+        # ever cached at a time.  Keep that invariant if you add a filter path.
         _nk = ("normal", col_key, len(visible_events))
         _cache = self._col_cache()
         if _nk in _cache:
@@ -11979,6 +11985,15 @@ class MainWindow(QMainWindow):
             self._proxy_model.clear_quick_filters()
             for _st in self._file_tabs.values():
                 _st.proxy.clear_quick_filters()
+        # Drop the column-filter bookkeeping too.  _on_col_filter_applied
+        # rebuilds the WHOLE quick-filter list from _col_filters, so leaving a
+        # cleared column in there means the next column the analyst filters
+        # silently re-applies the one they just cleared -- they end up looking
+        # at a narrower slice than they believe, with no indication.  The same
+        # dict drives the header's filter marker, which otherwise keeps showing
+        # a filter that is no longer applied.
+        self._col_filters.clear()
+        self._update_header_indicators()
         self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
         self._update_count_label()
