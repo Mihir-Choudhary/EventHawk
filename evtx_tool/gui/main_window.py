@@ -9400,7 +9400,7 @@ class MainWindow(QMainWindow):
     # NOT a mutable class default: that would be shared by every MainWindow
     # until someone happened to rebind it. _col_cache() hands out a per-instance
     # dict on first use.
-    _col_prewarm_worker = None      # type: QThread | None
+    _col_prewarm_workers = ()       # type: tuple  (one sweep = one per WHERE group)
     _col_prewarm_timer  = None      # type: QTimer | None
 
     def _invalidate_col_value_cache(self) -> None:
@@ -9449,10 +9449,16 @@ class MainWindow(QMainWindow):
         from evtx_tool.gui.jm_col_worker import ColValuePrewarmWorker
         if self._hw_model is None:
             return
-        # Supersede an in-flight sweep: its results are for the previous filter.
-        _old = self._col_prewarm_worker
-        if self._thread_running(_old):
-            _old.cancel()
+        # Supersede the in-flight sweep: its results are for the previous filter.
+        # A sweep is one worker PER WHERE GROUP -- each filterable column shares a
+        # cascade except its own quick filter, so N active quick filters produce
+        # N+1 groups.  This used to keep only the last worker it created, leaving
+        # the other N running: they finished their DuckDB sweeps and emitted
+        # column_ready for the OLD filter, which _on_col_prewarmed then filed
+        # under the CURRENT cache key.
+        for _old in self._col_prewarm_workers:
+            if self._thread_running(_old):
+                _old.cancel()
         self._col_value_cache = {}
 
         cols = list(ColumnFilterPopup.FILTERABLE.values())
@@ -9466,16 +9472,25 @@ class MainWindow(QMainWindow):
             if key is None:
                 continue
             by_where.setdefault((key[1], key[2]), []).append(ck)
+        _started = []
         for (where_sql, where_params), keys in by_where.items():
             w = ColValuePrewarmWorker(
                 self._hw_model._full_table, keys,
                 where_sql=where_sql or None, where_params=list(where_params),
                 parent=self,
             )
-            w.column_ready.connect(self._on_col_prewarmed)
-            self._col_prewarm_worker = w
+            # Bind the WHERE this sweep was issued for, so a result that lands
+            # after the filter moved on is filed under the key it was actually
+            # computed for (where it will simply miss) instead of the key that
+            # is current when it arrives (where it would be served as if fresh).
+            w.column_ready.connect(
+                lambda ck, vals, _ws=where_sql, _wp=tuple(where_params):
+                    self._on_col_prewarmed(ck, vals, _ws, _wp)
+            )
+            _started.append(w)
             w.start()
             self._track_col_worker(w)
+        self._col_prewarm_workers = tuple(_started)
 
     def _schedule_normal_col_prewarm(self) -> None:
         """Debounced prewarm of the column popups for NORMAL mode."""
@@ -9524,8 +9539,20 @@ class MainWindow(QMainWindow):
         self._track_col_worker(_w)
 
     @Slot(str, dict)
-    def _on_col_prewarmed(self, col_key: str, values: dict) -> None:
-        key = self._col_cache_key(col_key)
+    def _on_col_prewarmed(self, col_key: str, values: dict,
+                          where_sql=None, where_params=None) -> None:
+        """File a prewarmed column's values under the key they belong to.
+
+        *where_sql* / *where_params* are the ones the sweep was issued with.
+        Recomputing the key here instead would file values computed for the
+        previous filter under whatever filter is current when the signal is
+        delivered -- the emit happens on the worker thread and the slot runs on
+        the GUI thread, so the filter can change in between.
+        """
+        if where_sql is None and where_params is None:
+            key = self._col_cache_key(col_key)
+        else:
+            key = (col_key, where_sql or "", tuple(where_params or []))
         if key is not None:
             self._col_cache()[key] = values
 
@@ -10103,10 +10130,10 @@ class MainWindow(QMainWindow):
         # Prewarmed column values belong to the dataset being torn down.
         if self._col_prewarm_timer is not None:
             self._col_prewarm_timer.stop()
-        _pw = self._col_prewarm_worker
-        if self._thread_running(_pw):
-            _pw.cancel()
-        self._col_prewarm_worker = None
+        for _pw in self._col_prewarm_workers:
+            if self._thread_running(_pw):
+                _pw.cancel()
+        self._col_prewarm_workers = ()
         self._col_value_cache = {}
         # Safety: close loading dialog and cancel any pending busy timer so
         # they don't fire into a torn-down model after cleanup.

@@ -753,6 +753,92 @@ except Exception as _exc:
     check("MainWindow cache-invalidation checks ran", False,
           f"{type(_exc).__name__}: {_exc}")
 
+print("\n=== 23. the Juggernaut prewarm sweep must be fully cancellable ===")
+# A prewarm sweep is one worker PER WHERE GROUP: every filterable column shares
+# a cascade except its own quick filter, so N active quick filters produce N+1
+# groups.  Keeping only the last worker created left the other N running --
+# they finished their DuckDB sweeps for the OLD filter and emitted
+# column_ready, which was then filed under whatever key was CURRENT.
+from evtx_tool.gui import jm_col_worker as _JCW                    # noqa: E402
+
+
+class _FakeHW:
+    """Enough of ArrowTableModel for _start_col_prewarm / _build_col_cascade_where."""
+    _full_table = object()
+
+    def __init__(self, qfs):
+        self._qfs = qfs
+
+    def get_quick_filters(self):
+        return list(self._qfs)
+
+    def get_cascade_base_where(self):
+        return (None, None)
+
+    def close(self):
+        """MainWindow.closeEvent calls this on the model it holds."""
+        return None
+
+
+try:
+    from evtx_tool.gui.main_window import MainWindow as _MW23        # noqa: E402
+    _w23 = _MW23()
+    _orig_pw = _JCW.ColValuePrewarmWorker
+    _made = []
+
+    class _SpyPW(_orig_pw):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            _made.append(self)
+
+        def start(self):        # never touch DuckDB in this check
+            pass
+
+    _JCW.ColValuePrewarmWorker = _SpyPW
+    try:
+        for _lbl, _qfs in (
+            ("0 quick filters", []),
+            ("1 quick filter",
+             [{"key": "timestamp_date", "value": "2025-07-07", "include": True}]),
+            ("2 quick filters",
+             [{"key": "timestamp_date", "value": "2025-07-07", "include": True},
+              {"key": "event_id", "value": "4624", "include": True}]),
+            ("3 quick filters",
+             [{"key": "timestamp_date", "value": "2025-07-07", "include": True},
+              {"key": "event_id", "value": "4624", "include": True},
+              {"key": "channel", "value": "Security", "include": True}]),
+        ):
+            _w23._hw_model = _FakeHW(_qfs)
+            _made.clear()
+            _w23._start_col_prewarm()
+            _tracked = list(getattr(_w23, "_col_prewarm_workers", ()) or ())
+            _un = sum(1 for _x in _made if _x not in _tracked)
+            check(f"every prewarm worker is cancellable with {_lbl}",
+                  _un == 0 and len(_made) > 0,
+                  f"created={len(_made)} tracked={len(_tracked)} uncancellable={_un}")
+    finally:
+        _JCW.ColValuePrewarmWorker = _orig_pw
+
+    # A late result must be filed under the WHERE it was computed for, not the
+    # one current when the signal is delivered.
+    _w23._col_value_cache = {}
+    _w23._on_col_prewarmed("timestamp_date", {"2025-01-01": 1},
+                           "source_file = ?", ("a.evtx",))
+    check("a prewarm result is keyed by the WHERE it was issued with",
+          list(_w23._col_value_cache) ==
+          [("timestamp_date", "source_file = ?", ("a.evtx",))],
+          str(list(_w23._col_value_cache)))
+    _w23._hw_model = _FakeHW([])
+    _w23._col_value_cache = {}
+    _w23._on_col_prewarmed("timestamp_date", {"2025-01-01": 1})
+    check("the no-WHERE fallback still files a key",
+          len(_w23._col_value_cache) == 1, str(list(_w23._col_value_cache)))
+    _w23._hw_model = None
+    _w23.close()
+except Exception as _exc:
+    check("prewarm cancellation checks ran", False,
+          f"{type(_exc).__name__}: {_exc}")
+
 ok = sum(1 for _n, c, _d in CHECKS if c)
 print(f"\n{'='*60}\n{ok}/{len(CHECKS)} checks passed")
 for n, c, d in CHECKS:
