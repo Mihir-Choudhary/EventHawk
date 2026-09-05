@@ -97,6 +97,19 @@ _SORT_COL_MAP: dict[int, str] = {
     COL_SOURCE:    "source_file",
     COL_RECORD_ID: "record_id",
     COL_PROVIDER:  "provider",
+    # Extended columns.  A column absent from this map is silently unsortable
+    # (sort() returns early), so every extended column that HAS an Arrow
+    # column is listed.  Each maps to the same column its data() branch
+    # displays, so the order matches what is on screen.  processor_id,
+    # session_id, kernel_time, user_time and processor_time have no Arrow
+    # column -- they exist only in the normal-mode event dict -- so they stay
+    # unsortable here rather than being mapped to something approximate.
+    COL_KEYWORDS:  "keywords",
+    COL_OPCODE:    "opcode",
+    COL_LOG:       "channel",      # data() renders channel for the Log column
+    COL_PID:       "process_id",
+    COL_TID:       "thread_id",
+    COL_CORR_ID:   "correlation_id",
 }
 
 # ── Text-search expression — single canonical definition lives in filter_sql ───

@@ -531,6 +531,26 @@ class EventTableModel(QAbstractTableModel):
 
     # ── Fast Python-level sorting (avoids 7M lessThan() C++→Python calls) ────
 
+    @staticmethod
+    def _sort_mixed(v) -> tuple:
+        """Order a display string the way a reader expects.
+
+        Numeric-looking values sort numerically (PID 999 before 1000, not
+        after it as a lexical sort would), everything else case-insensitively
+        as text, and the two groups never compare against each other -- so the
+        key is total and ``list.sort`` can never raise on mixed content.
+        """
+        s = "" if v is None else str(v)
+        try:
+            return (0, float(s), "")
+        except (TypeError, ValueError):
+            return (1, 0.0, s.lower())
+
+    # Every column the table can DISPLAY needs an entry here: EventTableModel.
+    # sort() silently returns when a column is missing, so an absent entry
+    # means clicking that header does nothing at all, with no feedback.  The
+    # extended columns were all missing; each key below mirrors the matching
+    # branch of data() exactly, so the order always matches what is on screen.
     _SORT_KEY_FUNCS = {
         0: lambda ev: 0,  # row number — identity order
         1: lambda ev: ev.get("event_id", 0),
@@ -542,6 +562,24 @@ class EventTableModel(QAbstractTableModel):
         7: lambda ev: (ev.get("attack_tags") or [{}])[0].get("tid", "") if ev.get("attack_tags") else "",
         8: lambda ev: _os.path.basename(ev.get("source_file", "")),
         20: lambda ev: ev.get("record_id", 0),   # Record ID — numeric
+        # ── Extended columns ──────────────────────────────────────────────
+        9:  lambda ev: EventTableModel._sort_mixed(ev.get("keywords", "")),
+        10: lambda ev: EventTableModel._sort_mixed(ev.get("opcode", "")),
+        11: lambda ev: EventTableModel._sort_mixed(
+            ev.get("log", "") or ev.get("channel", "")),
+        12: lambda ev: EventTableModel._sort_mixed(
+            ev.get("process_id", "")
+            or (ev.get("execution") or {}).get("process_id", "")),
+        13: lambda ev: EventTableModel._sort_mixed(
+            ev.get("thread_id", "")
+            or (ev.get("execution") or {}).get("thread_id", "")),
+        14: lambda ev: EventTableModel._sort_mixed(ev.get("processor_id", "")),
+        15: lambda ev: EventTableModel._sort_mixed(ev.get("session_id", "")),
+        16: lambda ev: EventTableModel._sort_mixed(ev.get("kernel_time", "")),
+        17: lambda ev: EventTableModel._sort_mixed(ev.get("user_time", "")),
+        18: lambda ev: EventTableModel._sort_mixed(ev.get("processor_time", "")),
+        19: lambda ev: EventTableModel._sort_mixed(ev.get("correlation_id", "")),
+        21: lambda ev: EventTableModel._sort_mixed(ev.get("provider", "")),
     }
 
     def sort(self, column: int, order=Qt.SortOrder.AscendingOrder) -> None:
