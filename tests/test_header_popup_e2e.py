@@ -175,6 +175,73 @@ def main() -> int:
         w._clear_quick_filters()
         pump(200)
 
+    print("\n=== the tree's own sort buttons ===")
+    pops, _ = open_popup(w, 3)
+    if pops is not None:
+        pops._emit_sort(Qt.SortOrder.AscendingOrder)
+        pump(600)
+        asc = [w._proxy_model.data(w._proxy_model.index(r, 3),
+                                   Qt.ItemDataRole.DisplayRole) for r in range(8)]
+        popd, _ = open_popup(w, 3)
+        popd._emit_sort(Qt.SortOrder.DescendingOrder)
+        pump(600)
+        desc = [w._proxy_model.data(w._proxy_model.index(r, 3),
+                                    Qt.ItemDataRole.DisplayRole) for r in range(8)]
+        check("Sort A->Z from the tree really sorts ascending",
+              asc == sorted(asc), str(asc[:2]))
+        check("Sort Z->A from the tree really sorts descending",
+              desc == sorted(desc, reverse=True), str(desc[:2]))
+        check("the two orders differ", asc != desc)
+        check("sorting from the popup does not change the row count",
+              w._proxy_model.rowCount() == total)
+
+    print("\n=== the full-dataset search, through the real provider ===")
+    # The popup caps at the top-1000 values, so a rarer one is only reachable by
+    # typing.  Seed a popup with a deliberately truncated set and confirm the
+    # search grafts the missing date back into the tree and that it filters.
+    import collections as _c
+    _truth = _c.Counter(apply_tz(e["timestamp"])[:10].lower() for e in evs)
+    if len(_truth) > 12:
+        _seed = dict(_truth.most_common(len(_truth) // 4))
+        _missing = sorted(set(_truth) - set(_seed))
+        _target = _missing[0]
+        _prov = w._make_col_search_provider("timestamp_date")
+        _pop = ColumnFilterPopup(3, dict(_seed), parent=w, search_provider=_prov)
+        _pop.show()
+        pump(200)
+        check("the truncated seed really is missing the target",
+              _target not in {x.property("filter_value") for x in _pop._checkboxes},
+              _target)
+        _pop._inp_search.setText(_target)
+        pump(2500)              # debounce + worker + merge
+        _after = {x.property("filter_value") for x in _pop._checkboxes}
+        check("searching grafts the missing date into the tree",
+              _target in _after, f"{len(_after)} leaves")
+        check("the merge creates no duplicate leaves",
+              len(_after) == len(_pop._checkboxes))
+        _y, _mo, _ = _target.split("-")
+        check("its year and month rows were created",
+              _y in _pop._year_items and (_y, _mo) in _pop._month_items)
+        check("only the searched date is checked",
+              {x.property("filter_value") for x in _pop._checkboxes
+               if x.isChecked()} == {_target})
+        _g = {}
+        _pop.filterApplied.connect(lambda c, m, v: _g.update(mode=m, values=list(v)))
+        _pop._apply()
+        pump(300)
+        check("it is emitted as an include on exactly that date",
+              _g.get("mode") == "include" and set(_g.get("values", [])) == {_target},
+              f"{_g.get('mode')} {_g.get('values')}")
+        w._proxy_model.set_quick_filters(
+            [{"key": "timestamp_date", "value": v, "include": True}
+             for v in _g.get("values", [])])
+        pump(300)
+        check("and filters the table to exactly that date's events",
+              w._proxy_model.rowCount() == _truth[_target],
+              f"{w._proxy_model.rowCount()} vs {_truth[_target]}")
+        w._clear_quick_filters()
+        pump(200)
+
     w.close()
     ok = sum(1 for _n, c, _d in CHECKS if c)
     print(f"\n{'='*60}\n{ok}/{len(CHECKS)} checks passed")
