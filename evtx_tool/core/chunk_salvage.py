@@ -52,6 +52,10 @@ logger = logging.getLogger(__name__)
 _HDR_BLOCK   = 4_096
 _CHUNK_SIZE  = 65_536
 _CHUNK_MAGIC = b"ElfChnk\x00"
+# 0xFFFF_FFFF_FFFF_FFFF in a chunk's record-ID fields means "this chunk holds no
+# records", not a record ID.  Record IDs start at 1 and increment by one, so the
+# value is unreachable by a real log.
+_U64_SENTINEL = 0xFFFF_FFFF_FFFF_FFFF
 _FILE_MAGIC  = b"ElfFile\x00"
 
 
@@ -111,7 +115,13 @@ def read_chunk_index(filepath: str) -> dict:
 
         {
           "valid":   [(chunk_idx, first_id, last_id), ...],
-          "slack":   [chunk_idx, ...],   # all-zero header — normal pre-allocation
+          "slack":   [chunk_idx, ...],   # holds no records — normal, not a fault.
+                                         # Either an all-zero header (unused
+                                         # pre-allocation) or an initialised
+                                         # chunk whose record-ID fields are the
+                                         # 0xFFFF_FFFF_FFFF_FFFF "empty" sentinel,
+                                         # which is how an enabled-but-never-written
+                                         # channel looks on disk.
           "damaged": [chunk_idx, ...],   # non-zero garbage where a chunk should be
         }
 
@@ -129,7 +139,24 @@ def read_chunk_index(filepath: str) -> dict:
                     break
                 if h[:8] == _CHUNK_MAGIC:
                     _fn, _ln, first_id, last_id = struct.unpack_from("<QQQQ", h, 8)
-                    if 0 < first_id <= last_id:
+                    if first_id == _U64_SENTINEL or last_id == _U64_SENTINEL:
+                        # A chunk that holds NO records writes 0xFFFF_FFFF_FFFF_FFFF
+                        # in its record-ID fields.  Windows pre-creates and
+                        # initialises a chunk for every enabled channel, so this is
+                        # the normal state of any log that has never been written to
+                        # — not damage, and not a record range.
+                        #
+                        # Both positions must be rejected, not just a sentinel pair:
+                        #   • both sentinel  → the old 0 < first <= last test passed
+                        #     and counted ONE phantom record, so every empty EVTX
+                        #     reported "1 record declared in chunk headers was not
+                        #     parsed" and raised a Parse Integrity Warning.
+                        #   • last only      → the range would span from a real
+                        #     first_id to 2**64-1, i.e. ~1.8e19 "expected" records.
+                        # Claiming evidence is missing when none is, is exactly the
+                        # failure this accounting exists to prevent.
+                        out["slack"].append(i)
+                    elif 0 < first_id <= last_id:
                         out["valid"].append((i, first_id, last_id))
                     else:
                         out["damaged"].append(i)
