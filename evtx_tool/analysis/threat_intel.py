@@ -11,7 +11,7 @@ ThreatIntelChecker
     .load_offline(filepath) -> int
     .check_offline(ioc_type, value) -> dict | None
     .check_virustotal(ioc_type, value) -> dict
-    .enrich_iocs(iocs, mode, ioc_types, progress_fn) -> None
+    .enrich_iocs(iocs, mode, ioc_types, progress_fn) -> stats dict
 
 VirusTotal free tier limits (enforced by _RateLimiter):
     4 requests per minute
@@ -357,6 +357,14 @@ class ThreatIntelChecker:
         ioc_types  : list[str]  Which IOC types to check.
         progress_fn: callable(checked, total, current_value) — progress callback.
         cancel_fn  : callable() -> bool — return True to abort.
+
+        Returns what actually happened, so the caller never reports a run in
+        which every lookup failed as "0 malicious found":
+            {"total", "checked", "malicious", "errors", "first_error",
+             "not_checked"}   (not_checked = daily limit or cancelled)
+        A rejected VirusTotal key (HTTP 401/403) stops the run at once and is
+        raised: every remaining request would fail the same way, each one
+        waiting its turn in the 4/min rate limiter.
         """
         _SKIP = {"summary", "correlation"}
 
@@ -371,8 +379,11 @@ class ThreatIntelChecker:
                     work.append((ioc_type, entry))
 
         total = len(work)
+        stats = {"total": total, "checked": 0, "malicious": 0, "errors": 0,
+                 "first_error": "", "not_checked": 0}
         for idx, (ioc_type, entry) in enumerate(work):
             if cancel_fn and cancel_fn():
+                stats["not_checked"] += total - idx
                 break
 
             value = entry["value"]
@@ -391,15 +402,18 @@ class ThreatIntelChecker:
                             "source": "virustotal",
                             "positives": None, "total": None, "permalink": "",
                         }
+                        stats["not_checked"] += 1
                         continue
                     result = self.check_virustotal(ioc_type, value)
                 else:
                     result = None
 
+                stats["checked"] += 1
                 if result:
                     entry["threat_intel"] = result
                     # If known-bad offline, also boost score to 95
                     if result.get("verdict") in ("malicious", "suspicious"):
+                        stats["malicious"] += 1
                         entry["score"] = 95
                         entry["score_reasons"] = [
                             f"Threat intel match — {result.get('verdict', 'malicious')} "
@@ -407,12 +421,22 @@ class ThreatIntelChecker:
                         ]
 
             except Exception as exc:
+                if (isinstance(exc, urllib.error.HTTPError)
+                        and exc.code in (401, 403)):
+                    raise RuntimeError(
+                        f"VirusTotal rejected the API key (HTTP {exc.code}). "
+                        f"Nothing after the first {idx:,} of {total:,} "
+                        f"IOC(s) was checked.") from exc
                 entry["threat_intel"] = {
                     "verdict": "error",
                     "source":  mode,
                     "error":   str(exc),
                     "positives": None, "total": None, "permalink": "",
                 }
+                stats["errors"] += 1
+                if not stats["first_error"]:
+                    stats["first_error"] = f"{value}: {exc}"
 
         if progress_fn:
             progress_fn(total, total, "")
+        return stats

@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 class _WorkerSignals(QObject):
     progress  = Signal(int, int, str)    # (checked, total, current_value)
-    finished  = Signal(int, int)         # (total_checked, malicious_found)
+    finished = Signal(object)        # stats dict from enrich_iocs
     error     = Signal(str)
 
 
@@ -57,7 +57,6 @@ class _EnrichWorker(threading.Thread):
         self._ioc_types   = ioc_types
         self._signals     = signals
         self._cancel_flag = cancel_flag
-        self._malicious   = 0
 
     def run(self) -> None:
         def _progress(checked: int, total: int, value: str) -> None:
@@ -67,24 +66,14 @@ class _EnrichWorker(threading.Thread):
             return self._cancel_flag[0]
 
         try:
-            self._checker.enrich_iocs(
+            stats = self._checker.enrich_iocs(
                 self._iocs,
                 mode=self._mode,
                 ioc_types=self._ioc_types,
                 progress_fn=_progress,
                 cancel_fn=_cancel,
             )
-            # Count malicious results
-            for ioc_type in self._ioc_types:
-                for entry in (self._iocs.get(ioc_type) or []):
-                    ti = entry.get("threat_intel") if isinstance(entry, dict) else None
-                    if ti and ti.get("verdict") in ("malicious", "suspicious"):
-                        self._malicious += 1
-
-            total = sum(
-                len(self._iocs.get(t) or []) for t in self._ioc_types
-            )
-            self._signals.finished.emit(total, self._malicious)
+            self._signals.finished.emit(stats)
         except Exception as exc:
             self._signals.error.emit(str(exc))
 
@@ -368,14 +357,37 @@ class ThreatIntelDialog(QDialog):
         self._lbl_status.setText(f"Checking: {short_val}")
         self._lbl_stats.setText(f"Checked: {checked:,} / {total:,}")
 
-    def _on_finished(self, total: int, malicious: int) -> None:
+    def _on_finished(self, stats: dict) -> None:
+        # Report what actually happened.  This used to say "N IOCs checked,
+        # 0 malicious found" even when every lookup had FAILED (offline, bad
+        # key, rate limit) or the run was cancelled -- an all-clear for IOCs
+        # nobody checked.
         self._set_running(False)
-        self._lbl_status.setText(
-            f"Done — {total:,} IOCs checked, {malicious:,} malicious/suspicious found."
-        )
+        total = stats.get("total", 0)
+        checked = stats.get("checked", 0)
+        malicious = stats.get("malicious", 0)
+        errors = stats.get("errors", 0)
+        unchecked = stats.get("not_checked", 0)
+        msg = (f"{checked:,} of {total:,} IOCs checked, "
+               f"{malicious:,} malicious/suspicious found.")
+        if errors:
+            msg += f"  {errors:,} lookup(s) FAILED."
+        if unchecked:
+            msg += f"  {unchecked:,} not checked (cancelled or daily limit)."
+        self._lbl_status.setText(("Done — " if not (errors or unchecked)
+                                  else "INCOMPLETE — ") + msg)
         self._lbl_stats.setText(
-            f"Checked: {total:,}   Malicious/Suspicious: {malicious:,}"
+            f"Checked: {checked:,} / {total:,}   Malicious/Suspicious: {malicious:,}"
+            + (f"   Failed: {errors:,}" if errors else "")
+            + (f"   Not checked: {unchecked:,}" if unchecked else "")
         )
+        if errors or unchecked:
+            box = QMessageBox(QMessageBox.Icon.Warning, "Threat Intel — Incomplete",
+                              msg + "\n\nIOCs that failed or were not checked are "
+                              "NOT known to be clean.", QMessageBox.StandardButton.Ok, self)
+            if stats.get("first_error"):
+                box.setDetailedText("First failure:\n" + stats["first_error"])
+            box.exec()
         # Refresh IOC panel in parent window
         pw = self._parent_win
         if pw and hasattr(pw, "_refresh_iocs_tab"):
