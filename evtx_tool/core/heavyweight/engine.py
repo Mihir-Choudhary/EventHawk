@@ -56,6 +56,7 @@ _COL_NAMES = (
     "ed_subject_user", "ed_target_user", "ed_ip_address",
     "ed_logon_type", "ed_new_process", "event_data_json",
     "qualifiers", "ed_subject_sid", "ed_target_sid", "ed_values", "ed_flat_json",
+    "provider_guid", "version",
 )
 
 # ── Arrow schema (imported lazily to avoid hard dep at import time) ───────────
@@ -95,6 +96,12 @@ def _make_schema():
         ("ed_target_sid",   pa.string()),  # TargetUserSid
         ("ed_values",       pa.string()),  # all EventData VALUES (no field names) — values-only text search
         ("ed_flat_json",    pa.string()),  # flattened {field:value} — nested-aware field-conditions (json_extract)
+        # System header fields normal mode keeps on every event.  Without them a
+        # field condition or text search on a provider GUID or event version
+        # matched nothing in JM while normal mode matched.  Parquet-only, like
+        # qualifiers.
+        ("provider_guid",   pa.string()),
+        ("version",         pa.int32()),
     ])
 
 
@@ -309,9 +316,11 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | boo
             provider_name = _pattrs.get("Name", "") or prov.get("Name", "")
             event_source_name = (_pattrs.get("EventSourceName", "")
                                  or prov.get("EventSourceName", "") or "")
+            provider_guid = str(_pattrs.get("Guid", "") or "")
         else:
             provider_name = str(prov)
             event_source_name = ""
+            provider_guid = ""
 
         # ── Extract user_id BEFORE the pre-filter ─────────────────────────────
         # Previously extracted after filtering with user_id="" passed to the
@@ -420,6 +429,8 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | boo
             # (json_extract).  Same flatten_fields() normal mode uses → field
             # conditions resolve nested fields identically.  Parquet-only.
             (orjson.dumps(flat_ed).decode() if flat_ed else None),
+            provider_guid,
+            _safe_int(system.get("Version")),   # normal mode: Version, default 0
         )
     except Exception as exc:
         logger.debug("_extract_and_filter error: %s", exc)

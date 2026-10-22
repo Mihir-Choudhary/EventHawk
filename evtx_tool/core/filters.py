@@ -754,8 +754,8 @@ def passes_filter(event: dict, fc: dict) -> bool:
             return False
 
     # Text search filter (honors text_exclude, text_regex, case_sensitive)
-    if fc.get("text_search"):
-        terms: list[str] = fc["text_search"]
+    terms: list[str] = _text_terms(fc.get("text_search") or [])
+    if terms:
         mode: str = fc.get("search_mode", "AND").upper()
         matched = _text_search_matches(
             event, terms, mode,
@@ -781,32 +781,87 @@ def passes_filter(event: dict, fc: dict) -> bool:
     return True
 
 
+_ADV_SEARCH_FIELDS = (
+    "event_id", "record_id", "level", "level_name", "channel",
+    "provider", "event_source_name", "provider_guid",
+    "computer", "user_id", "source_file", "timestamp",
+    "keywords", "correlation_id", "task", "opcode",
+    "process_id", "thread_id", "qualifiers", "version",
+)
+
+
+def adv_search_haystack(ev: dict) -> str:
+    """The text an Advanced Filter / parse-time text search looks through.
+
+    ONE definition for the GUI view (EventTableModel.build_adv_search_str)
+    and for passes_filter / compile_filter (parse time, ``parse -F``), and the
+    same scope as Juggernaut's SEARCH_TEXT_EXPR_FULL, so a query returns the
+    same events everywhere.  The parse-time copy used to cover only seven
+    metadata fields: a provider GUID, record id, timestamp, keyword mask ...
+    that the GUI found returned nothing from the CLI.
+
+    EVERY System-level field; both timestamp renderings (Normal stores
+    "...T...Z", Juggernaut "YYYY-MM-DD HH:MM:SS.ffffff"); every EventData value
+    (flatten_searchable_values, line-split backslashes collapsed as in JM's
+    ed_values) PLUS the EventData JSON serialised exactly as Juggernaut's
+    event_data_json (orjson: compact separators, raw UTF-8), which is what
+    makes field names searchable.
+    """
+    import json as _json
+    import re as _re
+
+    parts: list[str] = []
+    for _fld in _ADV_SEARCH_FIELDS:
+        _v = ev.get(_fld)
+        if _v is not None and _v != "":
+            parts.append(str(_v))
+    _ts = str(ev.get("timestamp") or "")
+    if _ts:
+        parts.append(_ts.replace("T", " ").rstrip("Z"))
+    ed = ev.get("event_data", {}) or {}
+    if ed:
+        for _val in flatten_searchable_values(ed):
+            parts.append(_re.sub(r'\\\s+', r'\\', _val))
+        try:
+            parts.append(_json.dumps(
+                ed, separators=(",", ":"), ensure_ascii=False, default=str))
+        except Exception:
+            parts.append(str(ed))
+    return " ".join(parts)
+
+
+def _text_terms(value) -> list[str]:
+    """text_search as a list of terms.
+
+    The Advanced Filter dialog -- and so any filter file saved in its format,
+    loaded by ``parse -F`` -- stores text_search as one STRING.  Iterating that
+    string treated every character as a separate term: a search for a GUID
+    fragment matched 15,642 events where 527 contain it.  Juggernaut
+    (filter_sql) and the GUI view already take a string as a single term.
+    """
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return [str(t) for t in value if str(t).strip()]
+
+
 def _text_search_matches(event: dict, terms: list[str], mode: str,
                          regex: bool = False, case_sensitive: bool = False) -> bool:
-    """Values-only text-search match, honouring *regex* and *case_sensitive*.
+    """Text-search match over adv_search_haystack, honouring *regex* and
+    *case_sensitive*.
 
-    Scope matches Juggernaut mode's SEARCH_TEXT_EXPR_FULL (metadata columns +
-    the ed_values value blob — field NAMES excluded).  Previously this ignored
+    Scope is Juggernaut mode's SEARCH_TEXT_EXPR_FULL and the GUI view's (every
+    System field, both timestamp forms, EventData values and its JSON).
+    Previously this ignored
     both the regex and case-sensitive flags (always a case-insensitive substring
     match), so a regex search matched nothing and a case-sensitive search
     matched case-insensitively — diverging from JM and the GUI view.
     """
     import re as _re
 
-    # Build the fragment list ONCE (raw case preserved).
-    fragments: list[str] = [
-        str(event.get("event_id", "")),
-        event.get("channel", "") or "",
-        event.get("provider", "") or "",
-        event.get("computer", "") or "",
-        event.get("level_name", "") or "",
-        event.get("user_id", "") or "",
-        event.get("source_file", "") or "",
-    ]
-    ed = event.get("event_data", {}) or {}
-    if ed:
-        # Every EventData value (recursively, all nesting), field names excluded.
-        fragments.extend(flatten_searchable_values(ed))
+    # The same joined haystack the GUI view and Juggernaut search (see
+    # adv_search_haystack); joined, so a term spanning two fields matches as
+    # it does there.
+    fragments: list[str] = [adv_search_haystack(event)]
 
     if not case_sensitive:
         fragments = [f.lower() for f in fragments]
@@ -986,8 +1041,8 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
         checks.append(lambda ev, _t=_tasks: ev.get("task", 0) in _t)
 
     # Text search (honors text_exclude, text_regex, case_sensitive)
-    if fc.get("text_search"):
-        _terms = fc["text_search"]
+    _terms = _text_terms(fc.get("text_search") or [])
+    if _terms:
         _mode = fc.get("search_mode", "AND").upper()
         _txt_excl = bool(fc.get("text_exclude"))
         _txt_rx = bool(fc.get("text_regex", False))

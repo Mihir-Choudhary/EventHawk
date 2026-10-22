@@ -105,6 +105,10 @@ _SEARCH_TEXT_RAW_FULL: str = (
     "CAST(COALESCE(process_id, 0) AS VARCHAR) || ' ' || "
     "CAST(COALESCE(thread_id, 0) AS VARCHAR) || ' ' || "
     "CAST(COALESCE(qualifiers, 0) AS VARCHAR) || ' ' || "
+    # Normal mode's search scope includes these two (models.py); JM had no
+    # columns for them, so searching a provider GUID found nothing here.
+    "COALESCE(provider_guid,   '') || ' ' || "
+    "CAST(COALESCE(version, 0) AS VARCHAR) || ' ' || "
     # ed_values = every EventData VALUE, with XML line-split backslashes
     # collapsed.  event_data_json = the COMPLETE nested structure: container
     # keys, leaf names, values and attributes.
@@ -142,6 +146,9 @@ _TOP_LEVEL_COLS: frozenset[str] = frozenset({
     # / "keywords" went through json_extract(ed_flat_json, …) → always NULL → the
     # condition matched ZERO rows in JM while normal mode matched correctly.
     "keywords", "correlation_id", "opcode", "qualifiers",
+    # Same for the provider GUID and event version, which normal mode keeps on
+    # every event: a condition on either matched nothing in JM.
+    "provider_guid", "version",
 })
 
 # Fields where Windows stores numeric values as hex strings ("0x790") in
