@@ -1327,6 +1327,20 @@ _LOGON_SESSION_RULES = [
 ]
 
 
+def _collapse_copies(events: list[dict]) -> list[dict]:
+    """Drop repeats of the same physical record, keeping the first.
+
+    A collection folder often holds "Security.evtx" next to "Security -
+    Copy.evtx".  Every rule counts records, so each copy counted again: with
+    the same log loaded four times, TWO failed logons and a success became
+    "Brute Force -> Successful Logon", and five failed users became "Password
+    Spray Attack" -- detections of attacks that never happened.  See
+    core.record_identity (the rule Logon Sessions and Remote Assistance use).
+    """
+    from evtx_tool.core.record_identity import collapse_copies
+    return collapse_copies(events)[0]
+
+
 def correlate(events: list[dict], progress_fn: object = None) -> list[dict]:
     """
     Run all correlation rules against a list of events.
@@ -1348,6 +1362,8 @@ def correlate(events: list[dict], progress_fn: object = None) -> list[dict]:
     """
     if not events:
         return []
+
+    events = _collapse_copies(events)
 
     # Perf fix #1: build index once, shared across all rules
     idx = _EventIndex(events)

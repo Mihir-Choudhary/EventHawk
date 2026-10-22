@@ -106,7 +106,7 @@ class _Accum:
     """Per-IOC-value context accumulator."""
     __slots__ = ("count", "first", "last", "eids", "record_ids", "users", "computers", "sources")
 
-    def __init__(self, ts: str, eid: int, record_id: int, user: str, computer: str, source: str) -> None:
+    def __init__(self, ts: str, eid: int, record_id: int, user: str, computer: str, source) -> None:
         self.count     = 1
         self.first     = ts
         self.last      = ts
@@ -114,9 +114,18 @@ class _Accum:
         self.record_ids: set[int] = {record_id} if record_id else set()
         self.users: set[str]      = {user}      if user      else set()
         self.computers: set[str]  = {computer}  if computer  else set()
-        self.sources: set[str]    = {source}    if source    else set()
+        self.sources: set[str]    = set()
+        self._add_sources(source)
 
-    def update(self, ts: str, eid: int, record_id: int, user: str, computer: str, source: str) -> None:
+    def _add_sources(self, source) -> None:
+        # *source* is one file name, or a tuple: the file plus every copy of
+        # the log the same record was also found in (see extract_iocs).
+        if isinstance(source, tuple):
+            self.sources.update(s for s in source if s)
+        elif source:
+            self.sources.add(source)
+
+    def update(self, ts: str, eid: int, record_id: int, user: str, computer: str, source) -> None:
         self.count += 1
         if ts:
             if not self.first or ts < self.first:
@@ -131,8 +140,7 @@ class _Accum:
             self.users.add(user)
         if computer:
             self.computers.add(computer)
-        if source:
-            self.sources.add(source)
+        self._add_sources(source)
 
 
 def _accum(store: dict, key: str,
@@ -232,6 +240,13 @@ def extract_iocs(events: list[dict], progress_fn: object = None) -> dict:
     st_shares:      dict[str, _Accum] = {}
     st_dlls:        dict[str, _Accum] = {}
 
+    # Count each physical record once.  With the same log loaded as several
+    # copies, every occurrence count was multiplied (an IOC seen 165 times
+    # reported as 660) and the count-sorted lists reordered.  The copies' file
+    # names still go into `sources`, so provenance names every file.
+    from evtx_tool.core.record_identity import collapse_copies
+    events, _copies = collapse_copies(events)
+
     total           = len(events)
     report_interval = max(1, total // 20)
     last_pct        = -1
@@ -251,6 +266,10 @@ def extract_iocs(events: list[dict], progress_fn: object = None) -> dict:
         src       = os.path.basename(
             ev.get("source_file", "") or ev.get("_source", "") or ""
         )
+        if id(ev) in _copies:
+            src = (src,) + tuple(
+                os.path.basename(c.get("source_file", "") or c.get("_source", "") or "")
+                for c in _copies[id(ev)])
         user = _get_user(ed)
 
         # Short aliases for the hot path
