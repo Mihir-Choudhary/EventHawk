@@ -856,6 +856,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._adv_eid_include: set[int] = set()
         self._adv_eid_exclude: set[int] = set()
         self._adv_eid_exclude_mode: bool = False
+        self._adv_eid_list: set[int] = set()          # profile event_ids
+        self._adv_eid_list_exclude: set[int] = set()  # profile exclude_event_ids
+        self._adv_task_cats: set[int] = set()         # profile task_categories
         self._adv_case_sensitive: bool = False
         self._adv_sources: list[str] = []      # already lowered (if not case-sensitive)
         self._adv_source_exclude: bool = False
@@ -952,6 +955,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._adv_eid_include = set()
         self._adv_eid_exclude = set()
         self._adv_eid_exclude_mode = False
+        self._adv_eid_list = set()
+        self._adv_eid_list_exclude = set()
+        self._adv_task_cats = set()
         self._adv_case_sensitive = False
         self._adv_sources = []
         self._adv_source_exclude = False
@@ -1060,6 +1066,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             self._adv_eid_include = set()
             self._adv_eid_exclude = set()
             self._adv_eid_exclude_mode = False
+            self._adv_eid_list = set()
+            self._adv_eid_list_exclude = set()
+            self._adv_task_cats = set()
             self._adv_case_sensitive = False
             self._adv_sources = []
             self._adv_source_exclude = False
@@ -1094,22 +1103,44 @@ class EventFilterProxyModel(QSortFilterProxyModel):
 
         # Event ID sets
         self._adv_eid_include, self._adv_eid_exclude = parse_event_id_expression(
-            cfg.get("event_id_expr", "")
+            cfg.get("event_id_expr") or ""
         )
         self._adv_eid_exclude_mode = cfg.get("event_id_exclude", False)
+
+        # The parse-time keys a PROFILE contributes (core.filters dialect):
+        # event_ids / exclude_event_ids lists and task_categories.  Apply
+        # Profiles and the Advanced Filter (with a profile checked) hand this
+        # method a profile-built config, but it read only the dialog's
+        # event_id_expr -- so in Normal mode a profile's event IDs were never
+        # applied, while Juggernaut (filter_sql) ANDs all three.  Mirror it.
+        def _ints(key: str) -> set[int]:
+            out: set[int] = set()
+            for x in cfg.get(key) or ():
+                try:
+                    out.add(int(x))
+                except (TypeError, ValueError):
+                    pass
+            return out
+        self._adv_eid_list = _ints("event_ids")
+        self._adv_eid_list_exclude = _ints("exclude_event_ids")
+        self._adv_task_cats = _ints("task_categories")
 
         # Levels
         levels = cfg.get("levels")
         self._adv_levels = set(levels) if levels and len(levels) < 8 else None
 
-        # Source / category / user / computer → pre-lower
-        self._adv_sources = [_low(s) for s in cfg.get("sources", [])]
+        # Source / category / user / computer → pre-lower.  `or []`, not a
+        # .get default: a profile-built config carries None for every list it
+        # does not set (core.filters.empty_filter), and iterating None raised
+        # TypeError -- Apply Profiles in Normal mode with no Advanced Filter
+        # active failed and left the view showing every event.
+        self._adv_sources = [_low(s) for s in cfg.get("sources") or []]
         self._adv_source_exclude = cfg.get("source_exclude", False)
-        self._adv_categories = [_low(c) for c in cfg.get("categories", [])]
+        self._adv_categories = [_low(c) for c in cfg.get("categories") or []]
         self._adv_category_exclude = cfg.get("category_exclude", False)
-        self._adv_users = [_low(u) for u in cfg.get("users", [])]
+        self._adv_users = [_low(u) for u in cfg.get("users") or []]
         self._adv_user_exclude = cfg.get("user_exclude", False)
-        self._adv_computers = [_low(c) for c in cfg.get("computers", [])]
+        self._adv_computers = [_low(c) for c in cfg.get("computers") or []]
         self._adv_computer_exclude = cfg.get("computer_exclude", False)
 
         # Text search — pre-compile regex.
@@ -1117,7 +1148,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         # has always accepted both (text_config_to_parquet_sql normalises), and
         # a list here used to raise AttributeError: 'list' object has no
         # attribute 'lower' — a hard crash, not a wrong result.
-        _raw_ts = cfg.get("text_search", "")
+        # `or ""`: a profile-built config carries text_search=None, and
+        # str(None) would have become a search for the word "None".
+        _raw_ts = cfg.get("text_search") or ""
         if isinstance(_raw_ts, (list, tuple)):
             _terms = [str(t) for t in _raw_ts if str(t).strip()]
         else:
@@ -1226,8 +1259,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._adv_date_to_t   = self._adv_date_to.time()   if self._adv_date_to   else None
 
         # Relative time — pre-compute cutoff
-        rel_days = cfg.get("relative_days", 0)
-        rel_hours = cfg.get("relative_hours", 0)
+        rel_days = cfg.get("relative_days") or 0
+        rel_hours = cfg.get("relative_hours") or 0
         self._adv_rel_exclude = cfg.get("relative_exclude", False)
         if rel_days > 0 or rel_hours > 0:
             self._adv_rel_cutoff = _dt.now(_tz.utc) - _td(days=rel_days, hours=rel_hours)
@@ -1254,7 +1287,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         #
         # We freeze the resulting set so the per-row hot path is O(1) membership.
         from evtx_tool.core.heavyweight.filter_sql import expand_condition_value
-        raw_conds = cfg.get("conditions", [])
+        raw_conds = cfg.get("conditions") or []
         prepped: list[dict] = []
         for c in raw_conds:
             name = c.get("name", "")
@@ -1647,6 +1680,20 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             if self._adv_eid_exclude:
                 if eid_int in self._adv_eid_exclude:
                     return False
+            # Profile-contributed lists (see set_advanced_filter), ANDed like
+            # filter_sql's "event_id IN" / "NOT IN".
+            if self._adv_eid_list and eid_int not in self._adv_eid_list:
+                return False
+            if eid_int in self._adv_eid_list_exclude:
+                return False
+        elif self._adv_eid_list:
+            return False            # SQL: NULL IN (...) is not true
+        if self._adv_task_cats:
+            try:
+                if int(ev.get("task") or 0) not in self._adv_task_cats:
+                    return False
+            except (TypeError, ValueError):
+                return False
 
         # ── Source (provider + channel) — pre-lowered sets ──────────────────
         if self._adv_sources:
