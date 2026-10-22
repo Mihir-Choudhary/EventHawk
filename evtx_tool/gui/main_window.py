@@ -15464,21 +15464,20 @@ class MainWindow(QMainWindow):
         for src, ids in sorted(by_file.items()):
             ids_sorted = sorted(set(ids))
             lo, hi = ids_sorted[0], ids_sorted[-1]
-            full_set = set(range(lo, hi + 1))
-            missing = sorted(full_set - set(ids_sorted))
-            total_missing += len(missing)
 
-            # Compress consecutive missing IDs into ranges  (e.g. 5-8 instead of 5,6,7,8)
+            # Gaps between consecutive IDs, as ranges (e.g. 5-8 instead of
+            # 5,6,7,8).  This used to build set(range(lo, hi + 1)): one
+            # damaged record carrying a huge ID made that billions of
+            # integers -- measured, an ID of 10**8 froze the window for 18 s
+            # and 10**15 never returned.  The arithmetic is O(events).
             ranges: list[str] = []
-            if missing:
-                start = prev = missing[0]
-                for m in missing[1:]:
-                    if m == prev + 1:
-                        prev = m
-                    else:
-                        ranges.append(str(start) if start == prev else f"{start}\u2013{prev}")
-                        start = prev = m
-                ranges.append(str(start) if start == prev else f"{start}\u2013{prev}")
+            n_missing = 0
+            for a, b in zip(ids_sorted, ids_sorted[1:]):
+                if b - a > 1:
+                    start, end = a + 1, b - 1
+                    ranges.append(str(start) if start == end else f"{start}\u2013{end}")
+                    n_missing += end - start + 1
+            total_missing += n_missing
 
             import os as _os2
             fname = _os2.path.basename(src)
@@ -15488,10 +15487,10 @@ class MainWindow(QMainWindow):
                 f"Events: {len(ids_sorted):,} &nbsp;|&nbsp; "
                 f"Expected: {hi - lo + 1:,}<br>"
             )
-            if missing:
+            if n_missing:
                 section += (
                     f"&nbsp;&nbsp;<span style='color:#a01800;font-weight:bold;'>"
-                    f"Missing ({len(missing):,}):</span> "
+                    f"Missing ({n_missing:,}):</span> "
                     + ", ".join(ranges[:200])
                 )
                 if len(ranges) > 200:
