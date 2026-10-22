@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from sentinel.gui.widgets import show_blocking
 
 from sentinel.gui.analysis_tab import AnalysisTab
 from sentinel.gui.baseline_tab import BaselineTab
@@ -160,8 +161,8 @@ class SentinelWindow(QDialog):
         self._tabs.setCurrentIndex(2)
 
         if t4 > 0:
-            QMessageBox.warning(
-                self,
+            show_blocking(
+                self, QMessageBox.Icon.Warning,
                 "Critical Alerts Detected",
                 f"{t4} critical alert(s) detected in Tier 4.\n"
                 f"Review the Results tab immediately.",

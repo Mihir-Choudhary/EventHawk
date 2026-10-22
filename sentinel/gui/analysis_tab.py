@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from sentinel.gui.widgets import forward_warnings, show_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class _AnalysisWorker(QThread):
     progress = Signal(str, float)
     finished = Signal(list, dict)   # scored_events, metrics
     error = Signal(str)
+    warning = Signal(str)            # engine log warnings, for the log pane
 
     def __init__(
         self,
@@ -48,6 +50,10 @@ class _AnalysisWorker(QThread):
         self.sigma_dir = sigma_dir
 
     def run(self) -> None:
+        with forward_warnings(self.warning.emit):
+            self._run()
+
+    def _run(self) -> None:
         try:
             from sentinel.analysis.engine import run_analysis
 
@@ -260,6 +266,7 @@ class AnalysisTab(QWidget):
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
+        self._worker.warning.connect(self._log)
         self._worker.start()
 
     def _on_progress(self, step: str, pct: float) -> None:
@@ -300,7 +307,7 @@ class AnalysisTab(QWidget):
         self._run_btn.setEnabled(True)
         self._status_label.setText("Error")
         self._log(f"ERROR: {msg}")
-        QMessageBox.critical(self, "Analysis Failed", msg)
+        show_blocking(self, QMessageBox.Icon.Critical, "Analysis Failed", msg)
 
     def _log(self, msg: str) -> None:
         self._log_edit.append(msg)

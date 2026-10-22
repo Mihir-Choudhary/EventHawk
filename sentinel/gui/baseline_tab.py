@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from sentinel.gui.widgets import forward_warnings, show_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class _BuildWorker(QThread):
     progress = Signal(str, float)    # step, 0.0-1.0
     finished = Signal(object)        # BaselineMeta or None on error
     error = Signal(str)
+    warning = Signal(str)            # builder log warnings, for the log pane
 
     def __init__(
         self,
@@ -49,6 +51,10 @@ class _BuildWorker(QThread):
         self.sigma_dir = sigma_dir
 
     def run(self) -> None:
+        with forward_warnings(self.warning.emit):
+            self._run()
+
+    def _run(self) -> None:
         try:
             from sentinel.analysis.parser import find_relevant_evtx_files
             from sentinel.baseline.builder import build_baseline
@@ -234,6 +240,7 @@ class BaselineTab(QWidget):
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
+        self._worker.warning.connect(self._log)
         self._worker.start()
 
     def _on_progress(self, step: str, pct: float) -> None:
@@ -260,7 +267,7 @@ class BaselineTab(QWidget):
         self._load_btn.setEnabled(True)
         self._status_label.setText("Error")
         self._log(f"ERROR: {msg}")
-        QMessageBox.critical(self, "Build Failed", msg)
+        show_blocking(self, QMessageBox.Icon.Critical, "Build Failed", msg)
 
     # ── Load existing ──────────────────────────────────────────────────────────
 

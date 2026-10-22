@@ -3,9 +3,66 @@ Shared small widgets for the Sentinel GUI.
 """
 from __future__ import annotations
 
+import logging
+import threading
+from contextlib import contextmanager
+from typing import Callable
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import QLabel, QStyledItemDelegate, QStyleOptionViewItem, QWidget
+from PySide6.QtWidgets import (
+    QLabel, QMessageBox, QStyledItemDelegate, QStyleOptionViewItem, QWidget,
+)
+
+
+def show_blocking(parent: QWidget, icon: QMessageBox.Icon, title: str, text: str) -> None:
+    """A modal message that cannot end up hidden behind its window.
+
+    A modal runs a nested event loop: until it is dismissed the window looks
+    alive but ignores every click.  On Windows it can open behind its parent
+    when the user switched away during a long build or analysis -- the
+    EventHawk issue #4 freeze.  Raising and activating it keeps it visible.
+    Use for messages raised automatically when a background job ends.
+    """
+    box = QMessageBox(icon, title, text, QMessageBox.StandardButton.Ok, parent)
+    box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    box.show()            # realise the window so the next two calls apply
+    box.raise_()
+    box.activateWindow()
+    box.exec()
+
+
+class _ThreadWarningHandler(logging.Handler):
+    def __init__(self, sink: Callable[[str], None]) -> None:
+        super().__init__(logging.WARNING)
+        self._sink = sink
+        self._thread = threading.get_ident()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.thread != self._thread:      # another tab's job
+            return
+        try:
+            self._sink(f"{record.levelname}: {record.getMessage()}")
+        except Exception:
+            self.handleError(record)
+
+
+@contextmanager
+def forward_warnings(sink: Callable[[str], None]):
+    """Send sentinel WARNING+ records logged on this thread to ``sink``.
+
+    The engine reports skipped records, unreadable timestamps, files that
+    failed to open and similar through ``logging`` -- which the GUI never
+    displayed (and pythonw has no console), so those caveats were invisible
+    to the analyst.  Use inside a worker's run() with a signal's emit.
+    """
+    handler = _ThreadWarningHandler(sink)
+    root = logging.getLogger("sentinel")
+    root.addHandler(handler)
+    try:
+        yield
+    finally:
+        root.removeHandler(handler)
 
 
 # ── Tier color mapping ─────────────────────────────────────────────────────────
