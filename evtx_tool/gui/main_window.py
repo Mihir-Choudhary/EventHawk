@@ -9402,6 +9402,45 @@ class MainWindow(QMainWindow):
     # dialog would only flash. Measured: ~40k events filter in well under 100ms.
     _NORMAL_BUSY_MIN_ROWS = 25_000
 
+    # Logon Sessions builds its sessions on the GUI thread in both modes
+    # (Juggernaut also queries the shards there).  Measured ~0.4 s per 122k
+    # events, so a large Security log froze the window for tens of seconds
+    # with nothing on screen to say it was working.
+    _LOGON_BUSY_MIN_ROWS = 100_000
+
+    class _BusyHandle:
+        def __init__(self, owner: "MainWindow", shown: bool) -> None:
+            self._owner, self.shown = owner, shown
+
+        def dismiss(self) -> None:
+            """Close the wait dialog now, e.g. before showing a message box."""
+            if self.shown:
+                self.shown = False
+                self._owner._close_hw_loading_dialog()
+
+    @contextlib.contextmanager
+    def _busy_wait(self, heading: str, detail: str, rows: int, min_rows: int):
+        """Show the Please-Wait dialog around GUI-thread work on *rows* events.
+
+        Shown only when *rows* >= *min_rows* and no other wait dialog is up
+        (it is never taken over or closed on another job's behalf).  Yields a
+        handle whose dismiss() closes it early; it is always closed on exit.
+        """
+        shown = False
+        if rows >= min_rows and self._hw_loading_dlg is None:
+            try:
+                self._show_hw_loading_dialog(
+                    heading=heading, detail=f"{detail}  ({rows:,} events)")
+                QApplication.processEvents()   # paint it before the thread blocks
+                shown = True
+            except Exception:
+                shown = False
+        handle = MainWindow._BusyHandle(self, shown)
+        try:
+            yield handle
+        finally:
+            handle.dismiss()
+
     @contextlib.contextmanager
     def _normal_filter_busy(self, detail: str = "Applying filter…",
                             rows: "int | None" = None,
@@ -12158,7 +12197,12 @@ class MainWindow(QMainWindow):
     def _on_show_logon_sessions(self) -> None:
         """Open the Logon Session Browser dialog (non-modal)."""
         if self._hw_model is not None:
-            self._on_show_logon_sessions_jm()
+            _full = getattr(self._hw_model, "_full_table", None)
+            with self._busy_wait("Please Wait — Logon Sessions",
+                                 "Building logon sessions…",
+                                 rows=len(_full) if _full is not None else 0,
+                                 min_rows=self._LOGON_BUSY_MIN_ROWS) as busy:
+                self._on_show_logon_sessions_jm(busy)
             return
         events = self._active_events
         if not events:
@@ -12176,11 +12220,14 @@ class MainWindow(QMainWindow):
                 return
             except RuntimeError:
                 pass  # underlying C++ object was destroyed
-        dlg = _LogonSessionDialog(
-            events=events,
-            on_filter_fn=self._set_session_filter,
-            parent=self,
-        )
+        with self._busy_wait("Please Wait — Logon Sessions",
+                             "Building logon sessions…",
+                             rows=len(events), min_rows=self._LOGON_BUSY_MIN_ROWS):
+            dlg = _LogonSessionDialog(
+                events=events,
+                on_filter_fn=self._set_session_filter,
+                parent=self,
+            )
         self._logon_sessions_dlg = dlg
         dlg.show()
         dlg.raise_()
@@ -12758,13 +12805,15 @@ class MainWindow(QMainWindow):
                 evtx_paths=evtx_files,
             )
 
-    def _on_show_logon_sessions_jm(self) -> None:
+    def _on_show_logon_sessions_jm(self, busy=None) -> None:
         """Juggernaut Mode implementation of the Logon Session Browser."""
         import json as _json
         import duckdb as _duckdb
 
         parquet_dir = getattr(self, "_hw_db_path", None)
         if not parquet_dir:
+            if busy:
+                busy.dismiss()
             QMessageBox.information(self, "Logon Sessions", "No events loaded.")
             return
 
@@ -12772,11 +12821,17 @@ class MainWindow(QMainWindow):
         try:
             with open(manifest_path, "r", encoding="utf-8") as _f:
                 shards = _json.load(_f)
-        except Exception:
-            QMessageBox.information(self, "Logon Sessions", "No events loaded.")
+        except Exception as exc:
+            # Not "No events loaded": the data IS loaded, it could not be read.
+            if busy:
+                busy.dismiss()
+            QMessageBox.warning(self, "Logon Sessions",
+                                f"Could not read the Juggernaut dataset manifest:\n{exc}")
             return
 
         if not shards:
+            if busy:
+                busy.dismiss()
             QMessageBox.information(self, "Logon Sessions", "No events loaded.")
             return
 
@@ -12796,11 +12851,15 @@ class MainWindow(QMainWindow):
             ).fetchall()
             _con.close()
         except Exception as exc:
+            if busy:
+                busy.dismiss()
             QMessageBox.warning(self, "Logon Sessions",
                                 f"Failed to query Parquet shards:\n{exc}")
             return
 
         if not _rows:
+            if busy:
+                busy.dismiss()
             QMessageBox.information(
                 self, "Logon Sessions",
                 "No logon events (4624 / 4634 / 4672 / 4688) found in the loaded files."
@@ -13040,6 +13099,8 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self._logon_sessions_dlg = dlg
+        if busy:
+            busy.dismiss()
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
