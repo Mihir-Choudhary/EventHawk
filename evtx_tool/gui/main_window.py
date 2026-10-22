@@ -4561,6 +4561,33 @@ class _RemoteAssistanceDialog(QDialog):
         # Unparseable timestamps sort last so they cannot corrupt the ordering
         # of the events that do have a readable time.
         _TS_LAST = _dt.max
+        # Drop, BEFORE the dedup, timestamp parse and sort, every event that
+        # _classify is certain to reject on channel + event ID alone (the loop
+        # skips those at once).  In Normal mode this receives every loaded
+        # event: 74k of them cost 5 s here, most of it with the GUI thread
+        # blocked, for 60 sessions.  Juggernaut already narrows in SQL.
+        # MUST mirror the channel/EID gates of _classify, in its order.
+        _SEC_EIDS = frozenset({4624, 4634, 4648, 4688, 4778, 4779})
+
+        def _may_classify(e: dict) -> bool:
+            chan = str(e.get("channel") or "").lower()
+            try:
+                eid = int(e.get("event_id") or 0)
+            except (TypeError, ValueError):
+                eid = 0
+            if _RA_CHAN in chan:
+                return eid in _RA_EIDS
+            if _RH_CHAN in chan:
+                return True
+            if "rdpclient" in chan:
+                return eid in _RDPCLIENT_EIDS
+            if _TS_CHAN in chan:
+                return eid in _TS_EIDS
+            if _SEC_CHAN in chan:
+                return eid in _SEC_EIDS
+            return False
+
+        events = [e for e in events if _may_classify(e)]
         _events_unique, _dup_sources = _dedup_records(events)
         events_sorted: list[dict] = sorted(
             _events_unique,
