@@ -37,8 +37,11 @@ desktop.ini
 # Test / debug scripts
 _test_ev_str.py
 
-# Baseline artifacts (user-generated, not source)
-baseline/
+# Baseline artifacts (user-generated, not source).  Root-anchored: an
+# unanchored "baseline/" also matched the sentinel/baseline/ source package,
+# which then never reached the repository.  The artifact files themselves are
+# matched by name below wherever they are written.
+/baseline/
 *.pkl
 *.pickle
 baseline_meta.json
