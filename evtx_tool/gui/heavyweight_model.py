@@ -1005,9 +1005,11 @@ class ArrowTableModel(QAbstractTableModel):
         # filter application makes active text searches silently disappear
         # (and clearing the record-id filter can never restore them).
         if ids:
-            ph = ",".join("?" * len(ids))
-            self._record_id_where_sql = f"record_id IN ({ph})"
-            self._record_id_params    = sorted(ids)
+            # Inlined integers: binding tens of thousands of parameters is
+            # slow (see apply_bookmark_filter).
+            self._record_id_where_sql = (
+                f"record_id IN ({','.join(str(int(i)) for i in sorted(ids))})")
+            self._record_id_params    = []
         else:
             self._record_id_where_sql = ""
             self._record_id_params    = []
@@ -1069,13 +1071,21 @@ class ArrowTableModel(QAbstractTableModel):
         if not keys:
             self.clear_record_id_filter()
             return
-        parts:  list[str] = []
-        params: list      = []
-        for sf, rid in keys:
-            parts.append("(source_file = ? AND record_id = ?)")
-            params.extend([sf, rid])
-        self._record_id_where_sql = " OR ".join(parts)
-        self._record_id_params    = params
+        # ONE membership test on a combined key, with the keys inlined as
+        # escaped literals.  It used to be an OR chain of
+        # "(source_file = ? AND record_id = ?)", one per key: DuckDB overflows
+        # its stack on a few thousand of those and takes the whole process
+        # down (measured: 1,000 fine, 5,000 crashed), so a Remote Assistance
+        # session, bookmark set or IOC pivot of that size killed EventHawk.
+        # Grouping by file still crashed at ~1,600 files.  Bound parameters
+        # are no fix either: binding 50k of them took 14 s; inlined they take
+        # 0.3 s.  chr(31) cannot occur in a path; quotes are doubled.
+        sep = "\x1f"
+        lits = ",".join(
+            "'" + f"{sf}{sep}{int(rid)}".replace("'", "''") + "'" for sf, rid in keys)
+        self._record_id_where_sql = (
+            f"(source_file || chr(31) || CAST(record_id AS VARCHAR)) IN ({lits})")
+        self._record_id_params    = []
         self._invalidate()
 
     def _get_shard_paths(self) -> list:

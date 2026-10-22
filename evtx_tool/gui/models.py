@@ -802,6 +802,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
 
         # IOC pivot / session / missing-record-ID pivot: filter by int record_id.
         self._record_id_filter: frozenset | None = None
+        self._record_id_filter_keyed: bool = False
 
         # Bookmark filter: composite (source_file, record_id) key so that events
         # with the same record_id from different files are distinguished in merge mode.
@@ -944,8 +945,15 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self.invalidateFilter()
 
     def set_record_id_filter(self, ids: frozenset) -> None:
-        """Show only events whose record_id is in ids (IOC pivot / session pivot)."""
+        """Show only the given events (IOC pivot / bookmark pivot).
+
+        *ids* holds (source_file, record_id) pairs -- or, for a caller that
+        only has ids, bare record_ids.  Prefer pairs: each EVTX numbers its
+        own records, so a bare id matches the same number in every other log
+        loaded (an IOC pivot measured 290 unrelated events of 308).
+        """
         self._record_id_filter = ids
+        self._record_id_filter_keyed = bool(ids) and isinstance(next(iter(ids)), tuple)
         self._update_filter_active()
         self.invalidateFilter()
 
@@ -1491,6 +1499,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         # This takes precedence over text/advanced filters so the count matches
         # exactly what the IOC extractor counted.
         if self._record_id_filter is not None:
+            if self._record_id_filter_keyed:
+                return (ev.get("source_file", ""), ev.get("record_id")) in self._record_id_filter
             return ev.get("record_id") in self._record_id_filter
 
         # ── Layer 1: Tactic / technique filter ──────────────────────────────

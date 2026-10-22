@@ -104,10 +104,17 @@ _DLL_EIDS      = frozenset({7})                       # Sysmon ImageLoaded
 
 class _Accum:
     """Per-IOC-value context accumulator."""
-    __slots__ = ("count", "first", "last", "eids", "record_ids", "users", "computers", "sources")
+    __slots__ = ("count", "first", "last", "eids", "record_ids", "record_keys",
+                 "users", "computers", "sources")
 
-    def __init__(self, ts: str, eid: int, record_id: int, user: str, computer: str, source) -> None:
+    def __init__(self, ts: str, eid: int, record_id: int, user: str, computer: str, source,
+                 keys: tuple = ()) -> None:
         self.count     = 1
+        # (source_file, record_id) of every record behind this IOC.  Record
+        # ids alone are NOT unique across logs -- each EVTX numbers its own --
+        # so a pivot on bare ids pulled in unrelated events from every other
+        # log loaded (measured: 290 of 308 events for one hash).
+        self.record_keys: set[tuple] = set(keys)
         self.first     = ts
         self.last      = ts
         self.eids: set[int]       = {eid}       if eid       else set()
@@ -125,8 +132,10 @@ class _Accum:
         elif source:
             self.sources.add(source)
 
-    def update(self, ts: str, eid: int, record_id: int, user: str, computer: str, source) -> None:
+    def update(self, ts: str, eid: int, record_id: int, user: str, computer: str, source,
+               keys: tuple = ()) -> None:
         self.count += 1
+        self.record_keys.update(keys)
         if ts:
             if not self.first or ts < self.first:
                 self.first = ts
@@ -144,15 +153,16 @@ class _Accum:
 
 
 def _accum(store: dict, key: str,
-           ts: str, eid: int, record_id: int, user: str, computer: str, source: str) -> None:
+           ts: str, eid: int, record_id: int, user: str, computer: str, source,
+           keys: tuple = ()) -> None:
     """Add or update an IOC value in the accumulator store."""
     key = key.strip()
     if not key:
         return
     if key in store:
-        store[key].update(ts, eid, record_id, user, computer, source)
+        store[key].update(ts, eid, record_id, user, computer, source, keys)
     else:
-        store[key] = _Accum(ts, eid, record_id, user, computer, source)
+        store[key] = _Accum(ts, eid, record_id, user, computer, source, keys)
 
 
 def _to_entry(val: str, accum: _Accum) -> dict:
@@ -164,6 +174,7 @@ def _to_entry(val: str, accum: _Accum) -> dict:
         "last_seen":     accum.last  or None,
         "event_ids":     sorted(accum.eids)[:20],
         "record_ids":    sorted(accum.record_ids)[:50_000],
+        "record_keys":   [list(k) for k in sorted(accum.record_keys)[:50_000]],
         "users":         sorted(accum.users)[:10],
         "computers":     sorted(accum.computers)[:10],
         "sources":       sorted(accum.sources)[:5],
@@ -266,15 +277,20 @@ def extract_iocs(events: list[dict], progress_fn: object = None) -> dict:
         src       = os.path.basename(
             ev.get("source_file", "") or ev.get("_source", "") or ""
         )
-        if id(ev) in _copies:
+        _same = [ev, *_copies.get(id(ev), ())]
+        if len(_same) > 1:
             src = (src,) + tuple(
                 os.path.basename(c.get("source_file", "") or c.get("_source", "") or "")
-                for c in _copies[id(ev)])
+                for c in _same[1:])
+        # Exact (file, record) of this record and of each copy of it, as the
+        # event table stores them, for the pivot.
+        rkeys = tuple((str(c.get("source_file", "") or ""), int(c.get("record_id", 0) or 0))
+                      for c in _same if c.get("record_id") not in (None, ""))
         user = _get_user(ed)
 
         # Short aliases for the hot path
         def _a(store: dict, key: str) -> None:
-            _accum(store, key, ts, eid, record_id, user, comp, src)
+            _accum(store, key, ts, eid, record_id, user, comp, src, rkeys)
 
         # ── Computer name ─────────────────────────────────────────────────
         if comp and comp not in _NOISE_COMPUTERS:

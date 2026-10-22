@@ -11499,9 +11499,14 @@ class MainWindow(QMainWindow):
         for _cat in _PIVOT_CATEGORIES:
             for _entry in (iocs or {}).get(_cat) or []:
                 if isinstance(_entry, dict):
-                    _rids = _entry.get("record_ids") or []
-                    if _rids:
-                        self._ioc_pivot_map[(_cat, _entry["value"])] = frozenset(_rids)
+                    # (source_file, record_id) pairs, never bare record ids:
+                    # every EVTX numbers its own records, so on a multi-log
+                    # load a bare-id pivot pulled in unrelated events from
+                    # other logs (measured: 290 of 308 events for one hash).
+                    _keys = _entry.get("record_keys") or []
+                    if _keys:
+                        self._ioc_pivot_map[(_cat, _entry["value"])] = frozenset(
+                            (str(sf), int(rid)) for sf, rid in _keys)
 
         # Populate analysis tabs
         QTimer.singleShot(0,   self._refresh_iocs_tab)
@@ -13846,7 +13851,9 @@ class MainWindow(QMainWindow):
             return
 
         if self._hw_model is not None:
-            self._hw_model.apply_record_id_filter(id_set)
+            # Composite (source_file, record_id) filter -- same SQL slot as
+            # the record-id filter.
+            self._hw_model.apply_bookmark_filter(id_set)
         else:
             self._active_proxy.set_record_id_filter(id_set)
 
@@ -15903,11 +15910,14 @@ class MainWindow(QMainWindow):
             rid = int(item.text())
         except ValueError:
             return
-        rid_set = frozenset([rid])
+        # (source_file, record_id): a bare id also matched the event with the
+        # same number in every other log loaded.
+        sf_item = self._tbl_bookmarks.item(row, 4)
+        key_set = frozenset([(sf_item.text() if sf_item else "", rid)])
         if self._hw_model is not None:
-            self._hw_model.apply_record_id_filter(rid_set)
+            self._hw_model.apply_bookmark_filter(key_set)
         else:
-            self._active_proxy.set_record_id_filter(rid_set)
+            self._active_proxy.set_record_id_filter(key_set)
         self._update_count_label()
         self._set_status(f"Pivot to bookmarked event (record_id={rid})")
 
