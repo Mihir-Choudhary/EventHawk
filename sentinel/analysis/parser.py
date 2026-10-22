@@ -1,5 +1,5 @@
 """
-EVTX parser using python-evtx (pyevtx-rs Rust backend).
+EVTX parser using the ``evtx`` package (pyevtx-rs, Rust backend) -- not the pure-Python ``python-evtx``.
 
 Module: evtx  (lowercase — NOT 'Evtx')
 API:    evtx.PyEvtxParser(path).records_json()
@@ -64,7 +64,7 @@ def parse_evtx_files(
     try:
         import evtx as _evtx_mod
     except ImportError:
-        logger.error("python-evtx not installed. Install with: pip install python-evtx")
+        logger.error("evtx (pyevtx-rs) not installed. Install with: pip install evtx")
         return []
 
     results: list[RawEvent] = []
@@ -124,28 +124,60 @@ def hash_evtx_files(paths: list[Path]) -> dict[str, str]:
 
 # ── Parallel parsing (F4) ──────────────────────────────────────────────────────
 
-def _parse_path_worker(path_str: str) -> tuple[int, int, list]:
+def _new_skips() -> dict[str, int]:
+    return {"corrupt": 0, "oversize": 0, "unparsed": 0}
+
+
+def _warn_skipped(name: str, skips: dict[str, int]) -> None:
+    """One WARNING per file for records that could not be scored.
+
+    These used to be dropped with no trace (or at DEBUG), so an analyst had
+    no way to know the result was built on an incomplete log.
+    """
+    if any(skips.values()):
+        logger.warning(
+            "%s: skipped %d corrupt, %d oversized (>1 MB) and %d unparseable "
+            "record(s); they are not in this analysis",
+            name, skips["corrupt"], skips["oversize"], skips["unparsed"])
+
+
+def _read_error_text(exc: Exception, seen: int) -> str:
+    """Describe a file that could not be read to the end.
+
+    pyevtx-rs can stop part-way through a file (e.g. a damaged chunk).  The
+    records read before that point are kept, so say how far it got rather
+    than implying nothing was read.
+    """
+    if seen:
+        return (f"{exc} -- stopped after {seen} record(s); the rest of the file "
+                f"is not in this analysis")
+    return f"{exc} -- no records could be read"
+
+
+def _parse_path_worker(path_str: str) -> tuple[int, int, list, dict]:
     """Top-level worker function for ProcessPoolExecutor (must be picklable).
 
-    Returns (seen, matched, raw json-serialisable dicts) so the worker does NOT
-    need to import sentinel.models — avoids pickling RawEvent across processes.
-    Instead we return the raw field dict and reconstruct RawEvents in the caller.
+    Returns (seen, matched, raw json-serialisable dicts, skip counts) so the
+    worker does NOT need to import sentinel.models — avoids pickling RawEvent
+    across processes.  Instead we return the raw field dict and reconstruct
+    RawEvents in the caller.
     """
     import json as _json
-    import logging as _logging
     from datetime import datetime, timezone
 
-    _log = _logging.getLogger(__name__)
     path = Path(path_str)
     records_out: list[dict] = []
     seen = 0
     matched = 0
+    skips = _new_skips()
 
+    # Anything logged here stays in the worker process and is never seen, so
+    # an open failure travels back in the result for the caller to report.
     try:
         import evtx as _evtx_mod
     except ImportError:
-        _log.error("python-evtx not installed")
-        return 0, 0, []
+        skips["open_error"] = "evtx (pyevtx-rs) not installed. Install with: pip install evtx"
+        return 0, 0, [], skips
 
     _TARGET_IDS = {4688, 4689, 1, 5, 8, 10}
 
@@ -153,12 +185,14 @@ def _parse_path_worker(path_str: str) -> tuple[int, int, list]:
         parser = _evtx_mod.PyEvtxParser(str(path))
         for record in parser.records_json():
             if isinstance(record, Exception):
+                skips["corrupt"] += 1
                 continue
             seen += 1
             try:
                 raw_data = record["data"]
                 # S3: Guard against JSON bomb — skip records > 1MB
                 if len(raw_data) > 1_048_576:
+                    skips["oversize"] += 1
                     continue
                 data = _json.loads(raw_data)
                 # B3: Filter to target event IDs inside worker to avoid
@@ -173,11 +207,12 @@ def _parse_path_worker(path_str: str) -> tuple[int, int, list]:
                 records_out.append({"data": data, "ts_raw": ts_raw, "file": path.name})
                 matched += 1
             except Exception:
+                skips["unparsed"] += 1
                 continue
     except Exception as exc:
-        _log.warning("Failed to open %s: %s", path.name, exc)
+        skips["open_error"] = _read_error_text(exc, seen)
 
-    return seen, matched, records_out
+    return seen, matched, records_out, skips
 
 
 def parse_evtx_files_parallel(
@@ -209,6 +244,7 @@ def parse_evtx_files_parallel(
         max_workers = min(len(paths), os.cpu_count() or 1)
 
     results: list[RawEvent] = []
+    retry: list[Path] = []
     total_seen = 0
     total_matched = 0
     completed = 0
@@ -226,19 +262,48 @@ def parse_evtx_files_parallel(
                 if progress_cb:
                     progress_cb(f"Parsed {path.name}", completed / total)
                 try:
-                    seen, matched, records = fut.result()
-                    total_seen += seen
-                    total_matched += matched
-                    for rec in records:
-                        ev = _parse_record(rec["data"], rec["ts_raw"])
-                        if ev is not None:
-                            results.append(ev)
+                    seen, matched, records, skips = fut.result()
                 except Exception as exc:
-                    logger.warning("Worker failed for %s: %s", path.name, exc)
+                    # A broken pool fails every future, not the executor, so
+                    # the serial fallback below never ran: the analysis
+                    # "completed" with 0 events.  Re-read such files here.
+                    logger.warning("Worker failed for %s (%s); reading it in-process instead",
+                                   path.name, exc)
+                    retry.append(path)
+                    continue
+                open_error = skips.pop("open_error", None)
+                if open_error:
+                    logger.warning("Could not read %s: %s", path.name, open_error)
+                total_seen += seen
+                total_matched += matched
+                # Per record, as in the serial path: one bad record used to
+                # abort the rest of the file under a misleading "Worker failed".
+                for rec in records:
+                    try:
+                        ev = _parse_record(rec["data"], rec["ts_raw"])
+                    except Exception as exc:
+                        skips["unparsed"] += 1
+                        logger.debug("Failed to parse record in %s: %s", path.name, exc)
+                        continue
+                    if ev is not None:
+                        results.append(ev)
+                _warn_skipped(path.name, skips)
     except Exception as exc:
         # ProcessPoolExecutor unavailable (e.g. frozen exe) — fall back to serial
         logger.warning("Parallel parsing unavailable (%s); falling back to serial", exc)
         return parse_evtx_files(paths, progress_cb=progress_cb)
+
+    if retry:
+        import evtx as _evtx_mod
+        for path in retry:
+            try:
+                seen, matched, events = _parse_single_evtx(path, _evtx_mod)
+            except Exception as exc:
+                logger.warning("Failed to open %s: %s", path.name, exc)
+                continue
+            total_seen += seen
+            total_matched += matched
+            results.extend(events)
 
     logger.info(
         "Parallel parsing complete: %d files, %d total records, %d matched target IDs %s",
@@ -259,34 +324,44 @@ def _parse_single_evtx(path: Path, evtx_mod) -> tuple[int, int, list[RawEvent]]:
     events: list[RawEvent] = []
     seen = 0
     matched = 0
+    skips = _new_skips()
 
     parser = evtx_mod.PyEvtxParser(str(path))
 
-    for record in parser.records_json():
-        # records_json() yields dicts OR RuntimeError objects — must check type
-        if isinstance(record, Exception):
-            logger.debug("Corrupt record in %s: %s", path.name, record)
-            continue
-
-        seen += 1
-        try:
-            raw_data = record["data"]
-            # S3: Guard against JSON bomb — skip records > 1MB
-            if len(raw_data) > 1_048_576:
-                logger.warning(
-                    "Oversized record in %s (%d bytes) — skipping (potential JSON bomb)",
-                    path.name, len(raw_data),
-                )
+    # An error raised by the iterator itself ends the file early.  It used to
+    # escape from here and discard every event already read from the file.
+    try:
+        for record in parser.records_json():
+            # records_json() yields dicts OR RuntimeError objects — must check type
+            if isinstance(record, Exception):
+                skips["corrupt"] += 1
+                logger.debug("Corrupt record in %s: %s", path.name, record)
                 continue
-            data = json.loads(raw_data)
-            ts_raw = record.get("timestamp", "")
-            ev = _parse_record(data, ts_raw)
-            if ev is not None:
-                matched += 1
-                events.append(ev)
-        except Exception as exc:
-            logger.debug("Failed to parse record in %s: %s", path.name, exc)
 
+            seen += 1
+            try:
+                raw_data = record["data"]
+                # S3: Guard against JSON bomb — skip records > 1MB
+                if len(raw_data) > 1_048_576:
+                    skips["oversize"] += 1
+                    logger.warning(
+                        "Oversized record in %s (%d bytes) — skipping (potential JSON bomb)",
+                        path.name, len(raw_data),
+                    )
+                    continue
+                data = json.loads(raw_data)
+                ts_raw = record.get("timestamp", "")
+                ev = _parse_record(data, ts_raw)
+                if ev is not None:
+                    matched += 1
+                    events.append(ev)
+            except Exception as exc:
+                skips["unparsed"] += 1
+                logger.debug("Failed to parse record in %s: %s", path.name, exc)
+    except Exception as exc:
+        logger.warning("Could not read %s: %s", path.name, _read_error_text(exc, seen))
+
+    _warn_skipped(path.name, skips)
     return seen, matched, events
 
 
@@ -356,7 +431,7 @@ def _flatten_event_data(event_data) -> dict[str, str]:
     """
     Normalize EventData into a flat {name: value} dict.
 
-    Handles three shapes python-evtx produces:
+    Handles three shapes pyevtx-rs produces:
       List:  {"Data": [{"#attributes": {"Name": "k"}, "#text": "v"}, ...]}
       Dict:  {"Data": {"k": "v", ...}}
       Flat:  {"k": "v", ...}
@@ -569,7 +644,7 @@ def find_relevant_evtx_files(
     try:
         import evtx as _evtx_mod
     except ImportError:
-        logger.error("python-evtx not installed. Install with: pip install python-evtx")
+        logger.error("evtx (pyevtx-rs) not installed. Install with: pip install evtx")
         return []
 
     all_evtx = sorted(folder.rglob("*.evtx"))
@@ -673,7 +748,7 @@ def diagnose_evtx_files(paths: list[Path]) -> dict:
     try:
         import evtx as _evtx_mod
     except ImportError:
-        return {"error": "python-evtx not installed"}
+        return {"error": "evtx (pyevtx-rs) not installed. Install with: pip install evtx"}
 
     from collections import Counter
     id_counts: Counter = Counter()
