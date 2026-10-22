@@ -121,7 +121,9 @@ def _build_header(meta: "BaselineMeta", metrics: dict, scored_events: list | Non
         "baseline_period": f"{meta.start_ts} → {meta.end_ts}",
         "baseline_events": meta.event_count,
         "baseline_stability": meta.stability_score,
-        "tier_boundaries": meta.tier_boundaries,
+        # The boundaries actually used for scoring (TierBoundaries.for_scoring),
+        # not the raw percentiles stored in the baseline.
+        "tier_boundaries": metrics.get("tier_boundaries", meta.tier_boundaries),
         "target_events_scored": metrics.get("events_scored", 0),
         "suppression_rate_pct": metrics.get("suppression_rate_pct", 0.0),
         # F11/S5: input file hashes for forensic chain-of-custody

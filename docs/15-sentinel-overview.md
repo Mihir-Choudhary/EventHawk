@@ -57,6 +57,14 @@ For each Event 4688 or Sysmon Event 1:
 | **T3** | 46 – 70 | Elevated — warrants direct investigation | Reviewed with full justification |
 | **T4** | 71 + | **Critical** — highly anomalous, likely malicious | Prioritised finding with full context |
 
+The T1 ceiling is calibrated to your baseline, not fixed at 20: it is the 90th
+percentile of the baseline's own scores, plus the most the host-drift bonus can
+add, so an event that looks like the baseline stays in T1 while anything new
+leaves it (a quiet baseline gives a ceiling of a few points). The T2 and T3
+ceilings are the baseline's 97th and 99.8th percentiles, but never below 45 and
+70, so the bands keep their width on a small or uniform baseline. The
+boundaries used are recorded in the report header as `tier_boundaries`.
+
 ---
 
 ## When to Use Sentinel

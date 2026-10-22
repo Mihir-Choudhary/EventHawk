@@ -62,7 +62,12 @@ def run_analysis(
     # ── Load baseline artifacts ───────────────────────────────────────────────
     _cb("Loading baseline artifacts", 0.0)
     meta, freq_model, trie, fuse = load_artifacts(baseline_dir)
-    tier_bounds = TierBoundaries(**meta.tier_boundaries)
+    # The baseline stores raw percentiles; derive the scoring boundaries here
+    # (one place) so baselines that were already built are covered too.
+    stored_bounds = TierBoundaries(**meta.tier_boundaries)
+    tier_bounds = stored_bounds.for_scoring(cfg.drift_bonus_weight)
+    logger.info("Tier boundaries: calibrated %s -> scoring with %s",
+                stored_bounds.as_dict(), tier_bounds.as_dict())
 
     # ── Parse target events ───────────────────────────────────────────────────
     _cb("Hashing input EVTX files", 0.04)
@@ -90,7 +95,8 @@ def run_analysis(
                     "tier3_highlight": 0, "tier4_critical": 0,
                     "suppression_rate_pct": 0.0,
                     "top10_suppressed_processes": [],
-                    "input_file_hashes": {},
+                    "input_file_hashes": input_file_hashes,
+                    "tier_boundaries": tier_bounds.as_dict(),
                     "drift_mild_threshold": cfg.drift_mild_threshold,
                     "drift_significant_threshold": cfg.drift_significant_threshold}
 
@@ -156,8 +162,8 @@ def run_analysis(
         # Sub-scores
         s_cmd = surprisal_cmdline(freq_model, proc_norm, cmdline_norm)
         s_lin = surprisal_lineage(freq_model, proc_norm, parent_norm)
-        depth, _ = trie.query(chain)
-        t_score = trie_depth_score(depth, len(chain))
+        depth, scored_len = trie.query_scored(chain)
+        t_score = trie_depth_score(depth, scored_len)
         ppid_flag = 1.0 if 'PPID_MISMATCH' in ev.flags else 0.0
 
         # Image hash mismatch bonus (Sysmon events only, when hash is available)
@@ -200,6 +206,7 @@ def run_analysis(
     _cb("Done", 1.0)
 
     metrics = _build_metrics(scored, len(raw_events), input_file_hashes, cfg)
+    metrics["tier_boundaries"] = tier_bounds.as_dict()
     logger.info(
         "Analysis complete: %d events scored, tier4=%d, tier3=%d, hosts=%d",
         len(scored),

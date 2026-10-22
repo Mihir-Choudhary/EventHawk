@@ -114,8 +114,7 @@ def build_baseline(
     # including them pollutes the freq model with empty-parent entries that
     # suppress alerts for processes launched without a resolvable lineage.
     _cb("Normalizing events", 0.15)
-    create_events = [ev for ev in raw_events if ev.event_id in {4688, 1}]
-    normalized: list[NormalizedEvent] = _normalize_all(create_events)
+    normalized: list[NormalizedEvent] = _normalize_all(raw_events)
 
     # ── 0.5  Frequency model ──────────────────────────────────────────────────
     _cb("Building frequency model", 0.40)
@@ -173,12 +172,27 @@ def build_baseline(
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _normalize_all(raw_events: list[RawEvent]) -> list[NormalizedEvent]:
+    """Normalize the process-create events, resolving lineage exactly as
+    analysis does (engine.run_analysis).
+
+    The baseline used to store [proc, parent] only, while analysis rebuilds
+    up to five levels with the lineage tracker -- so a boot process scored as
+    a one-third ancestry miss against its own baseline (lsass > wininit > smss
+    matched 2 of 3).  Feeding every event (terminations too) in time order to
+    the same tracker makes both phases build the same chains.
+    """
+    from sentinel.analysis.lineage import PerHostLineageTracker
+
+    tracker = PerHostLineageTracker()
     normalized = []
-    for ev in raw_events:
+    for ev in sorted(raw_events, key=lambda e: e.timestamp):
+        resolved_parent = tracker.process_event(ev)
+        if ev.event_id not in (4688, 1):
+            continue
         proc_norm = normalize_procname(ev.process_name)
-        parent_norm = normalize_procname(ev.parent_name)
+        parent_norm = normalize_procname(resolved_parent or ev.parent_name)
         cmdline_norm = normalize_cmdline(ev.cmdline)
-        chain = [proc_norm, parent_norm]  # extend with grandparent if available
+        chain = tracker.get_ancestry_chain(ev, proc_norm, parent_norm)
         normalized.append(NormalizedEvent(
             raw=ev,
             proc_norm=proc_norm,
@@ -191,8 +205,6 @@ def _normalize_all(raw_events: list[RawEvent]) -> list[NormalizedEvent]:
 
 def _build_trie(normalized: list[NormalizedEvent]) -> AncestryTrie:
     trie = AncestryTrie()
-    # Build ancestry chains: we only have proc + parent from Security logs.
-    # Sysmon would provide full chains; for now use depth-2 (proc, parent).
     for ev in normalized:
         chain = ev.ancestry_chain[:_MAX_ANCESTRY_DEPTH]
         if chain:
@@ -212,8 +224,8 @@ def _calibrate_tiers(
     for ev in normalized:
         s_cmd = surprisal_cmdline(freq_model, ev.proc_norm, ev.cmdline_norm)
         s_lin = surprisal_lineage(freq_model, ev.proc_norm, ev.parent_norm)
-        depth, _ = trie.query(ev.ancestry_chain)
-        t_score = trie_depth_score(depth, len(ev.ancestry_chain))  # B17: use shared formula
+        depth, scored_len = trie.query_scored(ev.ancestry_chain)
+        t_score = trie_depth_score(depth, scored_len)  # B17: use shared formula
         score = composite_score(s_cmd, s_lin, t_score, 0.0, 0.0)
         scores.append(score)
 

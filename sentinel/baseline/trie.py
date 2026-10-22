@@ -55,6 +55,27 @@ class AncestryTrie:
             depth += 1
         return depth, last_count
 
+    def query_scored(self, chain: list[str]) -> tuple[int, int]:
+        """Return (match_depth, scored_len) for trie_depth_score.
+
+        A level the baseline never recorded on this path cannot be called
+        unseen.  When the walk stops at a node with no children -- the
+        baseline has no deeper ancestry here (its log window began after the
+        grandparent started, or it was built when only [proc, parent] was
+        stored) -- the chain is scored only up to that depth.  A mismatch
+        where the baseline did record deeper ancestry still counts.
+        """
+        node = self.root
+        depth = 0
+        for name in chain:
+            if name not in node.children:
+                break
+            node = node.children[name]
+            depth += 1
+        if 0 < depth < len(chain) and not node.children:
+            return depth, depth
+        return depth, len(chain)
+
     def most_common_parent(self, proc_norm: str) -> str:
         """
         Return the most common baseline parent of proc_norm (by insertion count).
