@@ -8564,6 +8564,12 @@ class MainWindow(QMainWindow):
                           title, text, QMessageBox.StandardButton.Ok, self)
         if detail:
             box.setDetailedText(detail)
+        self._exec_on_top(box)
+
+    @staticmethod
+    def _exec_on_top(box: QMessageBox) -> None:
+        """exec() a prepared message box raised and on top (see _warn_blocking);
+        for boxes that need their own buttons, e.g. "Open Folder"."""
         box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         box.show()            # realise the window so the next two calls apply
         box.raise_()
@@ -14843,16 +14849,25 @@ class MainWindow(QMainWindow):
             f"  scriptblock_<GUID>.txt × {blocks:,}\n"
         )
         if errors:
-            msg += f"\nParse errors: {errors}\n"
+            msg += (f"\nErrors: {errors} — see Show Details, and "
+                    "ps_extraction_summary.txt\n")
         msg += f"\nDirectory:\n{output_dir}"
 
         result_dlg = QMessageBox(self)
         result_dlg.setWindowTitle("PowerShell History — Complete")
         result_dlg.setText(msg)
-        result_dlg.setIcon(QMessageBox.Icon.Information)
+        # Unreadable files and skipped records make the result incomplete:
+        # say so with a warning icon, not a plain "complete".
+        result_dlg.setIcon(QMessageBox.Icon.Warning if errors
+                           else QMessageBox.Icon.Information)
+        error_messages = summary.get("error_messages") or []
+        if error_messages:
+            result_dlg.setDetailedText("\n".join(error_messages))
         open_btn = result_dlg.addButton("Open Folder", QMessageBox.ButtonRole.ActionRole)
         result_dlg.addButton(QMessageBox.StandardButton.Ok)
-        result_dlg.exec()
+        # Raised at the end of a background job, possibly after the user
+        # switched away: must not open hidden behind the window (issue #4).
+        self._exec_on_top(result_dlg)
         if result_dlg.clickedButton() is open_btn and output_dir:
             try:
                 os.startfile(output_dir)
@@ -14874,7 +14889,7 @@ class MainWindow(QMainWindow):
         err_dlg.setIcon(QMessageBox.Icon.Critical)
         err_dlg.setText("PowerShell extraction encountered an error.")
         err_dlg.setDetailedText(tb)
-        err_dlg.exec()
+        self._exec_on_top(err_dlg)
 
     def _on_clear_files(self) -> None:
         """✕ button — clear the file/directory list AND discard parsed results."""

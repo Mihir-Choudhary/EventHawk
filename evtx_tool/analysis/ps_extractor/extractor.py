@@ -84,6 +84,15 @@ class PSExtractor:
         self.cancel_check: Callable[[], bool] = lambda: False
         self._errors: list[str] = []
 
+    def add_error(self, message: str) -> None:
+        """Record a problem found outside the pipeline (e.g. while reading the
+        source files) so it is counted and written like the pipeline's own."""
+        self._errors.append(message)
+
+    @property
+    def errors(self) -> list[str]:
+        return list(self._errors)
+
     def _emit(self, step: str, pct: float) -> None:
         try:
             self.progress_callback(step, pct)
@@ -275,7 +284,9 @@ class PSExtractor:
                 if isinstance(data, str):
                     try:
                         data = json.loads(data)
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as exc:
+                        rid = raw.get("event_record_id", "?")
+                        self._errors.append(f"record {rid}: undecodable event JSON ({exc})")
                         continue
                 if not isinstance(data, dict):
                     continue

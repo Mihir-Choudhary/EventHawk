@@ -80,6 +80,13 @@ class PSWorker(QThread):
 
             # L3: Build a generator that streams records from all files.
             # This avoids loading all records into a list before processing.
+            #
+            # records_json() yields an exception object, not a dict, for a
+            # corrupt record.  Indexing it used to raise here and abandon the
+            # REST of that file under one log line -- which, like any read
+            # failure, never reached the summary or the dialog.  Corrupt
+            # records are now skipped one at a time, and every problem is
+            # recorded as an extraction error.
             def _record_stream() -> Generator[dict, None, None]:
                 for i, fpath in enumerate(self._files):
                     if self._cancelled:
@@ -89,17 +96,29 @@ class PSWorker(QThread):
                         f"Reading {basename} ({i + 1}/{total_files})...",
                         -0.05,  # sub-zero = indeterminate progress bar
                     )
+                    read = corrupt = 0
                     try:
                         parser = PyEvtxParser(fpath)
                         for rec in parser.records_json():
                             if self._cancelled:
                                 return
+                            if isinstance(rec, Exception):
+                                corrupt += 1
+                                continue
+                            read += 1
                             # Tag each record with its source file so the extractor
                             # can track which files actually contained PS events.
                             rec["_source_file"] = fpath
                             yield rec
                     except Exception as exc:
                         logger.warning("Could not read %s: %s", fpath, exc)
+                        extractor.add_error(
+                            f"{basename}: could not read past record {read} ({exc}); "
+                            "the rest of the file was not examined"
+                            if read else f"{basename}: could not be read ({exc})")
+                    if corrupt:
+                        extractor.add_error(
+                            f"{basename}: {corrupt} corrupt record(s) skipped")
 
             # ── Phase 2: run extraction pipeline ────────────────────────────
             extractor = PSExtractor(
@@ -114,6 +133,8 @@ class PSWorker(QThread):
 
             if self._cancelled and not summary.get("cancelled"):
                 summary["cancelled"] = True
+            # The summary carries only a count; the GUI shows the messages.
+            summary["error_messages"] = extractor.errors[:50]
 
             self.extraction_done.emit(summary)
 
