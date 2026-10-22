@@ -2125,9 +2125,41 @@ class _LogonSessionDialog(QDialog):
                     _raw = str(ev.get("timestamp", "") or "")
                     if _raw > sess["last_seen_ts_raw"]:
                         sess["last_seen_ts_raw"] = _raw
-            rid = ev.get("_record_id")
-            if rid is not None:
-                sess["related_keys"].add((str(ev.get("_source_file", "") or ""), rid))
+            for src in (ev, *_copies.get(id(ev), ())):
+                rid = src.get("_record_id")
+                if rid is not None:
+                    sess["related_keys"].add((str(src.get("_source_file", "") or ""), rid))
+
+        # Collapse repeats of the same physical record -- the same log loaded
+        # twice, or a collection folder holding "Security.evtx" and
+        # "Security - Copy.evtx".  Without this each copy of a 4624 opened its
+        # own session and every copy of the following 4672s attached to the
+        # LAST one: measured on the real log plus three copies, 155 sessions
+        # became 890, and a session with one privileged event showed as four
+        # rows, one claiming 4 privileged events and three claiming none.
+        # Identity is host + event id + exact timestamp + record id (unique
+        # within a log; these event IDs are Security-only); the copies' own
+        # (file, record) keys are kept for the session filter.  An event with
+        # no record id is never collapsed.  Same rule as Remote Assistance.
+        _copies: dict[int, list[dict]] = {}
+        _kept: dict[tuple, dict] = {}
+        _unique: list[dict] = []
+        for ev in events:
+            rid = ev.get("_record_id", ev.get("record_id"))
+            if rid is None or str(rid).strip() == "":
+                _unique.append(ev)
+                continue
+            ident = (str(ev.get("computer") or "").strip().lower(),
+                     str(ev.get("event_id") or ""),
+                     str(ev.get("timestamp") or "").strip(),
+                     str(rid).strip())
+            first = _kept.get(ident)
+            if first is None:
+                _kept[ident] = ev
+                _unique.append(ev)
+            else:
+                _copies.setdefault(id(first), []).append(ev)
+        events = _unique
 
         for ev in events:
             eid      = ev.get("event_id", 0)
