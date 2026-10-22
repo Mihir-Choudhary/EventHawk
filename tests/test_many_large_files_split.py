@@ -78,8 +78,10 @@ def main() -> int:
             if not cand:
                 continue
             try:
-                st = os.statvfs(cand)
-                if st.f_bavail * st.f_frsize > 40 * 1024 * MB:
+                # shutil.disk_usage, not os.statvfs: statvfs does not exist on
+                # Windows, so this whole suite died at import-time there.
+                st = shutil.disk_usage(cand)
+                if st.free > 40 * 1024 * MB:
                     WORK_BASE = cand; break
             except OSError:
                 continue
@@ -90,8 +92,7 @@ def main() -> int:
     # a disk-space failure here says nothing about the code under test.
     _need_gb = max(8, N * 0.22)
     try:
-        _st = os.statvfs(WORK_BASE)
-        _free_gb = _st.f_bavail * _st.f_frsize / (1024 ** 3)
+        _free_gb = shutil.disk_usage(WORK_BASE).free / (1024 ** 3)
     except OSError:
         _free_gb = 0.0
     if _free_gb < _need_gb:

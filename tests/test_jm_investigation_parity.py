@@ -100,7 +100,7 @@ def main() -> int:
 
     # ── every cap Juggernaut applies must be DISCLOSED, not silent ───────
     src = open(os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "evtx_tool", "gui", "main_window.py")).read()
+        os.path.abspath(__file__))), "evtx_tool", "gui", "main_window.py"), encoding="utf-8").read()
     check("session-browser 200k cap is shown in the UI",
           "Results capped at 200,000 events" in src)
     check("logon session-filter hard cap is shown in the UI, not just logged",

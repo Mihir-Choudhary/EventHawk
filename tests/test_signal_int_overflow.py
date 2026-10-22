@@ -236,7 +236,7 @@ def main() -> int:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for n, line in enumerate(fh, 1):
                 if re.search(r"=\s*Signal\((?:[^)]*\b)?(?:list|dict)\b", line):
-                    offenders.append(f"{os.path.relpath(path, ROOT)}:{n}: {line.strip()}")
+                    offenders.append(f"{os.path.relpath(path, ROOT).replace(os.sep, '/')}:{n}: {line.strip()}")
     # Verified safe by inspection, and allowlisted so that a future edit which
     # starts putting raw event values in them trips this check:
     #   jm_col_worker  -- {value_str: count}; keys are always str(...), values
