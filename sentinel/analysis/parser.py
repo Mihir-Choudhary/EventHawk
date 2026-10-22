@@ -94,6 +94,7 @@ def parse_evtx_files(
             "(not Application.evtx, System.evtx, etc.).",
             total_seen, sorted(_ALL_TARGET_IDS),
         )
+    results = _collapse_copies(results)
     _warn_unparsed_timestamps(results)
     return results
 
@@ -204,7 +205,8 @@ def _parse_path_worker(path_str: str) -> tuple[int, int, list, dict]:
                 if eid not in _TARGET_IDS:
                     continue
                 ts_raw = record.get("timestamp", "")
-                records_out.append({"data": data, "ts_raw": ts_raw, "file": path.name})
+                records_out.append({"data": data, "ts_raw": ts_raw, "file": path.name,
+                                    "rid": record.get("event_record_id")})
                 matched += 1
             except Exception:
                 skips["unparsed"] += 1
@@ -281,6 +283,8 @@ def parse_evtx_files_parallel(
                 for rec in records:
                     try:
                         ev = _parse_record(rec["data"], rec["ts_raw"])
+                        if ev is not None:
+                            ev.record_id = _int(str(rec.get("rid") or 0))
                     except Exception as exc:
                         skips["unparsed"] += 1
                         logger.debug("Failed to parse record in %s: %s", path.name, exc)
@@ -315,6 +319,7 @@ def parse_evtx_files_parallel(
             "Make sure you selected Security.evtx or Sysmon.evtx files.",
             total_seen, sorted(_ALL_TARGET_IDS),
         )
+    results = _collapse_copies(results)
     _warn_unparsed_timestamps(results)
     return results
 
@@ -353,6 +358,7 @@ def _parse_single_evtx(path: Path, evtx_mod) -> tuple[int, int, list[RawEvent]]:
                 ts_raw = record.get("timestamp", "")
                 ev = _parse_record(data, ts_raw)
                 if ev is not None:
+                    ev.record_id = _int(str(record.get("event_record_id") or 0))
                     matched += 1
                     events.append(ev)
             except Exception as exc:
@@ -590,6 +596,35 @@ def _parse_ts(s: str) -> datetime:
         return datetime.fromisoformat(s)
     except ValueError:
         return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _collapse_copies(events: list[RawEvent]) -> list[RawEvent]:
+    """Drop repeats of the same physical record, keeping the first.
+
+    A folder holding "Security.evtx" and "Security - Copy.evtx" yields every
+    record twice.  Sentinel counts records: with the same log four times the
+    baseline stability score rose from 0.91 to 0.98 -- the check meant to
+    reject a short or compromised baseline is inflated simply by duplicating
+    files -- and an analysis reported 468 events scored where 117 exist.
+    Identity: host + event id + exact timestamp + EventRecordID (unique
+    within a log).  A record without an id (0) is never collapsed.
+    """
+    seen: set = set()
+    out: list[RawEvent] = []
+    for ev in events:
+        if not ev.record_id:
+            out.append(ev)
+            continue
+        ident = (ev.host.strip().lower(), ev.event_id, ev.timestamp, ev.record_id)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        out.append(ev)
+    if len(out) != len(events):
+        logger.warning(
+            "%d record(s) appear in more than one input file (copies of the same "
+            "log) and were counted once", len(events) - len(out))
+    return out
 
 
 def _warn_unparsed_timestamps(events: list[RawEvent]) -> None:

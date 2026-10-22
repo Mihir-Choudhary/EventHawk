@@ -28,6 +28,7 @@ class RawEvent:
     image_hash: str          # SHA256 from Sysmon; empty string otherwise
     attck_tags: list[str] = field(default_factory=list)
     flags: set[str] = field(default_factory=set)
+    record_id: int = 0       # EventRecordID; identifies copies of the same record
 
 
 @dataclass

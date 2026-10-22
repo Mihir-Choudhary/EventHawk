@@ -308,6 +308,33 @@ def test_gui_forwards_this_threads_warnings_only():
     assert got == ["WARNING: x.evtx: skipped 3 corrupt"]
 
 
+# ── Copies of the same log must count once ──────────────────────────────────
+
+def test_copies_of_a_log_are_counted_once(monkeypatch, caplog):
+    # A folder with "Security.evtx" and its copies raised the baseline
+    # stability score (0.91 -> 0.98 measured) and multiplied events scored.
+    one = [_raw(T0 + timedelta(seconds=i), 4688, 0x100 + i, 4, "cmd.exe", "explorer.exe",
+                f"cmd /c job{i % 3}") for i in range(12)]
+    for i, ev in enumerate(one):
+        ev.record_id = 1000 + i
+    nameless = _raw(T0, 4688, 0x999, 4, "x.exe", "explorer.exe", "x")   # record_id 0
+
+    def per_file(path, mod):
+        evs = [copy.deepcopy(e) for e in one] + [copy.deepcopy(nameless)]
+        return len(evs), len(evs), evs
+
+    monkeypatch.setattr(parser_mod, "_parse_single_evtx", per_file)
+    import evtx  # noqa: F401  (parse_evtx_files imports it)
+    with caplog.at_level(logging.WARNING, logger="sentinel.analysis.parser"):
+        got = parser_mod.parse_evtx_files([Path("Security.evtx"), Path("Security - Copy.evtx"),
+                                           Path("Security - Copy (2).evtx")])
+    assert len(got) == len(one) + 3          # 12 once, plus each id-less record
+    assert "appear in more than one input file" in " ".join(r.getMessage() for r in caplog.records)
+
+    from sentinel.baseline.stability import baseline_stability
+    assert baseline_stability(got) == baseline_stability(one + [nameless] * 3)
+
+
 # ── Packaging ───────────────────────────────────────────────────────────────
 
 def test_requirements_name_the_library_sentinel_imports():
