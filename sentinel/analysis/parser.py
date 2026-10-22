@@ -94,6 +94,7 @@ def parse_evtx_files(
             "(not Application.evtx, System.evtx, etc.).",
             total_seen, sorted(_ALL_TARGET_IDS),
         )
+    _warn_unparsed_timestamps(results)
     return results
 
 
@@ -249,6 +250,7 @@ def parse_evtx_files_parallel(
             "Make sure you selected Security.evtx or Sysmon.evtx files.",
             total_seen, sorted(_ALL_TARGET_IDS),
         )
+    _warn_unparsed_timestamps(results)
     return results
 
 
@@ -310,12 +312,26 @@ def _parse_record(data: dict, ts_raw: str) -> RawEvent | None:
     if event_id not in _ALL_TARGET_IDS:
         return None
 
-    # Timestamp — prefer top-level record timestamp; fall back to System.TimeCreated
-    ts_str = ts_raw
+    # Timestamp — prefer System/TimeCreated/@SystemTime from the event itself;
+    # fall back to the record-level timestamp only if that is absent.
+    #
+    # This used to be the other way round, and it put EVERY event in the year
+    # 0001.  pyevtx-rs formats the record-level timestamp with a trailing " UTC"
+    # ("2026-02-17T20:49:12.7246031Z UTC"), which _parse_ts could not read, so
+    # each one silently became datetime.min.  Measured on a real Security.evtx:
+    # 117 of 117 process-creation events.  The effect was invisible but wide:
+    # every reported time was wrong, drift monitoring skipped every event (the
+    # rolling window cannot go below year 1, so host_drift was always 0), and
+    # lineage tracking -- which relies on time order -- ran in arbitrary order.
+    # SystemTime is the authoritative value in the event XML and is clean ISO
+    # ("2026-02-17T20:49:12.724603Z"); it is also what EventHawk's own parser
+    # uses.
+    ts_str = ""
+    tc = system.get("TimeCreated", {})
+    if isinstance(tc, dict):
+        ts_str = tc.get("#attributes", {}).get("SystemTime", "") or ""
     if not ts_str:
-        tc = system.get("TimeCreated", {})
-        if isinstance(tc, dict):
-            ts_str = tc.get("#attributes", {}).get("SystemTime", "")
+        ts_str = ts_raw
     timestamp = _parse_ts(ts_str)
 
     computer = system.get("Computer", "")
@@ -475,6 +491,13 @@ def _parse_ts(s: str) -> datetime:
     datetime.min on failure so sorting still works without crashing.
     """
     s = s.strip()
+    # pyevtx-rs's record-level timestamp carries a trailing " UTC"
+    # ("2026-02-17T20:49:12.7246031Z UTC").  Without stripping it the
+    # endswith("Z") test below never fires and every such value fell through
+    # to datetime.min.  _parse_record now prefers SystemTime, so this is the
+    # fallback path -- but it must still work when it is used.
+    if s.upper().endswith(" UTC"):
+        s = s[:-4].rstrip()
     # Q6: Guard against empty/garbage strings before slicing
     if len(s) < 10:
         return datetime.min.replace(tzinfo=timezone.utc)
@@ -492,6 +515,24 @@ def _parse_ts(s: str) -> datetime:
         return datetime.fromisoformat(s)
     except ValueError:
         return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _warn_unparsed_timestamps(events: list[RawEvent]) -> None:
+    """Report events whose timestamp could not be read, instead of hiding them.
+
+    _parse_ts returns datetime.min on failure so that sorting keeps working.
+    That is a reasonable fallback, but on its own it is silent: a whole file
+    of unreadable timestamps used to become year 0001 with no trace anywhere,
+    which is how every event in a real Security.evtx ended up there unnoticed.
+    """
+    bad = sum(1 for e in events if e.timestamp.year == 1)
+    if bad:
+        logger.warning(
+            "%d of %d event(s) have an unreadable timestamp and were assigned "
+            "0001-01-01. Their reported times, time order (and so lineage), "
+            "and drift contribution are NOT reliable.",
+            bad, len(events),
+        )
 
 
 def _basename(path: str) -> str:
