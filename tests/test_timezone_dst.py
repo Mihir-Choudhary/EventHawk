@@ -50,30 +50,50 @@ def main() -> int:
     CASES = [("winter (EST, -5)", "2025-01-15 00:00:00", "2025-01-15T05:00:00.000000Z"),
              ("summer (EDT, -4)", "2025-07-15 00:00:00", "2025-07-15T04:00:00.000000Z")]
 
-    check("the test timezone actually observes DST (test is meaningful)",
-          apply_tz("2025-01-15T05:00:00.000000Z")[:19]
-          != apply_tz("2025-07-15T05:00:00.000000Z")[:19],
-          "same UTC clock time must render differently in the two seasons")
+    skipped = []
 
     prev_mode = _tz_state.get("mode")
     try:
         _tz_state["mode"] = "local"
 
-        # ── display side ────────────────────────────────────────────────
-        for label, want_local, utc in CASES:
-            got = apply_tz(utc)[:19]
-            check(f"display renders {label} correctly", got == want_local,
-                  f"{utc[:19]}Z -> {got}, want {want_local}")
+        # Is the simulated DST zone actually in effect?  Compare TIME OF DAY
+        # only ([11:19]).  The previous guard compared the full strings of two
+        # instants on different dates, which always differ, so it passed even
+        # when the simulation had silently failed.
+        simulated = (apply_tz("2025-01-15T05:00:00.000000Z")[11:19]
+                     != apply_tz("2025-07-15T05:00:00.000000Z")[11:19])
 
-        # ── filter side must agree with it ──────────────────────────────
-        for label, boundary, utc in CASES:
-            _sql, params = filter_config_to_sql(
-                {"date_from": boundary, "date_to": boundary, "date_mode": "range"})
-            conv = [p for p in params if isinstance(p, str) and p.startswith("2025")]
-            want = utc[:19].replace("T", " ")
-            check(f"filter converts the {label} boundary to the same instant",
-                  bool(conv) and conv[0] == want,
-                  f"filter -> {conv[:1]}, display shows that local time as {want}Z")
+        if simulated:
+            check("the test timezone actually observes DST (test is meaningful)",
+                  True, "same UTC clock time renders differently in the two seasons")
+
+            # ── display side ────────────────────────────────────────────
+            for label, want_local, utc in CASES:
+                got = apply_tz(utc)[:19]
+                check(f"display renders {label} correctly", got == want_local,
+                      f"{utc[:19]}Z -> {got}, want {want_local}")
+
+            # ── filter side must agree with it ──────────────────────────
+            for label, boundary, utc in CASES:
+                _sql, params = filter_config_to_sql(
+                    {"date_from": boundary, "date_to": boundary,
+                     "date_mode": "range"})
+                conv = [p for p in params
+                        if isinstance(p, str) and p.startswith("2025")]
+                want = utc[:19].replace("T", " ")
+                check(f"filter converts the {label} boundary to the same instant",
+                      bool(conv) and conv[0] == want,
+                      f"filter -> {conv[:1]}, display shows that local time as {want}Z")
+        else:
+            # Local-mode DISPLAY reads the operating system clock.  The zone is
+            # simulated with TZ + time.tzset(), which exist only on POSIX: on
+            # Windows tzset() is absent and the C runtime cannot parse an IANA
+            # name in TZ, so these checks would compare against UTC and fail for
+            # a reason that has nothing to do with the code.  Report them as
+            # SKIPPED -- never as passed.
+            for label, _w, _u in CASES:
+                skipped.append(f"display renders {label} correctly")
+                skipped.append(f"filter converts the {label} boundary to the same instant")
 
         # ── the DuckDB date-grouping expression ─────────────────────────
         expr = _timestamp_date_expr()
@@ -82,6 +102,22 @@ def main() -> int:
               f"expr={expr[:90]!r} — an INTERVAL of seconds cannot express DST")
         check("the system timezone name is resolvable",
               bool(_system_tz_name()), str(_system_tz_name()))
+
+        # The check above is satisfied by the TZ variable this test sets, so it
+        # never exercised the path a real user hits.  Remove TZ and resolve
+        # again.  Every lookup used to be POSIX-only (/etc/localtime,
+        # /etc/timezone), so on Windows this returned None and Juggernaut's
+        # local-mode date grouping silently fell back to a single fixed offset
+        # -- the DST error this whole test exists to prevent.
+        _saved_tz = os.environ.pop("TZ", None)
+        try:
+            _real = _system_tz_name()
+        finally:
+            if _saved_tz is not None:
+                os.environ["TZ"] = _saved_tz
+        check("the zone resolves with NO TZ variable set (the path a user hits)",
+              bool(_real) and "/" in str(_real),
+              f"{_real!r} on {sys.platform}")
 
         if "AT TIME ZONE" in expr:
             import duckdb
@@ -108,9 +144,12 @@ def main() -> int:
 
     print("\n" + "=" * 60)
     bad = [n for n, ok in res if not ok]
-    print(f"RESULT: {len(res)-len(bad)}/{len(res)} passed")
+    print(f"RESULT: {len(res)-len(bad)}/{len(res)} passed"
+          + (f", {len(skipped)} skipped" if skipped else ""))
     for n in bad:
         print("  FAILED:", n)
+    for n in skipped:
+        print("  SKIPPED (cannot simulate a timezone on this OS):", n)
     sys.stdout.flush()
     return 1 if bad else 0
 

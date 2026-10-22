@@ -111,6 +111,38 @@ def _system_tz_name() -> "str | None":
                 return name
     except OSError:
         pass
+    # Windows (and any other OS without /etc/localtime or /etc/timezone).
+    # Every check above is POSIX-only, so on Windows this used to return None
+    # and the caller fell back to a single fixed UTC offset — reintroducing,
+    # on Windows only, the very DST error this function exists to prevent:
+    # a year of events grouped by today's offset puts everything on the far
+    # side of a DST boundary an hour out.  It went unnoticed because it was
+    # only ever exercised on Linux.
+    #
+    # DuckDB is already required for Juggernaut Mode and its ICU extension
+    # carries the Windows->IANA zone mapping, so ask it.  ICU may return a
+    # legacy alias (e.g. "Asia/Calcutta" for "Asia/Kolkata"); that is still a
+    # valid IANA name for AT TIME ZONE.
+    try:
+        import duckdb as _duckdb
+        _con = _duckdb.connect()
+        try:
+            try:
+                _con.execute("LOAD icu")
+            except Exception:
+                _con.execute("INSTALL icu")
+                _con.execute("LOAD icu")
+            _name = _con.execute(
+                "SELECT current_setting('TimeZone')").fetchone()[0]
+        finally:
+            _con.close()
+        # Accept only an IANA-style "Area/Location" name.  A bare "UTC" (no
+        # slash) falls through to None and the fixed-offset fallback, which
+        # is exact for a zone with no DST.
+        if _name and "/" in str(_name):
+            return str(_name)
+    except Exception:
+        pass
     return None
 
 

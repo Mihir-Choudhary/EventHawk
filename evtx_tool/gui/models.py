@@ -108,6 +108,10 @@ import sys as _sys
 # Module-level dict so all EventTableModel instances share the same setting.
 # Updated by set_tz_config(); read by apply_tz() and _cell_text().
 
+# Zones already reported as unloadable, so apply_tz() — which runs once per
+# rendered cell — logs each failure once instead of once per row.
+_TZ_UNRESOLVED_WARNED: set = set()
+
 _tz_state: dict = {
     "mode": "local",            # "local" | "utc" | "specific" | "custom"
     "specific": "Asia/Kolkata", # IANA name used when mode == "specific"
@@ -214,6 +218,19 @@ def apply_tz(raw_ts: str) -> str:
                 dt_out = dt.astimezone(ZoneInfo(_tz_state["specific"]))
             except Exception:
                 dt_out = dt                                   # fallback to UTC
+                # Never silently: the UI still names the chosen zone while every
+                # timestamp is actually UTC.  On Windows this is what happens if
+                # the `tzdata` package is missing (Windows has no tz database).
+                _zone = _tz_state.get("specific")
+                if _zone not in _TZ_UNRESOLVED_WARNED:
+                    _TZ_UNRESOLVED_WARNED.add(_zone)
+                    import logging as _logging
+                    _logging.getLogger("eventhawk.timezone").warning(
+                        "Timezone %r could not be loaded, so timestamps are being "
+                        "shown in UTC while the display claims %r. On Windows "
+                        "install the 'tzdata' package (it is in requirements.txt).",
+                        _zone, _zone,
+                    )
         elif mode == "custom":
             tz = _tz2(offset=_td2(minutes=_tz_state["custom_offset_min"]))
             dt_out = dt.astimezone(tz)

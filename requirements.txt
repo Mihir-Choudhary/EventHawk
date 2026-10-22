@@ -4,6 +4,11 @@
 # ── Core parsing ─────────────────────────────────────────────────────────────
 evtx>=0.11.0         # pyevtx-rs: Rust-speed EVTX parsing (imported as 'evtx' / 'Evtx')
 psutil>=5.9.0        # CPU/RAM monitoring (resource_monitor.py, cli.py, analysis_worker_proc.py)
+tzdata>=2024.1       # IANA timezone database.  REQUIRED ON WINDOWS: Windows ships no
+                     # tz database, so without this every zoneinfo lookup fails and the
+                     # "Specific" timezone display silently falls back to UTC while the
+                     # UI still names the chosen zone (e.g. "America/New_York" shown
+                     # 5 hours wrong).  Harmless on Linux/macOS, which use the system db.
 
 # ── CLI & Terminal UI ─────────────────────────────────────────────────────────
 click>=8.1.0         # CLI argument parsing (cli.py)
