@@ -144,6 +144,13 @@ def main() -> int:
     _orig_warn = QMessageBox.warning
     QMessageBox.warning = staticmethod(
         lambda parent, title, text, *a, **k: (shown_text.append((title, text)), 0)[1])
+    # The Parse Integrity Warning now goes through MainWindow._warn_blocking,
+    # which calls exec() on its own QMessageBox -- the stub above no longer
+    # sees it, and an un-stubbed exec() blocks forever offscreen.  Intercept
+    # the window's seam too, capturing the same (title, text) pairs.
+    _orig_wb = MainWindow._warn_blocking
+    MainWindow._warn_blocking = (
+        lambda self, title, text, **k: shown_text.append((title, text)))
     win = None
     try:
         win = MainWindow()
@@ -154,6 +161,7 @@ def main() -> int:
         shown_text.append(("__handler_raised__", f"{type(exc).__name__}: {exc}"))
     finally:
         QMessageBox.warning = _orig_warn
+        MainWindow._warn_blocking = _orig_wb
         if win is not None:
             win.close()
         app.processEvents()

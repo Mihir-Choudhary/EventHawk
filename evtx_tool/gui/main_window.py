@@ -8542,6 +8542,34 @@ class MainWindow(QMainWindow):
         self._lbl_status_files.setText(files)
         self._lbl_status_stats.setText(stats)
 
+    def _warn_blocking(self, title: str, text: str, *,
+                       icon=None, detail: "str | None" = None) -> None:
+        """A modal warning that cannot end up hidden behind the main window.
+
+        ``QMessageBox.warning()`` runs a NESTED event loop: until it is
+        dismissed the whole GUI is frozen — the window repaints and looks
+        alive, but every click is discarded.  On Windows a modal can be placed
+        behind its parent (focus-stealing prevention, or it opens on another
+        monitor), and the user then has a window that appears responsive,
+        does nothing, and can only be killed.  That is precisely how GitHub
+        issue #4 was experienced: "the buttons/ui appear responsive but I
+        can't effectively do anything else".
+
+        Raising and activating the box means a dialog that freezes the GUI is
+        always a dialog the user can actually see and dismiss.  Use this for
+        any blocking warning raised automatically at the end of a long
+        operation, where the user may well have switched away.
+        """
+        box = QMessageBox(icon if icon is not None else QMessageBox.Icon.Warning,
+                          title, text, QMessageBox.StandardButton.Ok, self)
+        if detail:
+            box.setDetailedText(detail)
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        box.show()            # realise the window so the next two calls apply
+        box.raise_()
+        box.activateWindow()
+        box.exec()
+
     # =========================================================================
     # SIGNAL CONNECTIONS
     # =========================================================================
@@ -9695,8 +9723,8 @@ class MainWindow(QMainWindow):
                     _problems.append(f"{_name}: {desc}")
 
             if _problems:
-                QMessageBox.warning(
-                    self, "Parse Integrity Warning",
+                self._warn_blocking(
+                    "Parse Integrity Warning",
                     "Some evidence did NOT fully load — results may be "
                     "incomplete:\n\n"
                     + "\n".join(_problems[:15])
@@ -9711,8 +9739,8 @@ class MainWindow(QMainWindow):
             # warning being dropped: a clean-looking parse reads as "nothing
             # wrong" when in fact nothing was checked.
             logger.warning("Parse-integrity check failed", exc_info=True)
-            QMessageBox.warning(
-                self, "Parse Integrity Check Failed",
+            self._warn_blocking(
+                "Parse Integrity Check Failed",
                 "The parse-integrity check could not run, so this session is "
                 "NOT confirmed complete.\n\n"
                 f"Reason: {_ie}\n\n"
@@ -11109,8 +11137,8 @@ class MainWindow(QMainWindow):
             _pe = list(getattr(self._worker, "parse_errors", []))
             if _pw or _pe:
                 _lines = _pe + _pw
-                QMessageBox.warning(
-                    self, "Parse Integrity Warning",
+                self._warn_blocking(
+                    "Parse Integrity Warning",
                     "Some evidence did NOT fully load — results may be "
                     "incomplete:\n\n"
                     + "\n".join(_lines[:15])
@@ -11122,8 +11150,8 @@ class MainWindow(QMainWindow):
             # warning being dropped: a clean-looking parse reads as "nothing
             # wrong" when in fact nothing was checked.
             logger.warning("Parse-integrity check failed", exc_info=True)
-            QMessageBox.warning(
-                self, "Parse Integrity Check Failed",
+            self._warn_blocking(
+                "Parse Integrity Check Failed",
                 "The parse-integrity check could not run, so this session is "
                 "NOT confirmed complete.\n\n"
                 f"Reason: {_ie}\n\n"
@@ -11405,8 +11433,8 @@ class MainWindow(QMainWindow):
         if _an_errs:
             parts.append("⚠ " + ", ".join(f"{k} failed" for k in _an_errs))
             self._set_status("Done (partial analysis)", stats="  |  ".join(parts))
-            QMessageBox.warning(
-                self, "Analysis Partially Failed",
+            self._warn_blocking(
+                "Analysis Partially Failed",
                 "Some analysis components did not complete. Results from the "
                 "others are shown, but the sections below are INCOMPLETE — do "
                 "not read an empty tab as 'nothing found':\n\n"
@@ -11421,15 +11449,12 @@ class MainWindow(QMainWindow):
         self._analysis_runner = None
         self._set_status("Done (analysis failed)")
         logger.error("Analysis worker failed:\n%s", msg)
-        err_dlg = QMessageBox(self)
-        err_dlg.setWindowTitle("Analysis Failed")
-        err_dlg.setIcon(QMessageBox.Icon.Warning)
-        err_dlg.setText(
+        self._warn_blocking(
+            "Analysis Failed",
             "An analysis step failed (IOC extraction / Correlation / Metadata).\n\n"
-            "Event table is still populated — parse results are unaffected."
+            "Event table is still populated — parse results are unaffected.",
+            detail=msg,
         )
-        err_dlg.setDetailedText(msg)
-        err_dlg.exec()
 
 
     @Slot(str)
@@ -11437,12 +11462,18 @@ class MainWindow(QMainWindow):
         self._btn_parse.setEnabled(True)
         self._btn_stop.setEnabled(False)
         self._set_status("Error")
-        QMessageBox.critical(self, "Parse Error", f"An error occurred:\n\n{msg}")
+        # Clean up FIRST, then tell the user.  The dialog runs a nested event
+        # loop and does not return until dismissed, so anything after it waits
+        # on the user -- and if the dialog is never dismissed it never runs:
+        # the DuckDB connection stays open, temp files stay locked, and the
+        # worker references stay live, all behind a frozen window.
         self._worker = None
         self._hw_worker = None  # Bug 10 fix: clear hw_worker on error too
         # FINDING-22: clean up stale DuckDB connection and JM model on error.
         # Without this, _hw_con stays open, locking temp files or consuming RAM.
         self._cleanup_juggernaut()
+        self._warn_blocking("Parse Error", f"An error occurred:\n\n{msg}",
+                            icon=QMessageBox.Icon.Critical)
 
     # =========================================================================
     # TABLE — LIVE FILTER + SELECTION

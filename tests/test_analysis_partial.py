@@ -178,6 +178,13 @@ def main() -> int:
     orig_warn = QMessageBox.warning
     QMessageBox.warning = staticmethod(
         lambda *a, **k: shown.update(msg=a[2] if len(a) > 2 else ""))
+    # End-of-job dialogs now go through MainWindow._warn_blocking, which builds
+    # its own QMessageBox and calls exec() -- so stubbing QMessageBox.warning
+    # alone no longer intercepts it, and offscreen exec() waits forever for a
+    # click that never comes.  Intercept the window's seam as well.
+    orig_wb = MainWindow._warn_blocking
+    MainWindow._warn_blocking = (
+        lambda self, title, text, **k: shown.update(msg=text))
     try:
         _iocs = {"ip": [{"value": "10.0.0.5", "count": 3}]}
         _chains = [{"name": "chain-1"}]
@@ -198,6 +205,7 @@ def main() -> int:
         check("a clean run shows no warning", "msg" not in shown, str(shown))
     finally:
         QMessageBox.warning = orig_warn
+        MainWindow._warn_blocking = orig_wb
         w.close()
 
     # ── a TOTAL failure must stay a failure, not a fake empty success ────
