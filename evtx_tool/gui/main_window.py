@@ -12196,14 +12196,15 @@ class MainWindow(QMainWindow):
         """Called (via closure) when _WifiJMFetchWorker finishes for the current request."""
         self._set_status("")
         if not events:
-            QMessageBox.information(self, "WiFi History",
-                                    "No WLAN-AutoConfig events found in the dataset.")
+            self._warn_blocking("WiFi History",
+                                "No WLAN-AutoConfig events found in the dataset.",
+                                icon=QMessageBox.Icon.Information)
             return
         # Medium fix: warn only when the worker confirmed truncation (fetched > 200 000
         # rows), not merely when the result count equals the cap exactly.
         if truncated:
-            QMessageBox.warning(
-                self, "WiFi History — Results Truncated",
+            self._warn_blocking(
+                "WiFi History — Results Truncated",
                 "The dataset contains more than 200,000 WLAN-AutoConfig events.\n"
                 "Results are limited to the first 200,000 (chronological order).\n"
                 "Some sessions near the end of the time range may be missing.",
@@ -12227,7 +12228,7 @@ class MainWindow(QMainWindow):
             "duckdb_query_error":   "WiFi History Query Failed",
         }
         title = _TITLES.get(kind, "WiFi History Error")
-        QMessageBox.warning(self, title, msg)
+        self._warn_blocking(title, msg)
 
     def _open_wifi_history_dialog(self, events: list, truncated: bool = False) -> None:
         """Create and show a fresh _WifiHistoryDialog from *events*.
@@ -12309,8 +12310,8 @@ class MainWindow(QMainWindow):
         """Called (via closure) when _RemoteAssistJMFetchWorker succeeds."""
         self._set_status("")
         if not events:
-            QMessageBox.information(
-                self, "Remote Assistance",
+            self._warn_blocking(
+                "Remote Assistance",
                 "No Remote Assistance / RDP / Quick Assist events found in the dataset.\n\n"
                 "Channels checked:\n"
                 "  • Microsoft-Windows-RemoteAssistance/Operational\n"
@@ -12318,11 +12319,12 @@ class MainWindow(QMainWindow):
                 "  • Microsoft-Windows-TerminalServices-LocalSessionManager/Operational\n"
                 "  • Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational\n"
                 "  • Security (EIDs 4624/4634/4688/4778/4779)",
+                icon=QMessageBox.Icon.Information,
             )
             return
         if truncated:
-            QMessageBox.warning(
-                self, "Remote Assistance — Results Truncated",
+            self._warn_blocking(
+                "Remote Assistance — Results Truncated",
                 "The dataset contains more than 200,000 relevant events.\n"
                 "Results are limited to the first 200,000 (chronological order).\n"
                 "Some sessions near the end of the time range may be missing.",
@@ -12339,7 +12341,7 @@ class MainWindow(QMainWindow):
             "duckdb_query_error":   "Remote Assistance Query Failed",
         }
         title = _TITLES.get(kind, "Remote Assistance Error")
-        QMessageBox.warning(self, title, msg)
+        self._warn_blocking(title, msg)
 
     def _open_remote_assist_dialog(
         self, events: list, truncated: bool = False
@@ -12487,8 +12489,9 @@ class MainWindow(QMainWindow):
     def _on_computer_norm_jm_ready(self, rows: list) -> None:
         self._set_status("")
         if not rows:
-            QMessageBox.information(self, "Computer Normalisation",
-                                    "No events found in the dataset.")
+            self._warn_blocking("Computer Normalisation",
+                                "No events found in the dataset.",
+                                icon=QMessageBox.Icon.Information)
             return
         self._open_computer_norm_dialog(rows)
 
@@ -12501,7 +12504,7 @@ class MainWindow(QMainWindow):
             "duckdb_query_error":   "Computer Normalisation Query Failed",
         }
         title = _TITLES.get(kind, "Computer Normalisation Error")
-        QMessageBox.warning(self, title, msg)
+        self._warn_blocking(title, msg)
 
     def _open_computer_norm_dialog(self, rows: list) -> None:
         """Instantiate and show a fresh _ComputerNormalisationDialog from *rows*."""
@@ -14646,20 +14649,21 @@ class MainWindow(QMainWindow):
 
         def _on_ok(count: int, out_path: str) -> None:
             dlg.close()
-            QMessageBox.information(
-                self, "Exported", f"Exported {count:,} events to:\n{out_path}")
+            self._warn_blocking("Exported", f"Exported {count:,} events to:\n{out_path}",
+                                icon=QMessageBox.Icon.Information)
 
         def _on_failed(msg: str) -> None:
             dlg.close()
             if msg == "__cancelled__":
-                QMessageBox.information(
-                    self, "Export Cancelled",
+                self._warn_blocking(
+                    "Export Cancelled",
                     "Export was cancelled and the partial file was deleted.\n\n"
                     "A truncated export is not written, so it can never be "
                     "mistaken for the complete set.",
+                    icon=QMessageBox.Icon.Information,
                 )
             else:
-                QMessageBox.critical(self, "Export Failed", msg)
+                self._warn_blocking("Export Failed", msg, icon=QMessageBox.Icon.Critical)
 
         worker.progress.connect(_on_progress)
         worker.finished_ok.connect(_on_ok)
@@ -14822,7 +14826,8 @@ class MainWindow(QMainWindow):
 
         # If extraction was cancelled, show a brief message
         if summary.get("cancelled"):
-            QMessageBox.information(self, "PowerShell History", "Extraction cancelled.")
+            self._warn_blocking("PowerShell History", "Extraction cancelled.",
+                                icon=QMessageBox.Icon.Information)
             return
 
         output_dir = getattr(self, "_ps_output_dir", "")

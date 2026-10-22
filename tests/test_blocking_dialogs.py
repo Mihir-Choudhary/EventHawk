@@ -106,6 +106,21 @@ def main() -> int:
     check("both Parse Integrity Warnings go through the helper",
           src.count('"Parse Integrity Warning"') >= 2
           and 'QMessageBox.warning(\n                    self, "Parse Integrity Warning"' not in src)
+    # Juggernaut feature fetches and the Juggernaut export run on worker
+    # threads; their result/error dialogs appear when the job ends, possibly
+    # after the user switched away -- the same hazard.
+    for slot in ("_on_wifi_jm_events_ready", "_on_wifi_jm_fetch_error",
+                 "_on_remote_assist_jm_ready", "_on_remote_assist_jm_error",
+                 "_on_computer_norm_jm_ready", "_on_computer_norm_jm_error",
+                 "_export_juggernaut", "_on_ps_finished", "_on_ps_error"):
+        body = _inspect.getsource(getattr(MainWindow, slot))
+        if slot == "_export_juggernaut":
+            # Only its completion callbacks; the checks before the worker
+            # starts answer a click directly.
+            body = body[body.index("def _on_ok"):body.index("worker.progress.connect")]
+        raw = [m for m in ("QMessageBox.information(", "QMessageBox.warning(",
+                           "QMessageBox.critical(", ".exec()") if m in body]
+        check(f"{slot} raises no un-hardened blocking dialog", not raw, str(raw))
 
     print("\n=== 4. issue #4 end to end: empty EVTX, nobody clicks anything ===")
     LOGS = os.environ.get("EVTX_TEST_LOGS", "sample_logs")
