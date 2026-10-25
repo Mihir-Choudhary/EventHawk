@@ -6014,25 +6014,6 @@ class _RemoteAssistJMFetchWorker(QThread):
 
 # ── Computer Normalisation helpers ────────────────────────────────────────────
 
-def _norm_computer_key(raw: str) -> str:
-    """Collapse a Computer field to a canonical short-hostname key.
-
-    Rules (applied in order):
-      • strip whitespace and any trailing dot (FQDN trailing-dot form)
-      • lowercase
-      • take the first label before "." so FQDN and short name collapse:
-            "WORK01.contoso.local"  → "work01"
-            "Work01"                 → "work01"
-            "WORK01 "                → "work01"
-      • blank input → "(unknown)" so empty Computer fields cluster together
-    """
-    s = str(raw or "").strip().rstrip(".").lower()
-    if not s:
-        return "(unknown)"
-    # Short hostname before first dot
-    return s.split(".", 1)[0]
-
-
 # Moved to core so host identity (no Qt) uses the same rule; kept importable here.
 from evtx_tool.core.host_identity import is_forwarded_source as _is_forwarded_source  # noqa: E402
 
@@ -6450,25 +6431,29 @@ class _ComputerNormJMWorker(QThread):
 # ── Computer Normalisation dialog ─────────────────────────────────────────────
 
 class _ComputerNormalisationDialog(QDialog):
-    """Browse all Computer-field values collapsed to canonical hostnames.
+    """Browse all Computer-field values grouped into machines.
 
-    Each row represents one normalised key (lowercased short hostname).  The
-    Variants column shows how many distinct raw strings collapsed into that
-    key; the Variant Details column lists them comma-separated (truncated).
+    Each row is one machine of the dataset's HostIdentity.  The Variants
+    column shows how many distinct raw strings belong to it; the Variant
+    Details column lists them comma-separated (truncated); the Evidence
+    column says why (rename, domain suffix, confirmed link) and lists open
+    suggestions, which the context menu confirms or rejects.
     The Forwarded column flags rows that include events from a
     ForwardedEvents.evtx collector log — a single such file can inflate the
     distinct-Computer count by dozens because WEF preserves the original
     source machine in each forwarded event.
 
-    *rows* is the raw aggregation: list[dict] with keys
+    *counts* is the raw aggregation: list[dict] with keys
         ``computer``, ``source_file``, ``n``.
     *on_filter_fn* is invoked with ``(variants: list[str])`` when the user
     chooses "Filter Events to This Computer" from the context menu.
+    *on_identity_changed* is invoked after a suggestion is confirmed or
+    rejected, so other views can re-read the grouping.
     """
 
     _HEADERS = [
         "Normalised Name", "Variants", "Events", "Source Files",
-        "Forwarded?", "Variant Details",
+        "Forwarded?", "Variant Details", "Evidence",
     ]
 
     _BASE_QSS = """
@@ -6531,10 +6516,14 @@ class _ComputerNormalisationDialog(QDialog):
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
     """
 
-    def __init__(self, rows: list[dict], on_filter_fn=None, parent=None) -> None:
+    def __init__(self, identity, counts: list[dict], on_filter_fn=None,
+                 on_identity_changed=None, parent=None) -> None:
         super().__init__(parent)
         self._on_filter_fn = on_filter_fn
-        self._all_rows:    list[dict] = self._build_rows(rows)
+        self._on_identity_changed = on_identity_changed
+        self._identity = identity
+        self._counts = counts
+        self._all_rows:    list[dict] = self._build_rows(counts, identity)
         self._shown_rows:  list[dict] = list(self._all_rows)
         self._build_ui()
         self._apply_display_filters()
@@ -6542,17 +6531,45 @@ class _ComputerNormalisationDialog(QDialog):
     # ── Aggregation ────────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_rows(raw_rows: list[dict]) -> list[dict]:
-        """Group (computer, source_file, n) tuples by normalised key.
+    def _evidence_text(group, suggestions) -> str:
+        import os as _os
+        from evtx_tool.gui.models import apply_tz
+        parts: list[str] = []
+        for ln in group.links:
+            if ln.kind == "rename":
+                parts.append(f"rename at {apply_tz(ln.evidence[0]) if ln.evidence else '?'}")
+            elif ln.kind == "domain_suffix":
+                parts.append("domain suffix")
+            elif ln.kind == "same_file":
+                parts.append("confirmed: shared file "
+                             + ", ".join(_os.path.basename(f) for f in ln.evidence))
+        for ln in suggestions:
+            if ln.kind == "same_file":
+                parts.append("suggested: shared file "
+                             + ", ".join(_os.path.basename(f) for f in ln.evidence))
+            else:
+                parts.append(f"suggested: domain suffix ({ln.a} / {ln.b})")
+        return "; ".join(dict.fromkeys(parts))
+
+    @staticmethod
+    def _build_rows(raw_rows: list[dict], identity) -> list[dict]:
+        """Group (computer, source_file, n) tuples by host identity.
+
+        One row per machine: names joined by a rename (EID 6011), a single
+        domain suffix, or a confirmed suggestion.  This used to group by "the
+        part before the first dot", which split a renamed machine in two and
+        merged every IP of a /8 ("10.0.0.5" and "10.0.0.6" both became "10").
 
         Each output row carries:
-          norm_name        — canonical hostname used for grouping
+          norm_name        — the machine's display name (its latest name)
           variants         — list[str] of raw Computer strings (originals)
           variant_counts   — dict[variant → event_count]
           source_files     — list[str] of basenames the variants appear in
           source_files_full— list[str] of FULL source paths (for filtering)
           forwarded        — True if any source_file is a ForwardedEvents log
           event_count      — sum of n across all (variant, source_file) entries
+          evidence         — why the names are grouped, and open suggestions
+          suggestions      — the open suggestion Links for this machine
         """
         import os as _os
         agg: dict[str, dict] = {}
@@ -6560,16 +6577,22 @@ class _ComputerNormalisationDialog(QDialog):
             comp = str(r.get("computer") or "")
             sf   = str(r.get("source_file") or "")
             n    = int(r.get("n") or 0)
-            key  = _norm_computer_key(comp)
-            slot = agg.setdefault(key, {
-                "norm_name":         key,
-                "variants_set":      set(),
-                "variant_counts":    {},
-                "source_files_set":  set(),
-                "source_files_full": set(),
-                "forwarded":         False,
-                "event_count":       0,
-            })
+            group = identity.group_of(comp)
+            key  = "\x00".join(group.members)
+            slot = agg.get(key)
+            if slot is None:
+                sugg = identity.suggestions_for(comp)
+                slot = agg[key] = {
+                    "norm_name":         group.display_name or "(unknown)",
+                    "variants_set":      set(),
+                    "variant_counts":    {},
+                    "source_files_set":  set(),
+                    "source_files_full": set(),
+                    "forwarded":         False,
+                    "event_count":       0,
+                    "evidence":          _ComputerNormalisationDialog._evidence_text(group, sugg),
+                    "suggestions":       sugg,
+                }
             slot["variants_set"].add(comp)
             slot["variant_counts"][comp] = slot["variant_counts"].get(comp, 0) + n
             slot["source_files_full"].add(sf)
@@ -6592,6 +6615,8 @@ class _ComputerNormalisationDialog(QDialog):
                 "source_file_count": len(slot["source_files_set"]),
                 "forwarded":         slot["forwarded"],
                 "event_count":       slot["event_count"],
+                "evidence":          slot["evidence"],
+                "suggestions":       slot["suggestions"],
             })
         # Sort: most variants first (so ambiguous / FQDN-vs-short rises to top)
         out.sort(key=lambda d: (-d["variant_count"], -d["event_count"],
@@ -6745,6 +6770,7 @@ class _ComputerNormalisationDialog(QDialog):
                 str(r["source_file_count"]),
                 "Yes" if r["forwarded"] else "No",
                 _vd_show,
+                r["evidence"],
             ]
             row = tbl.rowCount()
             tbl.insertRow(row)
@@ -6769,6 +6795,10 @@ class _ComputerNormalisationDialog(QDialog):
                 if c == 5:
                     # Full variant list as tooltip so truncation is non-lossy
                     item.setToolTip(_vd_full)
+                if c == 6:
+                    item.setToolTip(r["evidence"])
+                    if r["suggestions"]:
+                        item.setForeground(QColor("#8a4800"))   # open suggestion
                 tbl.setItem(row, c, item)
         tbl.setSortingEnabled(True)
 
@@ -6790,6 +6820,10 @@ class _ComputerNormalisationDialog(QDialog):
             f"&ensp;<b>{total_events:,}</b> event(s)"
             f"</span>"
         )
+        bad = getattr(self._identity, "unreadable_renames", 0)
+        if bad:
+            html += (f"<br><span style='color:#8a4800;'><b>{bad}</b> rename event(s) "
+                     f"(EID 6011) could not be read and were not used for grouping.</span>")
         if hasattr(self, "_lbl_summary"):
             self._lbl_summary.setText(html)
 
@@ -6847,7 +6881,38 @@ class _ComputerNormalisationDialog(QDialog):
             )
             act_f.triggered.connect(lambda: self._on_filter_fn(_vars))
 
+        if r["suggestions"]:
+            menu.addSeparator()
+            for ln in r["suggestions"]:
+                what = self._link_label(ln)
+                act_c = menu.addAction(f"✔  Confirm suggested link  ({what})")
+                act_c.triggered.connect(lambda _=False, l=ln: self._confirm_link(l))
+                act_r = menu.addAction(f"✖  Reject suggested link  ({what})")
+                act_r.triggered.connect(lambda _=False, l=ln: self._reject_link(l))
+
         menu.exec(self._tbl.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _link_label(ln) -> str:
+        import os as _os
+        if ln.kind == "same_file":
+            return (f"{ln.a} = {ln.b}, shared file "
+                    + ", ".join(_os.path.basename(f) for f in ln.evidence))
+        return f"{ln.a} = {ln.b}, domain suffix"
+
+    def _confirm_link(self, link) -> None:
+        self._identity.confirm(link)
+        self._identity_changed()
+
+    def _reject_link(self, link) -> None:
+        self._identity.reject(link)
+        self._identity_changed()
+
+    def _identity_changed(self) -> None:
+        self._all_rows = self._build_rows(self._counts, self._identity)
+        self._apply_display_filters()
+        if self._on_identity_changed:
+            self._on_identity_changed()
 
     def _show_variant_breakdown(self, r: dict) -> None:
         from PySide6.QtWidgets import QMessageBox
@@ -6894,7 +6959,7 @@ class _ComputerNormalisationDialog(QDialog):
                 writer.writerow([
                     "Normalised Name", "Variants", "Events",
                     "Source Files", "Forwarded?", "Variant Details",
-                    "Source File Details",
+                    "Source File Details", "Evidence",
                 ])
                 for r in ordered:
                     writer.writerow([
@@ -6905,6 +6970,7 @@ class _ComputerNormalisationDialog(QDialog):
                         "Yes" if r["forwarded"] else "No",
                         " | ".join(r["variants"]),
                         " | ".join(r["source_files"]),
+                        r["evidence"],
                     ])
         except Exception as exc:
             QMessageBox.critical(self, "Export Failed",
@@ -7451,6 +7517,8 @@ class MainWindow(QMainWindow):
         self._ra_dlg = None
         # Computer Normalisation dialog tracking (single instance, JM async).
         self._computer_norm_dlg = None
+        # Which Computer names are one machine; built on first use per dataset.
+        self._host_identity_cache = None
         self._computer_norm_jm_req_id: int = 0
         self._computer_norm_jm_workers: list = []
         # Detail-pane render cache: skip re-building HTML when the same event
@@ -9762,6 +9830,7 @@ class MainWindow(QMainWindow):
 
         self._hw_db_path = parquet_dir   # stored for cleanup (dir deletion)
         self._hw_con     = None          # no persistent DuckDB connection needed
+        self._reset_host_identity()
 
         # ── Parse-integrity check: unparsed records must be visible ──────────
         # A skipped-record count is a forensic finding (possible corruption,
@@ -10341,6 +10410,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self._hw_db_path = None
+        self._reset_host_identity()
 
         # Leaving JM: drop the toggle hook so it cannot fire against a
         # parquet_dir that no longer exists.
@@ -11252,6 +11322,7 @@ class MainWindow(QMainWindow):
             )
 
         self._events         = events
+        self._reset_host_identity()
         self._close_logon_sessions_dlg()   # close + invalidate session browser cache
         self._close_ra_dlg(clear_filter=True)  # M1: close + clear RA filter + kill worker
         self._close_computer_norm_dlg()    # invalidate cached aggregation
@@ -12502,6 +12573,37 @@ class MainWindow(QMainWindow):
 
     # ── Computer Normalisation browser ─────────────────────────────────────────
 
+    def _host_identity(self):
+        """The loaded dataset's HostIdentity, built on first use and cached.
+
+        Which Computer names are one machine (renames, domain suffix,
+        confirmed suggestions).  Computer Normalisation and the "Around this
+        event" pivot both read it, so the same machine means the same names
+        everywhere.  Raises if a Juggernaut dataset cannot be read.
+        """
+        cached = getattr(self, "_host_identity_cache", None)
+        if cached is not None:
+            return cached
+        from evtx_tool.core.host_identity import HostIdentity, inputs_from_events
+        if self._hw_model is not None:
+            from evtx_tool.core.heavyweight.host_inputs import inputs_from_jm
+            table = getattr(self._hw_model, "_full_table", None)
+            with self._busy_wait("Please Wait — Host Names", "Working out host names…",
+                                 rows=len(table) if table is not None else 0,
+                                 min_rows=self._LOGON_BUSY_MIN_ROWS):
+                inputs = inputs_from_jm(table, self._hw_db_path)
+        else:
+            events = self._events or []
+            with self._busy_wait("Please Wait — Host Names", "Working out host names…",
+                                 rows=len(events), min_rows=self._LOGON_BUSY_MIN_ROWS):
+                inputs = inputs_from_events(events)
+        self._host_identity_cache = HostIdentity.build(*inputs)
+        return self._host_identity_cache
+
+    def _reset_host_identity(self) -> None:
+        """Forget the cached HostIdentity (a new dataset, or none)."""
+        self._host_identity_cache = None
+
     def _close_computer_norm_dlg(self) -> None:
         """Close the Computer Normalisation dialog and invalidate in-flight workers.
 
@@ -12608,8 +12710,15 @@ class MainWindow(QMainWindow):
 
     def _open_computer_norm_dialog(self, rows: list) -> None:
         """Instantiate and show a fresh _ComputerNormalisationDialog from *rows*."""
+        try:
+            identity = self._host_identity()
+        except Exception as exc:
+            self._warn_blocking("Computer Normalisation",
+                                f"Could not work out which host names belong to "
+                                f"the same machine:\n{exc}")
+            return
         dlg = _ComputerNormalisationDialog(
-            rows=rows,
+            identity, rows,
             on_filter_fn=self._apply_computer_norm_filter,
             parent=self,
         )
@@ -15030,6 +15139,7 @@ class MainWindow(QMainWindow):
         self._set_session_filter(None, None)
 
         self._events             = []
+        self._reset_host_identity()
         self._close_logon_sessions_dlg()   # close + invalidate session browser cache
         self._close_ra_dlg(clear_filter=True)  # M1: close + clear RA filter + kill worker
         self._close_computer_norm_dlg()    # invalidate cached aggregation
