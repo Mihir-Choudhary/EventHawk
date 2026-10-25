@@ -20,6 +20,8 @@ from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Tab labels carry "⏱"; a cp1252 pipe must not turn a pass into a crash.
+sys.stdout.reconfigure(errors="backslashreplace")
 
 from PySide6.QtWidgets import QApplication, QDialog                # noqa: E402
 
