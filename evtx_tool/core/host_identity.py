@@ -87,7 +87,59 @@ def parse_rename(event_data) -> tuple[str, str] | None:
     return None
 
 
-@dataclass(frozen=True)
+def iso_z(ts) -> str:
+    """A stored timestamp as ``YYYY-MM-DDTHH:MM:SS.ffffffZ`` ("" if blank).
+
+    Normal mode keeps the event's ISO form; Juggernaut stores
+    ``YYYY-MM-DD HH:MM:SS.ffffff``.  One shape, so both modes compare equal.
+    Fractions are padded or truncated to six digits, as JM does at parse.
+    """
+    s = str(ts or "").strip()
+    if not s:
+        return ""
+    s = s.replace(" ", "T")
+    if s.endswith("Z"):
+        s = s[:-1]
+    elif s.endswith("+00:00"):
+        s = s[:-6]
+    base, _, frac = s.partition(".")
+    return f"{base[:19]}.{(frac + '000000')[:6]}Z"
+
+
+def inputs_from_events(events) -> "tuple[list[NameStat], list[Rename], int]":
+    """Host-identity input from Normal mode's event dicts, in one pass.
+
+    Returns (names, renames, unreadable 6011 count).  A rename is EID 6011
+    from provider EventLog; one whose name pair cannot be read is counted,
+    never guessed.
+    """
+    stats: dict[tuple[str, str], list] = {}
+    renames: list[Rename] = []
+    bad = 0
+    for ev in events:
+        comp = str(ev.get("computer") or "")
+        sf = str(ev.get("source_file") or "")
+        ts = iso_z(ev.get("timestamp"))
+        s = stats.get((comp, sf))
+        if s is None:
+            stats[(comp, sf)] = [1, ts, ts]
+        else:
+            s[0] += 1
+            if ts and (not s[1] or ts < s[1]):
+                s[1] = ts
+            if ts > s[2]:
+                s[2] = ts
+        if ev.get("event_id") == 6011 and str(ev.get("provider") or "").lower() == "eventlog":
+            pair = parse_rename(ev.get("event_data"))
+            if pair is None:
+                bad += 1
+            else:
+                renames.append(Rename(pair[0], pair[1], ts, sf, int(ev.get("record_id") or 0)))
+    names = [NameStat(c, f, n, lo, hi) for (c, f), (n, lo, hi) in stats.items()]
+    return names, renames, bad
+
+
+@dataclass(frozen=True, order=True)
 class NameStat:
     name: str
     source_file: str
@@ -96,7 +148,7 @@ class NameStat:
     last_ts: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, order=True)
 class Rename:
     old: str
     new: str
