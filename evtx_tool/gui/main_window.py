@@ -7715,9 +7715,10 @@ class MainWindow(QMainWindow):
 
         a = tm.addAction("Computer Normalisation\u2026")
         a.setToolTip(
-            "Collapse FQDN/short-name/case variants of the Computer field to canonical "
-            "hostnames; flag computers introduced by ForwardedEvents.evtx (Windows "
-            "Event Forwarding) so they can be excluded from host counts"
+            "Group the Computer names that belong to one machine (renames, FQDN and "
+            "short name), with the evidence for each; flag computers introduced by "
+            "ForwardedEvents.evtx (Windows Event Forwarding) so they can be excluded "
+            "from host counts"
         )
         a.triggered.connect(self._on_show_computer_norm)
 
@@ -9654,6 +9655,9 @@ class MainWindow(QMainWindow):
         if self._hw_filter_busy_timer is not None:
             self._hw_filter_busy_timer.stop()
         self._close_hw_loading_dialog()
+        # A per-file or around tab starts empty and fills here; the count was
+        # last set on the tab switch, so without this it kept saying 0 events.
+        self._update_count_label()
         # The view has settled — get the column popups ready NOW rather than
         # when the analyst clicks a header.
         self._schedule_col_prewarm()

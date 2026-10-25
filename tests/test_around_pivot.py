@@ -232,6 +232,9 @@ def synthetic(mw, jm):
             check(f"{tag}: tooltip names the hosts and why",
                   "OLD-NAME" in tip and "rename" in tip and "domain suffix" in tip, tip)
             check(f"{tag}: tooltip gives the row count", "6 events" in tip, tip)
+            check(f"{tag}: the window's event count shows the tab's rows",
+                  w._lbl_count.text().startswith("6 events") or w._lbl_count.text().startswith("6 /"),
+                  w._lbl_count.text())
             check(f"{tag}: anchor row is selected", selected_key(st, jm) == (SYS, 1000),
                   str(selected_key(st, jm)))
             label = w._events_tab_widget.tabText(w._events_tab_widget.indexOf(st.table))
