@@ -16,7 +16,9 @@ Names are linked by evidence, strongest first:
   domain occurs for that short name; with several domains each link is only a
   suggestion, because they may be different machines.
 * ``same_file`` (suggestion): two names in the same *local* log file.  A
-  forwarded log legitimately holds many machines, so it suggests nothing.
+  forwarded log legitimately holds many machines, so it suggests nothing;
+  neither does a log with more than MAX_LOCAL_NAMES names (a collected log
+  under another file name), listed in ``collected_files``.
 
 Blank names (``(unknown)``) are never linked, and IP literals are never split
 on dots or linked by suffix.  Suggestions are confirmed or rejected by the
@@ -30,6 +32,9 @@ from dataclasses import dataclass, field
 from itertools import combinations
 
 UNKNOWN = "(unknown)"
+# More distinct host names than this in one "local" log means it is really a
+# collected log (see HostIdentity.build); it then suggests no shared-file links.
+MAX_LOCAL_NAMES = 8
 
 
 def is_ip_literal(s: str) -> bool:
@@ -208,6 +213,7 @@ class _UnionFind:
 class HostIdentity:
     def __init__(self) -> None:
         self.unreadable_renames = 0
+        self.collected_files: list[str] = []     # local files treated as collected logs
         self._raw_by_node: dict[str, set[str]] = {}
         self._last_ts: dict[str, str] = {}          # raw name -> latest timestamp
         self._links: dict[Link, Link] = {}           # identity -> link with base state
@@ -263,13 +269,21 @@ class HostIdentity:
                 ln = _link("domain_suffix", bare, f, (f.split(".", 1)[1],), state)
                 self._links.setdefault(ln, ln)
 
-        # same local file: suggestions between names not already joined
+        # same local file: suggestions between names not already joined.  A log
+        # with more names than one machine plausibly has (setup name, final
+        # name, FQDN, a few renames) is a collected log under another file
+        # name (a custom forwarding channel): pairing all its names would
+        # suggest thousands of false "same machine"s.  It suggests nothing,
+        # and is listed in collected_files so the UI can say so.
         auto = _UnionFind()
         for ln in self._links.values():
             if ln.state == "auto":
                 auto.union(ln.a, ln.b)
         shared: dict[tuple[str, str], set[str]] = {}
         for f, fnodes in files.items():
+            if len(fnodes) > MAX_LOCAL_NAMES:
+                self.collected_files.append(f)
+                continue
             for x, y in combinations(sorted(fnodes), 2):
                 if auto.find(x) != auto.find(y):
                     shared.setdefault((x, y), set()).add(f)

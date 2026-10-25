@@ -250,6 +250,190 @@ def no_global_filters(mw, jm):
     T.teardown(w, jm, m)
 
 
+def jm_chain_tab_actions(mw):
+    """Found by the post-review audit: with a JM chain tab open, Clear Quick
+    Filters, the quick-filter badge and 'filter to this computer' called
+    Arrow-only methods on the chain tab's Normal model and raised half-way."""
+    print("\n=== 7. JM actions with a chain tab open ===", flush=True)
+    m = T.Mode(mw, True)
+    w = mw.MainWindow()
+    evs = T.dataset()
+    m.load(w, evs)
+    w._table.setModel(w._hw_model)            # as _on_hw_finished does
+    w._open_chain_events_tab([_Item({"rule_name": "a", "severity": "high",
+                                     "events": [dict(evs[5]), dict(evs[9])]})])
+    key = [k for k in w._file_tabs if k.startswith("__chain__")][-1]
+    st = w._file_tabs[key]
+    T.pump(50)
+    for name, fn in (("quick filter on the chain tab", lambda: w._apply_quick_filter("event_id", "4624", True)),
+                     ("quick-filter badge", w._update_quick_filter_badge),
+                     ("Clear Quick Filters", w._clear_quick_filters),
+                     ("filter to this computer", lambda: w._apply_computer_norm_filter(["WS01"]))):
+        err = None
+        try:
+            fn()
+        except Exception as exc:          # noqa: BLE001
+            err = exc
+        check(f"JM chain tab: {name}", err is None, repr(err))
+    w._clear_quick_filters()
+    check("JM chain tab: Clear Quick Filters clears the chain tab too",
+          not st.proxy.has_quick_filters() and not w._hw_model.has_quick_filters())
+    T.teardown(w, True, m)
+
+
+def filter_question_unknown_source(mw):
+    print("\n=== 8. filter question with a source it cannot read ===", flush=True)
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QMessageBox
+    w = mw.MainWindow()
+    seen = []
+
+    def _answer():
+        box = QApplication.activeModalWidget()
+        seen.append(box)
+        if isinstance(box, QMessageBox):
+            box.reject()
+    QTimer.singleShot(50, _answer)
+    got = w._ask_around_filter_scope(object())
+    T.pump(150)
+    check("a source that cannot say whether it is filtered gets the question, not a silent 'all'",
+          any(isinstance(b, QMessageBox) for b in seen) and got is None, f"{got} / {seen}")
+    w.close()
+
+
+def unreadable_rename_shown(mw):
+    print("\n=== 9. unreadable 6011 is stated on the around tab ===", flush=True)
+    for jm in (False, True):
+        tag = "JM" if jm else "Normal"
+        m = T.Mode(mw, jm)
+        w = mw.MainWindow()
+        evs = T.dataset() + [T.ev(T.SYS, 1001, "WS01", T.T0, 6011, "EventLog", {"Data": {"#text": ["only-one"]}})]
+        m.load(w, evs)
+        _k, st = T.open_tab(w, dict(evs[0]), T.FIVE, T.FIVE, "host", jm)
+        tip = T.tooltip(w, st)
+        check(f"{tag}: the host list says a rename event could not be read",
+              "1 rename event (EID 6011) could not be read" in tip, tip)
+        T.teardown(w, jm, m)
+
+
+def collector_file():
+    """A log holding many machines (a collector channel not named
+    ForwardedEvents) is not one machine's log: it must not suggest every pair
+    of its names as one machine."""
+    print("\n=== 11. a many-host log suggests nothing ===", flush=True)
+    from evtx_tool.core.host_identity import HostIdentity, NameStat
+    ts = "2022-01-01T00:00:00.000000Z"
+    names = [NameStat(f"H{i}", r"C:\wec\WEC-Security.evtx", 2, ts, ts) for i in range(2000)]
+    names.append(NameStat("PC1", r"C:\pc1\System.evtx", 2, ts, ts))
+    names.append(NameStat("PC1-OLD", r"C:\pc1\System.evtx", 2, ts, ts))
+    t = time.perf_counter()
+    hi = HostIdentity.build(names, [])
+    dt = time.perf_counter() - t
+    check("2,000 hosts in one log build quickly", dt < 2.0, f"{dt:.2f} s")
+    check("...and suggest none of their pairs", hi.suggestions_for("H1") == [],
+          str(len(hi.suggestions_for("H1"))))
+    check("a machine's own log still suggests its two names",
+          any(l.kind == "same_file" for l in hi.suggestions_for("PC1")))
+    check("the many-host log is listed as collected",
+          hi.collected_files == [r"C:\wec\WEC-Security.evtx"], str(hi.collected_files))
+    import evtx_tool.gui.main_window as mw
+    counts = [{"computer": n.name, "source_file": n.source_file, "n": 2} for n in names]
+    dlg = mw._ComputerNormalisationDialog(hi, counts)
+    txt = dlg._lbl_summary.text()
+    check("Computer Normalisation says the log is treated as collected",
+          "treated as collected logs" in txt and "WEC-Security.evtx" in txt, txt[-300:])
+    dlg.close()
+
+
+def pivots_target_main(mw):
+    """IOC and bookmark pivots promise the main table shows exactly their
+    events.  With an around tab in front they filtered that tab instead
+    (Normal: only the pivot's events inside its window, while the status gave
+    the full count) or filtered the hidden main table (JM)."""
+    print("\n=== 12. IOC / bookmark pivots go to the main table ===", flush=True)
+    from PySide6.QtWidgets import QTableWidgetItem
+    for jm in (False, True):
+        tag = "JM" if jm else "Normal"
+        m = T.Mode(mw, jm)
+        w = mw.MainWindow()
+        evs = T.dataset()
+        m.load(w, evs)
+        if jm:
+            w._table.setModel(w._hw_model)
+        _k, st = T.open_tab(w, dict(evs[0]), T.FIVE, T.FIVE, "host", jm)
+        before = T.tab_rows(w, st, jm)
+        ids = frozenset({(T.SEC, 5), (T.OTH, 21), (T.BL, 30)})     # OTH 21 is outside the window
+        w._ioc_pivot_map = {("ip", "10.0.0.9"): ids}
+        w._ioc_pivot_to_events("ip", "10.0.0.9")
+        T.wait_for(lambda: m.main_count(w) == 3, 20)
+        T.pump(200)
+        check(f"{tag}: IOC pivot brings the main table to the front", w._active_file_tab is None,
+              str(w._active_file_tab))
+        check(f"{tag}: ...showing exactly the IOC's events", m.main_count(w) == 3, str(m.main_count(w)))
+        check(f"{tag}: ...and leaves the around tab alone", T.tab_rows(w, st, jm) == before)
+        # bookmark double-click pivot
+        if jm:
+            w._hw_model.clear_record_id_filter()
+        else:
+            w._proxy_model.clear_record_id_filter()
+        w._events_tab_widget.setCurrentIndex(w._events_tab_widget.indexOf(st.table))
+        T.pump(50)
+        tb = w._tbl_bookmarks
+        tb.setRowCount(1)
+        tb.setItem(0, 0, QTableWidgetItem("21"))
+        tb.setItem(0, 4, QTableWidgetItem(T.OTH))
+        w._on_bookmark_double_click(tb.model().index(0, 0))
+        T.wait_for(lambda: m.main_count(w) == 1, 20)
+        T.pump(200)
+        check(f"{tag}: bookmark pivot brings the main table to the front, showing that event",
+              w._active_file_tab is None and m.main_count(w) == 1,
+              f"{w._active_file_tab} / {m.main_count(w)}")
+        check(f"{tag}: ...and leaves the around tab alone", T.tab_rows(w, st, jm) == before)
+        # "Filter to bookmarks" from the Bookmarks tab, with the around tab in front
+        if jm:
+            w._hw_model.clear_record_id_filter()
+        else:
+            w._proxy_model.clear_record_id_filter()
+        w._events_tab_widget.setCurrentIndex(w._events_tab_widget.indexOf(st.table))
+        T.pump(50)
+        w._bookmarked_keys = {(T.SEC, 5), (T.OTH, 21)}
+        w._filter_to_bookmarks()
+        T.wait_for(lambda: m.main_count(w) == 2, 20)
+        T.pump(200)
+        check(f"{tag}: filter to bookmarks shows them in the main table",
+              w._active_file_tab is None and m.main_count(w) == 2,
+              f"{w._active_file_tab} / {m.main_count(w)}")
+        check(f"{tag}: ...and leaves the around tab alone", T.tab_rows(w, st, jm) == before)
+        w._bookmarked_keys = set()
+        T.teardown(w, jm, m)
+
+
+def jm_chain_snapshot(mw):
+    """A filtered snapshot of a JM chain tab (a proxy over event dicts) must
+    open over exactly that tab's visible rows, not fail as 'not loaded'."""
+    print("\n=== 10. JM: filtered snapshot of a chain tab ===", flush=True)
+    m = T.Mode(mw, True)
+    w = mw.MainWindow()
+    evs = T.dataset()
+    m.load(w, evs)
+    w._table.setModel(w._hw_model)
+    warned = []
+    w._warn_blocking = lambda *a, **k: warned.append(a)
+    w._open_chain_events_tab([_Item({"rule_name": "a", "severity": "high",
+                                     "events": [dict(evs[i]) for i in (0, 5, 6, 9)]})])
+    key = [k for k in w._file_tabs if k.startswith("__chain__")][-1]
+    st = w._file_tabs[key]
+    T.pump(50)
+    w._apply_quick_filter("event_id", "4624", True)        # chain tab in front
+    _k, at = T.open_tab(w, dict(evs[0]), T.FIVE, T.FIVE, "all", True, filtered_from=st.proxy)
+    want = {(T.SEC, 5), (T.SEC, 6), (T.OTH, 20)}
+    got = (T.tab_rows(w, at, False) if at is not None and not hasattr(at.model, "_display_table")
+           else T.tab_rows(w, at, True) if at is not None else set())
+    check("JM chain-tab snapshot opens over the chain tab's visible rows",
+          at is not None and got == want and not warned, f"{got} / warned {warned}")
+    T.teardown(w, True, m)
+
+
 def main() -> int:
     import tempfile
     import shutil
@@ -265,6 +449,12 @@ def main() -> int:
         host_identity()
         for jm in (False, True):
             no_global_filters(mw, jm)
+        jm_chain_tab_actions(mw)
+        filter_question_unknown_source(mw)
+        unreadable_rename_shown(mw)
+        jm_chain_snapshot(mw)
+        collector_file()
+        pivots_target_main(mw)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

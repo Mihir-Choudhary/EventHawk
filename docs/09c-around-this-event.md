@@ -49,7 +49,8 @@ With no filter on, the two are the same and nothing is asked.
 - **Label:** `⏱ <machine> ±<window> <time>`, for example `⏱ DESKTOP-A8CALR3 ±5 min 16:24:25`, or `⏱ All hosts …`. A custom window shows as `-<before>/+<after>`.
 - **Tooltip:** the clicked event (time, event ID, host, file, record ID), the exact window start and end with their UTC offsets, the host names included and why, whether it is all loaded events or a filtered snapshot, the number of events, and the number left out for having no timestamp.
 - **Selection:** the clicked event's row is selected and scrolled to the middle. If it is not in the tab (a filtered snapshot that excluded it), the nearest event in time is selected and the status bar says so.
-- **Everything works as in a per-file tab:** the detail panel, Quick Filters, column filters, sorting, bookmarks, export, and further Around pivots from inside the tab. A Quick Filter applied in an around tab filters only that tab. Global filters applied elsewhere do not change it — its contents are what you asked for.
+- **Everything works as in a per-file tab:** the detail panel, Quick Filters, column filters, sorting, bookmarks, export, and further Around pivots from inside the tab. A Quick Filter or column filter applied in an around tab filters only that tab. Filters applied elsewhere (Advanced Filter, profiles, a logon session, a Remote Assistance session, "Filter Events to This Computer") do not change it — its contents are what you asked for. **Clear Quick Filters** clears every tab's quick filters, this one included.
+- In Juggernaut mode, an around tab made from a chain tab's filtered rows holds copies of the chain's events and cannot be exported; export says so.
 - Close it with **×** on the tab, or **Close Tab** from the file tree.
 
 ---
@@ -70,7 +71,8 @@ EventHawk links names by evidence:
 | Rename | automatically | an EID 6011 says one name became the other (chains are followed) |
 | Domain suffix | automatically | `X` and `X.<domain>`, when only one domain occurs for `X` |
 | Domain suffix, several domains | suggestion | `X.a` and `X.b` both occur — possibly two machines |
-| Shared local log file | suggestion | two names in the same local `.evtx` (a ForwardedEvents log holds many machines, so it suggests nothing) |
+| Shared local log file | suggestion | two names in the same local `.evtx`. A ForwardedEvents log holds many machines, so it suggests nothing; neither does any log with more than 8 host names (a collected log under another name), and Computer Normalisation lists those files |
+| Rename from one setup name to two names | suggestion | machines cloned from one image keep the template's setup name, so this is not taken as one machine |
 
 IP addresses are kept whole (`10.0.0.5` and `10.0.0.6` are different hosts) and blank Computer values are only ever grouped with each other. A 6011 whose names cannot be read is never guessed at; Computer Normalisation counts it.
 

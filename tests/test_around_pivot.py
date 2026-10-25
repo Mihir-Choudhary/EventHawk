@@ -332,7 +332,10 @@ def synthetic(mw, jm):
 
 
 def teardown(w, jm, m):
-    models = [st.model for k, st in w._file_tabs.items() if k.startswith("__around__")]
+    # Arrow-backed around tabs only: a snapshot of a chain tab is built from
+    # event dicts and has no filter thread.
+    models = [st.model for k, st in w._file_tabs.items()
+              if k.startswith("__around__") and hasattr(st.model, "_filter_thread")]
     w._clear_results()
     if jm:
         check("JM: Clear stops every around model's filter thread",

@@ -6831,6 +6831,16 @@ class _ComputerNormalisationDialog(QDialog):
         if bad:
             html += (f"<br><span style='color:#8a4800;'><b>{bad}</b> rename event(s) "
                      f"(EID 6011) could not be read and were not used for grouping.</span>")
+        coll = getattr(self._identity, "collected_files", [])
+        if coll:
+            import html as _html
+            import os as _os
+            from evtx_tool.core.host_identity import MAX_LOCAL_NAMES
+            shown = ", ".join(_html.escape(_os.path.basename(f)) for f in coll[:5])
+            html += (f"<br><span style='color:#8a4800;'><b>{len(coll)}</b> log file(s) hold more "
+                     f"than {MAX_LOCAL_NAMES} host names, so they are treated as collected logs "
+                     f"and suggest no shared-file links: {shown}"
+                     f"{' …' if len(coll) > 5 else ''}</span>")
         if hasattr(self, "_lbl_summary"):
             self._lbl_summary.setText(html)
 
@@ -12320,13 +12330,22 @@ class MainWindow(QMainWindow):
         self._update_quick_filter_badge()
         self._update_count_label()
 
+    @staticmethod
+    def _tab_filter_target(st):
+        """What holds a tab's quick filters: its Arrow model (main, per-file
+        and around tabs in JM) or its proxy (Normal mode, and chain tabs in
+        either mode -- a JM chain tab is a Normal model over event dicts, and
+        calling Arrow-only methods on it raised half-way through a loop)."""
+        from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
+        return st.model if isinstance(st.model, _ATM) else st.proxy
+
     def _clear_quick_filters(self) -> None:
         """Remove all quick filters and update the UI."""
         if self._hw_model is not None:
             # Bug 4 fix: clear merged model AND all per-file JM tab models
             self._hw_model.clear_quick_filters()
             for _st in self._file_tabs.values():
-                _st.model.clear_quick_filters()
+                self._tab_filter_target(_st).clear_quick_filters()
         else:
             # Bug 5 fix: clear merged proxy AND all per-file tab proxies
             self._proxy_model.clear_quick_filters()
@@ -12896,7 +12915,7 @@ class MainWindow(QMainWindow):
             self._hw_model.set_quick_filters(filters)
             # Also push to per-file JM models so the per-file tab views match.
             for _st in self._global_filter_tabs():
-                _st.model.set_quick_filters(filters)
+                self._tab_filter_target(_st).set_quick_filters(filters)
         else:
             self._proxy_model.set_quick_filters(filters)
             for _st in self._global_filter_tabs():
@@ -13452,7 +13471,7 @@ class MainWindow(QMainWindow):
             if not active and self._active_file_tab:
                 state = self._file_tabs.get(self._active_file_tab)
                 if state:
-                    active = state.model.has_quick_filters()
+                    active = self._tab_filter_target(state).has_quick_filters()
             self._quick_filter_widget.setVisible(active)
             return
         active = self._active_proxy.has_quick_filters()
@@ -14095,12 +14114,13 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._show_main_table()
         if self._hw_model is not None:
             # Composite (source_file, record_id) filter -- same SQL slot as
             # the record-id filter.
             self._hw_model.apply_bookmark_filter(id_set)
         else:
-            self._active_proxy.set_record_id_filter(id_set)
+            self._proxy_model.set_record_id_filter(id_set)
 
         self._update_count_label()
         n = len(id_set)
@@ -14814,6 +14834,10 @@ class MainWindow(QMainWindow):
                         names |= set(identity.group_of(end).members)
                 lines.append(f"  {ln.a} = {ln.b}: suggested, {link_reason(ln, apply_tz)}")
             lines[0] = f"Hosts: {', '.join(repr(n) if not n.strip() else n for n in sorted(names))}"
+        bad = getattr(identity, "unreadable_renames", 0)
+        if bad:
+            lines.append(f"  {bad} rename event{'s' if bad != 1 else ''} (EID 6011) could not "
+                         f"be read, so names {'they' if bad != 1 else 'it'} would link may be missing")
         return names, group.display_name.strip() or "(unknown)", lines
 
     def _add_around_menu(self, menu, ev: dict, source) -> None:
@@ -14874,10 +14898,10 @@ class MainWindow(QMainWindow):
     def _ask_around_filter_scope(self, source) -> "str | None":
         """"all", "filtered" or None (cancelled).  Asked only when the clicked
         table has a filter on; otherwise the two answers are the same."""
-        try:
-            active = bool(source is not None and source.has_any_filter_active())
-        except AttributeError:
-            active = False
+        # A source that cannot say whether it is filtered gets the question:
+        # answering "all" for it silently would ignore filters the analyst set.
+        _probe = getattr(source, "has_any_filter_active", None)
+        active = source is not None and (_probe is None or bool(_probe()))
         if not active:
             return "all"
         box = QMessageBox(self)
@@ -14980,7 +15004,9 @@ class MainWindow(QMainWindow):
             source_line,
         ]
         tab_key = f"__around__{_uuid.uuid4().hex}"
-        if self._hw_model is not None:
+        # A snapshot of a proxy over event dicts (Normal mode, or a chain tab
+        # in JM) is built from those dicts; only Arrow sources go the JM way.
+        if self._hw_model is not None and not isinstance(filtered_from, EventFilterProxyModel):
             self._open_around_tab_jm(tab_key, label, head, anchor_key, a_dt, start, end,
                                      names, filtered_from)
         else:
@@ -15359,8 +15385,10 @@ class MainWindow(QMainWindow):
         if not isinstance(_export_model, _ATM):
             QMessageBox.information(
                 self, "Export",
-                "This tab holds a chain's events, which Juggernaut export cannot "
-                "read. Export from the All Events tab or a file tab instead.")
+                "This tab holds events copied from a chain (a chain tab, or an "
+                "Around tab made from one), which Juggernaut export cannot read. "
+                "Export from the All Events tab, a file tab or another Around tab "
+                "instead.")
             return
 
         total = _export_model._total_rows   # current filtered count
@@ -16499,10 +16527,11 @@ class MainWindow(QMainWindow):
             self._set_status("No bookmarks to filter to")
             return
         keys = frozenset(self._bookmarked_keys)
+        self._show_main_table()
         if self._hw_model is not None:
             self._hw_model.apply_bookmark_filter(keys)
         else:
-            self._active_proxy.set_bookmark_filter(keys)
+            self._proxy_model.set_bookmark_filter(keys)
         self._update_count_label()
         n = len(keys)
         self._set_status(f"Showing {n} bookmarked event{'s' if n != 1 else ''}")
@@ -16586,12 +16615,25 @@ class MainWindow(QMainWindow):
         # same number in every other log loaded.
         sf_item = self._tbl_bookmarks.item(row, 4)
         key_set = frozenset([(sf_item.text() if sf_item else "", rid)])
+        self._show_main_table()
         if self._hw_model is not None:
             self._hw_model.apply_bookmark_filter(key_set)
         else:
-            self._active_proxy.set_record_id_filter(key_set)
+            self._proxy_model.set_record_id_filter(key_set)
         self._update_count_label()
         self._set_status(f"Pivot to bookmarked event (record_id={rid})")
+
+    def _show_main_table(self) -> None:
+        """Bring the All Events table to the front.
+
+        Pivots (IOC, bookmark) filter the main table to exactly their events.
+        Applied to whatever tab was in front, they narrowed a file or Around
+        tab to the pivot's events inside it while the status quoted the full
+        count, or (JM) filtered a main table the analyst could not see.
+        """
+        self._events_tab_widget.setTabVisible(0, True)
+        self._events_tab_widget.setCurrentIndex(0)
+        self._active_file_tab = None
 
 
 # ── PS Extract Progress Dialog ────────────────────────────────────────────────
