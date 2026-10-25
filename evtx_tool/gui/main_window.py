@@ -6033,19 +6033,8 @@ def _norm_computer_key(raw: str) -> str:
     return s.split(".", 1)[0]
 
 
-def _is_forwarded_source(source_file: str) -> bool:
-    """True if the source EVTX file is a Windows Event Forwarding collector log.
-
-    ForwardedEvents.evtx (the default WEF target) contains events from MANY
-    remote source computers — each event preserves the source machine's
-    Computer field, so a single forwarded log can inflate distinct-computer
-    counts dramatically.  We flag rows from such files so the UI can show
-    "Forwarded? Yes" and the analyst can decide whether to filter them out.
-    """
-    import os as _os
-    base = _os.path.basename(str(source_file or "")).lower()
-    # Default name + custom-channel variants seen in the wild
-    return "forwardedevents" in base or base.endswith("_forwarded.evtx")
+# Moved to core so host identity (no Qt) uses the same rule; kept importable here.
+from evtx_tool.core.host_identity import is_forwarded_source as _is_forwarded_source  # noqa: E402
 
 
 # ── Computer Normalisation JM worker ──────────────────────────────────────────
