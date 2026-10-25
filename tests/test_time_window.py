@@ -22,7 +22,7 @@ def check(name, cond, detail=""):
 
 def main() -> int:
     from evtx_tool.core.time_window import (
-        MAX_SIDE, PRESETS, in_window, jm_bound, parse_event_ts, window_bounds,
+        MAX_SIDE, PRESETS, in_window, jm_bound, parse_event_ts, window_bounds, window_test,
     )
     utc = timezone.utc
     inst = datetime(2022, 2, 7, 10, 54, 25, 366021, tzinfo=utc)
@@ -73,6 +73,20 @@ def main() -> int:
         if (s_lo <= jm_ts <= s_hi) != in_window(t, lo, hi):
             disagree += 1
     check("string BETWEEN agrees with in_window on 1,000 instants", disagree == 0, str(disagree))
+
+    print("\n=== Normal-mode window test ===")
+    test = window_test(lo, hi)
+    disagree = 0
+    for _ in range(1000):
+        t = inst + timedelta(microseconds=rng.randint(-400_000_000, 400_000_000))
+        if rng.random() < 0.05:
+            t = rng.choice([lo, hi, lo - us, hi + us])
+        for raw in (t.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), t.strftime("%Y-%m-%dT%H:%M:%S.%f") + "7Z",
+                    t.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")):
+            if test(raw) != in_window(t, lo, hi):
+                disagree += 1
+    check("window_test agrees with in_window in three shapes", disagree == 0, str(disagree))
+    check("window_test: no timestamp is None", test("") is None and test(None) is None)
 
     print("\n=== presets ===")
     check("presets", PRESETS == [("±1 min", timedelta(minutes=1)), ("±5 min", timedelta(minutes=5)),

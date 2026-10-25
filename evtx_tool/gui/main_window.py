@@ -45,6 +45,7 @@ from PySide6.QtCore import QDateTime
 from .models import (
     EventTableModel, EventFilterProxyModel, COLUMNS, COL_DEFAULT_COUNT,
     COL_RECORD_ID, set_tz_config, apply_tz, set_ts_precision, get_ts_precision,
+    apply_tz_exact,
 )
 from .worker import ParseWorker, AnalysisWorker
 from evtx_tool.analysis.analysis_runner import AnalysisRunner
@@ -1232,6 +1233,16 @@ class FileTabState:
     table: object          # QTableView
     attack_summary: dict | None = None
     iocs: dict | None = None
+
+
+def _is_pivot_tab_key(key: str) -> bool:
+    """True for a chain tab or an "around this event" tab.
+
+    Pivot tabs hold a fixed set of events chosen by the analyst, so global
+    filters are not pushed into them, they are not offered as filter targets,
+    and closing one removes its file-tree entry.
+    """
+    return key.startswith(("__chain__", "__around__"))
 
 
 # ── Lightweight proxy shim for Juggernaut Mode per-file tabs ─────────────────
@@ -7274,7 +7285,7 @@ class _FilterTargetDialog(QDialog):
 
         self._checkboxes: list[tuple[str, QCheckBox]] = []
         for fp, state in file_tabs.items():
-            if fp.startswith("__chain__"):
+            if _is_pivot_tab_key(fp):
                 continue
             cb = QCheckBox(state.display_name)
             cb.setToolTip(fp)
@@ -7519,6 +7530,8 @@ class MainWindow(QMainWindow):
         self._computer_norm_dlg = None
         # Which Computer names are one machine; built on first use per dataset.
         self._host_identity_cache = None
+        # JM around tabs waiting for their first load to select the anchor.
+        self._around_anchor_pending: dict = {}
         self._computer_norm_jm_req_id: int = 0
         self._computer_norm_jm_workers: list = []
         # Detail-pane render cache: skip re-building HTML when the same event
@@ -8867,9 +8880,10 @@ class MainWindow(QMainWindow):
                 act.triggered.connect(self._open_all_events_tab)
             menu.exec(self._file_tree.viewport().mapToGlobal(pos))
             return
-        if filepath.startswith("__chain__"):
-            # Chain-events tab: only allow closing it (no real file to remove)
-            act_close = menu.addAction("Close Chain Tab")
+        if _is_pivot_tab_key(filepath):
+            # Chain / around tab: only allow closing it (no real file to remove)
+            act_close = menu.addAction(
+                "Close Chain Tab" if filepath.startswith("__chain__") else "Close Tab")
             act_close.triggered.connect(lambda: self._close_file_tab(filepath))
         elif filepath in self._file_tabs:
             act_close = menu.addAction("Close Tab")
@@ -8987,8 +9001,9 @@ class MainWindow(QMainWindow):
         state.proxy.setSourceModel(None)
         state.model.set_events([])
         del self._file_tabs[filepath]
+        self._around_anchor_pending.pop(filepath, None)
 
-        if filepath.startswith("__chain__"):
+        if _is_pivot_tab_key(filepath):
             # Remove the chain's entry from the file tree
             root = self._file_tree.invisibleRootItem()
             for i in range(root.childCount()):
@@ -8999,7 +9014,7 @@ class MainWindow(QMainWindow):
 
             # In merged mode: if no chain tabs remain, restore the collapsed state
             if self._view_mode != "separate":
-                _remaining = [k for k in self._file_tabs if k.startswith("__chain__")]
+                _remaining = [k for k in self._file_tabs if _is_pivot_tab_key(k)]
                 if not _remaining:
                     self._events_tab_widget.setBarCollapsed(True)
                     self._file_tree_panel.setVisible(False)
@@ -10470,7 +10485,7 @@ class MainWindow(QMainWindow):
             )
             self._hw_model.apply_filter(fc)
             for _fp, _st in self._file_tabs.items():
-                if _fp.startswith("__chain__"):
+                if _is_pivot_tab_key(_fp):
                     continue
                 try:
                     _st.model.apply_filter(fc)
@@ -10491,7 +10506,7 @@ class MainWindow(QMainWindow):
                 return
             _proxy.set_advanced_filter(fc)
             for _fp, _st in self._file_tabs.items():
-                if _fp.startswith("__chain__"):
+                if _is_pivot_tab_key(_fp):
                     continue
                 try:
                     _st.proxy.set_advanced_filter(fc)
@@ -10533,7 +10548,7 @@ class MainWindow(QMainWindow):
         self._hw_model.apply_filter(fc)
         # Mirror to per-file JM tabs so they stay in sync with the live filter.
         for _fp, _st in self._file_tabs.items():
-            if _fp.startswith("__chain__"):
+            if _is_pivot_tab_key(_fp):
                 continue
             try:
                 _st.model.apply_filter(fc)
@@ -11074,6 +11089,8 @@ class MainWindow(QMainWindow):
             )
             return
         model = self._active_model
+        if not isinstance(model, EventTableModel):
+            return   # a Juggernaut tab still in front while Clear tears JM down
         model._header_overrides.clear()
         for col, entry in self._col_filters.items():
             if _is_active(entry) and col < len(COLUMNS):
@@ -11661,7 +11678,7 @@ class MainWindow(QMainWindow):
         if self._events_tab_widget.isTabVisible(0):
             tabs["__all_events__"] = SimpleNamespace(display_name="All Events")
         for fp, state in self._file_tabs.items():
-            if not fp.startswith("__chain__"):
+            if not _is_pivot_tab_key(fp):
                 tabs[fp] = state
         return tabs
 
@@ -11762,7 +11779,7 @@ class MainWindow(QMainWindow):
             if checked:
                 self._hw_model.apply_filter(profile_only_fc)
                 for _fp, _st in self._file_tabs.items():
-                    if not _fp.startswith("__chain__"):
+                    if not _is_pivot_tab_key(_fp):
                         try:
                             _st.model.apply_filter(profile_only_fc)
                         except Exception:
@@ -11771,7 +11788,7 @@ class MainWindow(QMainWindow):
                 # No profile active either — same as a full clear.
                 self._hw_model.clear_filter()
                 for _fp, _st in self._file_tabs.items():
-                    if not _fp.startswith("__chain__"):
+                    if not _is_pivot_tab_key(_fp):
                         _st.model.clear_filter()
             self._update_adv_filter_badge()
             self._update_count_label()
@@ -11833,7 +11850,7 @@ class MainWindow(QMainWindow):
             # call instead of calling clear_filter() + clear_quick_filters()
             # separately (which would dispatch two redundant round-trips each).
             for _fp, _st in self._file_tabs.items():
-                if not _fp.startswith("__chain__"):
+                if not _is_pivot_tab_key(_fp):
                     _st.model.clear_all_filters()
 
             # ── Re-apply the profile-only filter ─────────────────────────────
@@ -11848,7 +11865,7 @@ class MainWindow(QMainWindow):
                     _profile_fc = self._build_filter_config(base=None)
                     self._hw_model.apply_filter(_profile_fc)
                     for _fp, _st in self._file_tabs.items():
-                        if _fp.startswith("__chain__"):
+                        if _is_pivot_tab_key(_fp):
                             continue
                         try:
                             _st.model.apply_filter(_profile_fc)
@@ -12020,6 +12037,13 @@ class MainWindow(QMainWindow):
                     ),
                 )
             return
+        if not isinstance(self._active_model, EventTableModel):
+            # A Juggernaut tab still in front while Clear tears JM down
+            # (_hw_model is already None).  event_count() does not exist on
+            # it; raising here aborted the rest of Clear.
+            n = getattr(self._active_model, "_total_rows", 0) or 0
+            self._lbl_count.setText(f"{n:,} events")
+            return
         total    = self._active_model.event_count()
         filtered = self._active_proxy.rowCount()
         if total == filtered:
@@ -12134,6 +12158,21 @@ class MainWindow(QMainWindow):
 
     def _apply_quick_filter(self, key: str, value: str, include: bool) -> None:
         """Add a Quick Filter and update the UI."""
+        # A pivot tab (chain / around) is its own scope: filter just that tab.
+        # Otherwise separate mode would offer only file tabs, and JM merged
+        # mode would filter the main table instead of the tab in front.
+        _fp = self._active_file_tab
+        if _fp and _is_pivot_tab_key(_fp) and _fp in self._file_tabs:
+            _st = self._file_tabs[_fp]
+            if isinstance(_st.proxy, _JMProxyShim):
+                _st.model.add_quick_filter(key, value, include)
+            else:
+                _st.proxy.add_quick_filter(key, value, include)
+            self._invalidate_col_value_cache()
+            self._update_quick_filter_badge()
+            self._update_count_label()
+            return
+
         # In separate-tabs mode ask which files to target
         if self._view_mode == "separate":
             target_tabs = self._filter_target_tabs()
@@ -14642,6 +14681,325 @@ class MainWindow(QMainWindow):
         # Switch to the new tab
         self._events_tab_widget.setCurrentIndex(tab_idx)
 
+    # ── "Around this event" ───────────────────────────────────────────────────
+
+    def _around_hosts(self, anchor: dict, scope: str):
+        """(Computer names in scope or None for all hosts, display name, tooltip lines)."""
+        import os as _os
+        if scope == "all":
+            return None, "All hosts", ["Hosts: all"]
+        identity = self._host_identity()
+        comp = str(anchor.get("computer") or "")
+        group = identity.group_of(comp)
+        names = set(group.members) | {comp}
+        lines = [f"Hosts: {', '.join(repr(n) if not n.strip() else n for n in sorted(names))}"]
+        for ln in group.links:
+            if ln.kind == "rename":
+                lines.append(f"  {ln.a} = {ln.b}: rename at "
+                             f"{apply_tz(ln.evidence[0]) if ln.evidence else '?'}")
+            elif ln.kind == "domain_suffix":
+                lines.append(f"  {ln.a} = {ln.b}: domain suffix")
+            else:
+                lines.append(f"  {ln.a} = {ln.b}: confirmed, shared file "
+                             + ", ".join(_os.path.basename(f) for f in ln.evidence))
+        if scope == "host+suggested":
+            for ln in identity.suggestions_for(comp):
+                names |= set(identity.group_of(ln.a).members) | set(identity.group_of(ln.b).members)
+                why = ("shared file " + ", ".join(_os.path.basename(f) for f in ln.evidence)
+                       if ln.kind == "same_file" else "domain suffix")
+                lines.append(f"  {ln.a} = {ln.b}: suggested, {why}")
+            lines[0] = f"Hosts: {', '.join(repr(n) if not n.strip() else n for n in sorted(names))}"
+        return names, group.display_name.strip() or "(unknown)", lines
+
+    @staticmethod
+    def _fmt_span(td) -> str:
+        s = int(td.total_seconds())
+        for unit, size in (("day", 86400), ("hour", 3600), ("min", 60)):
+            if s and s % size == 0:
+                n = s // size
+                return f"{n} {unit}" + ("s" if n != 1 and unit != "min" else "")
+        return f"{td.total_seconds():g} s"
+
+    def _around_window_label(self, before, after) -> str:
+        from evtx_tool.core.time_window import PRESETS
+        if before == after:
+            for lbl, td in PRESETS:
+                if td == before:
+                    return lbl
+            return f"±{self._fmt_span(before)}"
+        return f"-{self._fmt_span(before)}/+{self._fmt_span(after)}"
+
+    def _open_around_tab(self, anchor: dict, before, after, scope: str,
+                         filtered_from=None) -> None:
+        """Open a tab of the events within [anchor - before, anchor + after].
+
+        *scope*: "host" (every name of the anchor's machine), "host+suggested"
+        (plus names only suggested to be the same machine) or "all".
+        *filtered_from*: None for all loaded events, or the clicked table's
+        proxy (Normal) / ArrowTableModel (JM), whose current rows are used.
+        """
+        import uuid as _uuid
+        from evtx_tool.core.time_window import parse_event_ts, window_bounds
+        a_dt = parse_event_ts(anchor.get("timestamp"))
+        if a_dt is None:
+            self._set_status("This event has no timestamp, so there is no window around it.")
+            return
+        start, end = window_bounds(a_dt, before, after)
+        try:
+            names, host_label, host_lines = self._around_hosts(anchor, scope)
+        except Exception as exc:
+            self._warn_blocking("Around This Event",
+                                f"Could not work out this event's host names:\n{exc}")
+            return
+        _rid = anchor.get("record_id")
+        try:
+            _rid = int(_rid) if _rid is not None else None
+        except (TypeError, ValueError):
+            _rid = None
+        anchor_key = (str(anchor.get("source_file") or ""), _rid)
+        a_disp = apply_tz(anchor.get("timestamp"))
+        label = (f"⏱ {host_label} {self._around_window_label(before, after)} "
+                 f"{a_disp[11:19]}")
+        if filtered_from is None:
+            source_line = "All loaded events"
+        else:
+            src_name = "All Events"
+            for _st in self._file_tabs.values():
+                if filtered_from is _st.proxy or filtered_from is _st.model:
+                    src_name = _st.display_name
+                    break
+            source_line = (f"Filtered snapshot of '{src_name}'"
+                           " (only events that passed its filters)")
+        head = [
+            f"Anchor: {apply_tz_exact(anchor.get('timestamp'))}  Event {anchor.get('event_id', '?')}"
+            f"  {anchor.get('computer') or '(no computer)'}",
+            f"  {anchor.get('source_file') or '?'}  record {_rid if _rid is not None else '?'}",
+            f"Window: {apply_tz_exact(start.strftime('%Y-%m-%dT%H:%M:%S.%fZ'))}"
+            f"  to  {apply_tz_exact(end.strftime('%Y-%m-%dT%H:%M:%S.%fZ'))}",
+            *host_lines,
+            source_line,
+        ]
+        tab_key = f"__around__{_uuid.uuid4().hex}"
+        if self._hw_model is not None:
+            self._open_around_tab_jm(tab_key, label, head, anchor_key, a_dt, start, end,
+                                     names, filtered_from)
+        else:
+            self._open_around_tab_normal(tab_key, label, head, anchor_key, a_dt, start, end,
+                                         names, filtered_from)
+
+    @staticmethod
+    def _around_counts_lines(n: int, no_ts: int, snapshot: bool) -> list[str]:
+        lines = [f"{n:,} event{'s' if n != 1 else ''}"]
+        if n == 0 and snapshot:
+            lines[0] += (" (no event that passed the source tab's filters falls in"
+                         " this window on these hosts)")
+        lines.append(f"{no_ts:,} event{'s' if no_ts != 1 else ''} without a timestamp not included")
+        return lines
+
+    def _add_pivot_tab(self, tab_key: str, label: str, tooltip: str, table, state) -> int:
+        """Add a pivot tab (with close button and file-tree entry) and show it."""
+        tab_idx = self._events_tab_widget.addTab(table, label)
+        self._events_tab_widget.setTabToolTip(tab_idx, tooltip)
+        _btn_close = QPushButton("×")
+        _btn_close.setFixedSize(16, 16)
+        _btn_close.setStyleSheet(
+            "QPushButton { color: #7a5c1e; font-size: 12pt; font-weight: bold;"
+            " border: none; background: transparent; padding: 0; margin: 0; }"
+            "QPushButton:hover { color: #a01800; background: #f5e0dc; border-radius: 2px; }"
+        )
+        _btn_close.clicked.connect(
+            lambda _=False, t=table: self._on_file_tab_close_requested(
+                self._events_tab_widget.indexOf(t)
+            )
+        )
+        self._events_tab_widget.tabBar().setTabButton(
+            tab_idx, self._events_tab_widget.tabBar().ButtonPosition.RightSide, _btn_close,
+        )
+        self._file_tabs[tab_key] = state
+        self._events_tab_widget.setBarCollapsed(False)
+        tree_item = QTreeWidgetItem([label])
+        tree_item.setData(0, Qt.ItemDataRole.UserRole, tab_key)
+        tree_item.setToolTip(0, tooltip)
+        _tf = tree_item.font(0)
+        _tf.setBold(True)
+        tree_item.setFont(0, _tf)
+        self._file_tree.addTopLevelItem(tree_item)
+        if not self._file_tree_panel.isVisible():
+            self._file_tree_panel.setVisible(True)
+            self._btn_tree_toggle.setEnabled(True)
+            self._btn_tree_toggle.setChecked(True)
+            self._events_content_splitter.setSizes([180, 800])
+        self._events_tab_widget.setCurrentIndex(tab_idx)
+        return tab_idx
+
+    @staticmethod
+    def _select_and_centre(table, row: int) -> None:
+        idx = table.model().index(row, 0)
+        table.selectRow(row)
+        table.scrollTo(idx, QAbstractItemView.ScrollHint.PositionAtCenter)
+
+    def _open_around_tab_normal(self, tab_key, label, head, anchor_key, a_dt, start, end,
+                                names, filtered_from) -> None:
+        from evtx_tool.core.time_window import parse_event_ts, window_test
+        test = window_test(start, end)
+        if filtered_from is None:
+            src = self._event_model
+            if len(src._events) == len(self._events) and len(src._search_cache) == len(src._events):
+                pairs = zip(src._events, src._search_cache)
+            else:
+                pairs = ((e, None) for e in self._events)
+        else:
+            _src = filtered_from.sourceModel()
+            pairs = []
+            for r in range(filtered_from.rowCount()):
+                sr = filtered_from.mapToSource(filtered_from.index(r, 0)).row()
+                pairs.append((_src.get_event(sr), _src.get_search_str(sr)))
+        matched: list[dict] = []
+        cache: list = []
+        no_ts = 0
+        for e, sc in pairs:
+            if e is None:
+                continue
+            if names is not None and str(e.get("computer") or "") not in names:
+                continue
+            ok = test(e.get("timestamp"))
+            if ok is None:
+                no_ts += 1
+            elif ok:
+                matched.append(e)
+                cache.append(sc)
+        order = sorted(range(len(matched)), key=lambda i: matched[i].get("timestamp") or "")
+        if order != list(range(len(matched))):
+            matched = [matched[i] for i in order]
+            cache = [cache[i] for i in order]
+        search_cache = ([c if c is not None else EventTableModel._build_search_str(e)
+                         for e, c in zip(matched, cache)])
+
+        model = EventTableModel()
+        proxy = EventFilterProxyModel()
+        self._wire_filter_feedback(proxy)
+        proxy.setSourceModel(model)
+        table = self._create_configured_table(proxy)
+        table.setUpdatesEnabled(False)
+        table.setSortingEnabled(False)
+        proxy.setDynamicSortFilter(False)
+        table.setModel(None)
+        model.set_events(matched, search_cache=search_cache)
+        model.start_adv_cache_build()
+        table.setModel(proxy)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.selectionModel().selectionChanged.connect(self._on_row_selected)
+        self._apply_col_visibility(table, self._visible_cols)
+        proxy.setDynamicSortFilter(True)
+        table.setUpdatesEnabled(True)
+
+        tooltip = "\n".join(head + self._around_counts_lines(
+            len(matched), no_ts, filtered_from is not None))
+        state = FileTabState(filepath=tab_key, display_name=label, events=matched,
+                             search_cache=search_cache, model=model, proxy=proxy, table=table)
+        self._add_pivot_tab(tab_key, label, tooltip, table, state)
+
+        if not matched:
+            return
+        row = next((i for i, e in enumerate(matched)
+                    if (str(e.get("source_file") or ""), e.get("record_id")) == anchor_key), None)
+        nearest = row is None
+        if nearest:
+            row = min(range(len(matched)), key=lambda i: (
+                abs((parse_event_ts(matched[i].get("timestamp")) or a_dt) - a_dt)))
+        self._select_and_centre(table, proxy.mapFromSource(model.index(row, 0)).row())
+        if nearest:
+            self._set_status("Anchor event is not in this tab; nearest event selected.")
+
+    def _open_around_tab_jm(self, tab_key, label, head, anchor_key, a_dt, start, end,
+                            names, filtered_from) -> None:
+        import duckdb
+        from evtx_tool.core.time_window import jm_bound
+        from evtx_tool.gui.heavyweight_model import ArrowTableModel
+        src_table = (self._hw_model._full_table if filtered_from is None
+                     else getattr(filtered_from, "_display_table", None))
+        if src_table is None:
+            self._warn_blocking("Around This Event", "The source table is no longer loaded.")
+            return
+        if filtered_from is not None and "row_id" in src_table.schema.names:
+            # The filter thread take()s rows by row_id, which numbers the FULL
+            # table.  A snapshot is a subset in another order, so its own rows
+            # must be renumbered or the tab shows other events entirely.
+            import pyarrow as pa
+            src_table = src_table.set_column(
+                src_table.schema.get_field_index("row_id"), "row_id",
+                pa.array(range(len(src_table)), type=pa.uint32()))
+        win_sql = "timestamp_utc BETWEEN ? AND ?"
+        win_params = [jm_bound(start), jm_bound(end)]
+        host_sql, host_params = "", []
+        if names is not None:
+            ordered = sorted(names)
+            host_sql = f"computer IN ({', '.join('?' * len(ordered))})"
+            host_params = ordered
+            if "" in names or any(not n.strip() for n in names):
+                host_sql = f"({host_sql} OR computer IS NULL)"
+        # Count first, on a connection of our own: the model's filter thread
+        # falls back to showing EVERY row on a query error, which here would
+        # look like a window full of unrelated events.
+        con = duckdb.connect()
+        try:
+            con.register("around_src", src_table)
+            n_in, no_ts = con.execute(
+                f"SELECT count(*) FILTER (WHERE {win_sql}), "
+                f"count(*) FILTER (WHERE timestamp_utc IS NULL) FROM around_src"
+                + (f" WHERE {host_sql}" if host_sql else ""),
+                win_params + host_params,
+            ).fetchone()
+        except Exception as exc:
+            self._warn_blocking("Around This Event",
+                                f"Could not select the events around this event:\n{exc}")
+            return
+        finally:
+            con.close()
+
+        model = ArrowTableModel(
+            src_table,
+            parquet_dir=self._hw_db_path or "",
+            fixed_where=win_sql + (f" AND {host_sql}" if host_sql else ""),
+            fixed_params=win_params + host_params,
+            parent=self,
+        )
+        if getattr(self, "_jm_file_models", None) is None:
+            self._jm_file_models = []
+        self._jm_file_models.append(model)
+        self._around_anchor_pending[tab_key] = (anchor_key, jm_bound(a_dt))
+        model.busy_finished.connect(lambda k=tab_key: self._select_around_anchor_jm(k))
+
+        view = self._create_configured_table(model)
+        view.horizontalHeader().setSortIndicatorShown(False)
+        self._apply_col_visibility(view, self._visible_cols)
+        view.selectionModel().selectionChanged.connect(self._on_hw_row_selected)
+        model.busy_started.connect(self._on_hw_filter_busy_started)
+        model.busy_finished.connect(self._on_hw_filter_busy_finished)
+
+        tooltip = "\n".join(head + self._around_counts_lines(
+            int(n_in), int(no_ts), filtered_from is not None))
+        state = FileTabState(filepath=tab_key, display_name=label, events=[], search_cache=[],
+                             model=model, proxy=_JMProxyShim(model), table=view)
+        self._add_pivot_tab(tab_key, label, tooltip, view, state)
+
+    def _select_around_anchor_jm(self, tab_key: str) -> None:
+        """First load of a JM around tab: select and centre the anchor row."""
+        pend = self._around_anchor_pending.pop(tab_key, None)
+        st = self._file_tabs.get(tab_key)
+        if pend is None or st is None or st.model._display_table is None:
+            return
+        (sf, rid), ts_jm = pend
+        row = st.model.find_row(sf, rid) if rid is not None else None
+        nearest = row is None
+        if nearest:
+            row = st.model.nearest_row(ts_jm)
+        if row is not None:
+            self._select_and_centre(st.table, row)
+            if nearest:
+                self._set_status("Anchor event is not in this tab; nearest event selected.")
+
     # =========================================================================
     # EXPORT
     # =========================================================================
@@ -15156,6 +15514,7 @@ class MainWindow(QMainWindow):
             state.proxy.setSourceModel(None)
             state.model.set_events([])
         self._file_tabs.clear()
+        self._around_anchor_pending.clear()
         self._per_file_data.clear()
         self._active_file_tab = None
 
@@ -15377,7 +15736,7 @@ class MainWindow(QMainWindow):
                     _effective = self._build_filter_config(base=_cfg)
                     self._hw_model.apply_filter(_effective)
                     for _fp, _st in self._file_tabs.items():
-                        if _fp.startswith("__chain__"):
+                        if _is_pivot_tab_key(_fp):
                             continue
                         try:
                             _st.model.apply_filter(_effective)
@@ -15911,7 +16270,12 @@ class MainWindow(QMainWindow):
             indexes = self._active_table.selectionModel().selectedRows()
             if not indexes:
                 return
-            ev = self._hw_model.get_event(indexes[0].row())
+            # The row index belongs to the tab in front (a per-file or pivot
+            # tab has its own model); reading it from the merged model
+            # bookmarked a different event.  Same rule as _on_hw_row_selected.
+            from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
+            _am = self._active_table.model()
+            ev = (_am if isinstance(_am, _ATM) else self._hw_model).get_event(indexes[0].row())
         else:
             indexes = self._active_table.selectionModel().selectedRows()
             if not indexes:

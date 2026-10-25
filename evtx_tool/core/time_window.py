@@ -63,3 +63,23 @@ def in_window(ts: datetime | None, start: datetime, end: datetime) -> bool:
 def jm_bound(dt: datetime) -> str:
     """*dt* in Juggernaut's ``timestamp_utc`` form, for ``BETWEEN``."""
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def window_test(start: datetime, end: datetime):
+    """A per-event check for Normal mode's raw timestamps, fast on big scans.
+
+    Returns ``test(raw) -> True | False | None`` (None: no usable timestamp).
+    EVTX SystemTime is almost always ``YYYY-MM-DDTHH:MM:SS.ffffffZ``; that
+    fixed-width shape compares as a string, exactly like the instant.  Any
+    other shape is parsed.
+    """
+    lo = start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    hi = end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    def test(raw):
+        if (raw.__class__ is str and len(raw) == 27 and raw[26] == "Z"
+                and raw[10] == "T" and raw[19] == "."):
+            return lo <= raw <= hi
+        t = parse_event_ts(raw)
+        return None if t is None else start <= t <= end
+    return test

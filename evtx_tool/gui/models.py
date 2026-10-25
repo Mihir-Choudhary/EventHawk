@@ -196,46 +196,7 @@ def apply_tz(raw_ts: str) -> str:
     if not raw_ts:
         return ""
     try:
-        from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
-        ts = raw_ts.strip()
-        if ts.endswith("Z"):
-            ts = ts[:-1] + "+00:00"
-        dt = _dt2.fromisoformat(ts)
-        # Normalise to UTC
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_tz2.utc)
-        else:
-            dt = dt.astimezone(_tz2.utc)
-        # Convert to the selected display zone
-        mode = _tz_state["mode"]
-        if mode == "local":
-            dt_out = dt.astimezone()                          # system local TZ
-        elif mode == "utc":
-            dt_out = dt                                       # already UTC
-        elif mode == "specific":
-            try:
-                from zoneinfo import ZoneInfo
-                dt_out = dt.astimezone(ZoneInfo(_tz_state["specific"]))
-            except Exception:
-                dt_out = dt                                   # fallback to UTC
-                # Never silently: the UI still names the chosen zone while every
-                # timestamp is actually UTC.  On Windows this is what happens if
-                # the `tzdata` package is missing (Windows has no tz database).
-                _zone = _tz_state.get("specific")
-                if _zone not in _TZ_UNRESOLVED_WARNED:
-                    _TZ_UNRESOLVED_WARNED.add(_zone)
-                    import logging as _logging
-                    _logging.getLogger("eventhawk.timezone").warning(
-                        "Timezone %r could not be loaded, so timestamps are being "
-                        "shown in UTC while the display claims %r. On Windows "
-                        "install the 'tzdata' package (it is in requirements.txt).",
-                        _zone, _zone,
-                    )
-        elif mode == "custom":
-            tz = _tz2(offset=_td2(minutes=_tz_state["custom_offset_min"]))
-            dt_out = dt.astimezone(tz)
-        else:
-            dt_out = dt
+        dt_out = _to_display_zone(raw_ts)
         return dt_out.strftime("%Y-%m-%d %H:%M:%S") + _frac_suffix(
             dt_out.microsecond, _ts_precision["digits"]
         )
@@ -245,6 +206,72 @@ def apply_tz(raw_ts: str) -> str:
             raw_ts.replace("T", " ").replace("Z", "")[:19]
             + _frac_suffix(_micros_from_raw(raw_ts), _ts_precision["digits"])
         )
+
+
+def apply_tz_exact(raw_ts: str) -> str:
+    """*raw_ts* in the display zone to the microsecond, with that zone's offset
+    on that date: ``2026-03-29 04:30:00.000000 +02:00``.
+
+    For places that state an exact instant (a pivot's window bounds), where the
+    display precision setting and an unstated offset would both lose meaning
+    around a DST change.  Falls back to the raw value if it cannot be parsed.
+    """
+    if not raw_ts:
+        return ""
+    try:
+        dt_out = _to_display_zone(raw_ts)
+    except Exception:
+        return str(raw_ts)
+    off = dt_out.strftime("%z")
+    return dt_out.strftime("%Y-%m-%d %H:%M:%S.%f") + (f" {off[:3]}:{off[3:]}" if off else "")
+
+
+def _to_display_zone(raw_ts: str):
+    """Parse a raw ISO-8601/UTC timestamp and convert it to the display zone.
+
+    Raises on an unparseable timestamp; callers decide the fallback.
+    """
+    from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
+    ts = raw_ts.strip()
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    dt = _dt2.fromisoformat(ts)
+    # Normalise to UTC
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_tz2.utc)
+    else:
+        dt = dt.astimezone(_tz2.utc)
+    # Convert to the selected display zone
+    mode = _tz_state["mode"]
+    if mode == "local":
+        dt_out = dt.astimezone()                          # system local TZ
+    elif mode == "utc":
+        dt_out = dt                                       # already UTC
+    elif mode == "specific":
+        try:
+            from zoneinfo import ZoneInfo
+            dt_out = dt.astimezone(ZoneInfo(_tz_state["specific"]))
+        except Exception:
+            dt_out = dt                                   # fallback to UTC
+            # Never silently: the UI still names the chosen zone while every
+            # timestamp is actually UTC.  On Windows this is what happens if
+            # the `tzdata` package is missing (Windows has no tz database).
+            _zone = _tz_state.get("specific")
+            if _zone not in _TZ_UNRESOLVED_WARNED:
+                _TZ_UNRESOLVED_WARNED.add(_zone)
+                import logging as _logging
+                _logging.getLogger("eventhawk.timezone").warning(
+                    "Timezone %r could not be loaded, so timestamps are being "
+                    "shown in UTC while the display claims %r. On Windows "
+                    "install the 'tzdata' package (it is in requirements.txt).",
+                    _zone, _zone,
+                )
+    elif mode == "custom":
+        tz = _tz2(offset=_td2(minutes=_tz_state["custom_offset_min"]))
+        dt_out = dt.astimezone(tz)
+    else:
+        dt_out = dt
+    return dt_out
 
 
 class EventRef:
@@ -1351,6 +1378,11 @@ class EventFilterProxyModel(QSortFilterProxyModel):
     def has_quick_filters(self) -> bool:
         """Return True if any quick filters are active."""
         return len(self._quick_filters) > 0
+
+    def has_any_filter_active(self) -> bool:
+        """True if any filter layer hides rows (advanced, quick, session,
+        record key, bookmark, tactic or text)."""
+        return self._any_filter_active
 
     def get_quick_filters(self) -> list[dict]:
         """Return current quick filter list (for UI display)."""

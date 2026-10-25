@@ -1193,6 +1193,59 @@ class ArrowTableModel(QAbstractTableModel):
     def has_quick_filters(self) -> bool:
         return bool(self._quick_filters)
 
+    def has_any_filter_active(self) -> bool:
+        """True if any filter layer hides rows.  The fixed pre-filter of a
+        per-file or pivot tab is what the tab IS, so it does not count."""
+        return bool(
+            (self._base_where_sql and self._base_where_sql != "1=1")
+            or self._text_where_sql
+            or self._quick_where_sql
+            or self._record_id_where_sql
+            or self._conditions_cfg
+            or self._text_search_cfg
+            or self._quick_text_cfg.get("text_search")
+        )
+
+    def find_row(self, source_file: str, record_id: int) -> int | None:
+        """Display row of the event (source_file, record_id), or None."""
+        import pyarrow.compute as pc
+        t = self._display_table
+        if t is None or not len(t):
+            return None
+        try:
+            hits = pc.indices_nonzero(pc.equal(t["record_id"], int(record_id))).to_pylist()
+        except (TypeError, ValueError):
+            return None
+        col = t["source_file"]
+        for i in hits:
+            if (col[i].as_py() or "") == (source_file or ""):
+                return i
+        return None
+
+    def nearest_row(self, ts_utc: str) -> int | None:
+        """Display row whose timestamp is closest to *ts_utc* (JM form), or None."""
+        import pyarrow.compute as pc
+        from evtx_tool.core.time_window import parse_event_ts
+        t = self._display_table
+        if t is None or not len(t):
+            return None
+        col = t["timestamp_utc"]
+        target = parse_event_ts(ts_utc)
+        if target is None:
+            return None
+        cands = []
+        below = pc.max(pc.filter(col, pc.less_equal(col, ts_utc))).as_py()
+        above = pc.min(pc.filter(col, pc.greater_equal(col, ts_utc))).as_py()
+        for c in (below, above):
+            dt = parse_event_ts(c)
+            if dt is not None:
+                cands.append((abs(dt - target), c))
+        if not cands:
+            return None
+        best = min(cands)[1]
+        i = pc.index(col, best).as_py()
+        return i if i >= 0 else None
+
     def get_quick_filters(self) -> list[dict]:
         return list(self._quick_filters)
 
