@@ -825,10 +825,13 @@ def main() -> int:
         _w23._col_value_cache = {}
         _w23._on_col_prewarmed("timestamp_date", {"2025-01-01": 1},
                                "source_file = ?", ("a.evtx",))
+        # The key's last part is the table counted over (a snapshot around tab
+        # counts over its own subset), so compare the WHERE parts.
+        _keys = list(_w23._col_value_cache)
         check("a prewarm result is keyed by the WHERE it was issued with",
-              list(_w23._col_value_cache) ==
-              [("timestamp_date", "source_file = ?", ("a.evtx",))],
-              str(list(_w23._col_value_cache)))
+              [k[:3] for k in _keys] == [("timestamp_date", "source_file = ?", ("a.evtx",))]
+              and all(len(k) == 4 for k in _keys),
+              str(_keys))
         _w23._hw_model = _FakeHW([])
         _w23._col_value_cache = {}
         _w23._on_col_prewarmed("timestamp_date", {"2025-01-01": 1})

@@ -173,6 +173,16 @@ class HostGroup:
     links: list[Link]
 
 
+def link_reason(ln: Link, fmt_ts=lambda t: t) -> str:
+    """Why two names are linked, in words: "rename at <time>", "domain
+    suffix" or "shared file <names>".  *fmt_ts* renders the 6011 time."""
+    if ln.kind == "rename":
+        return f"rename at {fmt_ts(ln.evidence[0]) if ln.evidence else '?'}"
+    if ln.kind == "same_file":
+        return "shared file " + ", ".join(os.path.basename(f) for f in ln.evidence)
+    return "domain suffix"
+
+
 def _link(kind: str, x: str, y: str, evidence: tuple, state: str) -> Link:
     a, b = sorted((x, y))
     return Link(kind, a, b, evidence, state)
@@ -220,12 +230,21 @@ class HostIdentity:
             if node != UNKNOWN and not is_forwarded_source(st.source_file):
                 files.setdefault(st.source_file, set()).add(node)
 
-        # rename: earliest 6011 per pair is its evidence
+        # rename: earliest 6011 per pair is its evidence.  One old name renamed
+        # to two different names is two machines from one image (a clone keeps
+        # the template's setup name), so those links are only suggestions.
+        pairs = []
         for r in sorted(renames, key=lambda r: r.ts):
             old, new = name_key(r.old)[0], name_key(r.new)[0]
             if old == new or UNKNOWN in (old, new) or is_ip_literal(old) or is_ip_literal(new):
                 continue
-            ln = _link("rename", old, new, (r.ts, r.source_file, r.record_id), "auto")
+            pairs.append((old, new, r))
+        news_of: dict[str, set[str]] = {}
+        for old, new, _r in pairs:
+            news_of.setdefault(old, set()).add(new)
+        for old, new, r in pairs:
+            state = "auto" if len(news_of[old]) == 1 else "suggested"
+            ln = _link("rename", old, new, (r.ts, r.source_file, r.record_id), state)
             self._links.setdefault(ln, ln)
 
         # domain suffix
@@ -278,51 +297,60 @@ class HostIdentity:
             self._override[link] = "rejected"
             self._cache = None
 
-    def _components(self) -> _UnionFind:
+    def _components(self):
+        """(union-find, groups by root, suggestions by root), built once per
+        state change.  Per-lookup scans made grouping quadratic in the number
+        of names (5,000 hosts took over 3 s in Computer Normalisation)."""
         if self._cache is None:
             uf = _UnionFind()
             for ln in self._links:
                 if self._state(ln) in ("auto", "confirmed"):
                     uf.union(ln.a, ln.b)
-            self._cache = uf
+            members: dict[str, set[str]] = {}
+            for node, raws in self._raw_by_node.items():
+                members.setdefault(uf.find(node), set()).update(raws)
+            links: dict[str, list[Link]] = {}
+            sugg: dict[str, list[Link]] = {}
+            for ln in self._links:
+                st = self._state(ln)
+                if st in ("auto", "confirmed"):
+                    links.setdefault(uf.find(ln.a), []).append(self._current(ln))
+                elif st == "suggested":
+                    ra, rb = uf.find(ln.a), uf.find(ln.b)
+                    if ra != rb:
+                        cur = self._current(ln)
+                        sugg.setdefault(ra, []).append(cur)
+                        sugg.setdefault(rb, []).append(cur)
+            groups: dict[str, HostGroup] = {}
+            for root, raws in members.items():
+                ordered = sorted(raws, key=lambda m: (m.casefold(), m))
+                display = max(ordered, key=lambda m: (self._last_ts.get(m, ""), m)) if ordered else ""
+                groups[root] = HostGroup(display, ordered, links.get(root, []))
+            self._cache = (uf, groups, sugg)
         return self._cache
 
     # ── queries ──────────────────────────────────────────────────────────────
 
-    def _group_for_root(self, root: str, uf: _UnionFind) -> HostGroup:
-        members: set[str] = set()
-        for node, raws in self._raw_by_node.items():
-            if uf.find(node) == root:
-                members |= raws
-        links = [self._current(ln) for ln in self._links
-                 if self._state(ln) in ("auto", "confirmed") and uf.find(ln.a) == root]
-        ordered = sorted(members, key=lambda m: (m.casefold(), m))
-        display = max(ordered, key=lambda m: (self._last_ts.get(m, ""), m)) if ordered else ""
-        return HostGroup(display, ordered, links)
+    def knows(self, raw_name: str) -> bool:
+        """True if the name occurs on an event (not only inside a 6011)."""
+        return name_key(raw_name)[0] in self._raw_by_node
 
     def group_of(self, raw_name: str) -> HostGroup:
         node = name_key(raw_name)[0]
         if node not in self._raw_by_node:
             return HostGroup(raw_name, [raw_name], [])
-        uf = self._components()
-        return self._group_for_root(uf.find(node), uf)
+        uf, groups, _s = self._components()
+        g = groups[uf.find(node)]
+        return HostGroup(g.display_name, list(g.members), list(g.links))
 
     def groups(self) -> list[HostGroup]:
-        uf = self._components()
-        roots = {uf.find(n) for n in self._raw_by_node}
-        return sorted((self._group_for_root(r, uf) for r in roots),
+        _uf, groups, _s = self._components()
+        return sorted((HostGroup(g.display_name, list(g.members), list(g.links))
+                       for g in groups.values()),
                       key=lambda g: g.display_name.casefold())
 
     def suggestions_for(self, raw_name: str) -> list[Link]:
         """Unconfirmed suggestions joining this name's group to another."""
         node = name_key(raw_name)[0]
-        uf = self._components()
-        root = uf.find(node)
-        out = []
-        for ln in self._links:
-            if self._state(ln) != "suggested":
-                continue
-            ra, rb = uf.find(ln.a), uf.find(ln.b)
-            if ra != rb and root in (ra, rb):
-                out.append(self._current(ln))
-        return out
+        uf, _g, sugg = self._components()
+        return list(sugg.get(uf.find(node), []))

@@ -1361,6 +1361,11 @@ class _JMProxyShim:
     def clear_record_id_filter(self) -> None:
         self._model.clear_record_id_filter()
 
+    # Called by the Remote Assistance / bookmark clear paths, which can run
+    # in their Normal-mode branch while Clear tears Juggernaut down.
+    def clear_bookmark_filter(self) -> None:
+        self._model.clear_record_id_filter()
+
     def has_quick_filters(self) -> bool:
         return self._model.has_quick_filters()
 
@@ -6543,23 +6548,14 @@ class _ComputerNormalisationDialog(QDialog):
 
     @staticmethod
     def _evidence_text(group, suggestions) -> str:
-        import os as _os
+        from evtx_tool.core.host_identity import link_reason
         from evtx_tool.gui.models import apply_tz
         parts: list[str] = []
         for ln in group.links:
-            if ln.kind == "rename":
-                parts.append(f"rename at {apply_tz(ln.evidence[0]) if ln.evidence else '?'}")
-            elif ln.kind == "domain_suffix":
-                parts.append("domain suffix")
-            elif ln.kind == "same_file":
-                parts.append("confirmed: shared file "
-                             + ", ".join(_os.path.basename(f) for f in ln.evidence))
+            reason = link_reason(ln, apply_tz)
+            parts.append(f"confirmed: {reason}" if ln.state == "confirmed" else reason)
         for ln in suggestions:
-            if ln.kind == "same_file":
-                parts.append("suggested: shared file "
-                             + ", ".join(_os.path.basename(f) for f in ln.evidence))
-            else:
-                parts.append(f"suggested: domain suffix ({ln.a} / {ln.b})")
+            parts.append(f"suggested: {link_reason(ln, apply_tz)} ({ln.a} / {ln.b})")
         return "; ".join(dict.fromkeys(parts))
 
     @staticmethod
@@ -6905,11 +6901,9 @@ class _ComputerNormalisationDialog(QDialog):
 
     @staticmethod
     def _link_label(ln) -> str:
-        import os as _os
-        if ln.kind == "same_file":
-            return (f"{ln.a} = {ln.b}, shared file "
-                    + ", ".join(_os.path.basename(f) for f in ln.evidence))
-        return f"{ln.a} = {ln.b}, domain suffix"
+        from evtx_tool.core.host_identity import link_reason
+        from evtx_tool.gui.models import apply_tz
+        return f"{ln.a} = {ln.b}, {link_reason(ln, apply_tz)}"
 
     def _confirm_link(self, link) -> None:
         self._identity.confirm(link)
@@ -9702,7 +9696,9 @@ class MainWindow(QMainWindow):
             where_sql, where_params = self._build_col_cascade_where(col_key)
         except Exception:
             return None
-        return (col_key, where_sql or "", tuple(where_params or []))
+        # The table is part of the key: a snapshot around tab counts over its
+        # own subset, so the same WHERE there means different values.
+        return (col_key, where_sql or "", tuple(where_params or []), id(self._jm_col_table()))
 
     def _schedule_col_prewarm(self) -> None:
         """Debounced: rapid filter changes must not start a sweep each time."""
@@ -9742,19 +9738,23 @@ class MainWindow(QMainWindow):
                 continue
             by_where.setdefault((key[1], key[2]), []).append(ck)
         _started = []
+        _table = self._jm_col_table()
+        if _table is None:
+            return
         for (where_sql, where_params), keys in by_where.items():
             w = ColValuePrewarmWorker(
-                self._hw_model._full_table, keys,
+                _table, keys,
                 where_sql=where_sql or None, where_params=list(where_params),
                 parent=self,
             )
-            # Bind the WHERE this sweep was issued for, so a result that lands
-            # after the filter moved on is filed under the key it was actually
-            # computed for (where it will simply miss) instead of the key that
-            # is current when it arrives (where it would be served as if fresh).
+            # Bind the WHERE (and table) this sweep was issued for, so a result
+            # that lands after the filter moved on is filed under the key it
+            # was actually computed for (where it will simply miss) instead of
+            # the key that is current when it arrives (where it would be served
+            # as if fresh).
             w.column_ready.connect(
-                lambda ck, vals, _ws=where_sql, _wp=tuple(where_params):
-                    self._on_col_prewarmed(ck, vals, _ws, _wp)
+                lambda ck, vals, _ws=where_sql, _wp=tuple(where_params), _t=id(_table):
+                    self._on_col_prewarmed(ck, vals, _ws, _wp, _t)
             )
             _started.append(w)
             w.start()
@@ -9809,7 +9809,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str, dict)
     def _on_col_prewarmed(self, col_key: str, values: dict,
-                          where_sql=None, where_params=None) -> None:
+                          where_sql=None, where_params=None, table_id=None) -> None:
         """File a prewarmed column's values under the key they belong to.
 
         *where_sql* / *where_params* are the ones the sweep was issued with.
@@ -9821,7 +9821,8 @@ class MainWindow(QMainWindow):
         if where_sql is None and where_params is None:
             key = self._col_cache_key(col_key)
         else:
-            key = (col_key, where_sql or "", tuple(where_params or []))
+            key = (col_key, where_sql or "", tuple(where_params or []),
+                   table_id if table_id is not None else id(self._jm_col_table()))
         if key is not None:
             self._col_cache()[key] = values
 
@@ -10713,8 +10714,9 @@ class MainWindow(QMainWindow):
         col_key = ColumnFilterPopup.FILTERABLE[logical_index]
 
         # Juggernaut Mode: run GROUP BY on a background thread to avoid
-        # blocking the main thread for large datasets.
-        if self._hw_model is not None:
+        # blocking the main thread for large datasets.  A JM chain tab is a
+        # proxy over event dicts, so it takes the Normal path below.
+        if self._hw_model is not None and self._jm_col_model() is not None:
             self._start_col_value_worker(logical_index, col_key)
             return
 
@@ -10762,16 +10764,16 @@ class MainWindow(QMainWindow):
         both count values against exactly the same visible slice.
         """
         from evtx_tool.gui.jm_col_worker import build_cascade_where
-        from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
-        # If a per-file tab is active, scope GROUP BY to that file only.
-        active_fp = getattr(self, "_active_file_tab", None)
-        file_state = self._file_tabs.get(active_fp) if active_fp else None
-        if file_state and active_fp:
-            where_sql, where_params = "source_file = ?", [active_fp]
+        # Scope GROUP BY to what the tab in front IS: its fixed pre-filter
+        # (a per-file tab's "source_file = ?", an around tab's time window and
+        # host names).  Keying on the tab's name gave an around tab
+        # "source_file = '__around__…'", i.e. an always-empty popup.
+        _jm_src = self._jm_col_model() or self._hw_model
+        _fixed = getattr(_jm_src, "_fixed_where_sql", "1=1")
+        if _jm_src is not self._hw_model and _fixed and _fixed != "1=1":
+            where_sql, where_params = _fixed, list(_jm_src._fixed_params)
         else:
             where_sql, where_params = None, None
-        _am      = self._active_table.model()
-        _jm_src  = _am if isinstance(_am, _ATM) else self._hw_model
         cascade_sql, cascade_params = build_cascade_where(
             col_key, _jm_src.get_quick_filters()
         )
@@ -10787,6 +10789,21 @@ class MainWindow(QMainWindow):
             where_sql    = f"({where_sql}) AND ({base_sql})" if where_sql else base_sql
             where_params = list(where_params or []) + base_params
         return where_sql, where_params
+
+    def _jm_col_model(self):
+        """The Arrow model of the table in front (main, per-file or around tab),
+        or None when that table is a proxy over event dicts (a chain tab)."""
+        from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
+        _am = self._active_table.model()
+        return _am if isinstance(_am, _ATM) else None
+
+    def _jm_col_table(self):
+        """The Arrow table the column popups of the tab in front count over.
+
+        Not always the full table: an around tab made from a filtered snapshot
+        holds only that snapshot."""
+        _m = self._jm_col_model() or self._hw_model
+        return _m._full_table if _m is not None else None
 
     @staticmethod
     def _thread_running(w) -> bool:
@@ -10863,11 +10880,11 @@ class MainWindow(QMainWindow):
         """
         def provider(term: str, callback) -> None:
             try:
-                if self._hw_model is not None:
+                if self._hw_model is not None and self._jm_col_model() is not None:
                     from evtx_tool.gui.jm_col_worker import ColValueWorker
                     where_sql, where_params = self._build_col_cascade_where(col_key)
                     worker = ColValueWorker(
-                        self._hw_model._full_table, col_key,
+                        self._jm_col_table(), col_key,
                         where_sql=where_sql, where_params=where_params,
                         search_term=term, parent=self,
                     )
@@ -10902,7 +10919,7 @@ class MainWindow(QMainWindow):
         where_sql, where_params = self._build_col_cascade_where(col_key)
 
         worker = ColValueWorker(
-            self._hw_model._full_table, col_key,
+            self._jm_col_table(), col_key,
             where_sql=where_sql, where_params=where_params,
             parent=self,
         )
@@ -10947,10 +10964,8 @@ class MainWindow(QMainWindow):
         # filters silently invisible after a re-open of the popup.
         _popup_col_key = ColumnFilterPopup.FILTERABLE.get(logical_index, "")
         if _popup_col_key:
-            if self._hw_model is not None:
-                from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
-                _am = self._active_table.model()
-                _qf_src = _am if isinstance(_am, _ATM) else self._hw_model
+            _qf_src = self._jm_col_model() if self._hw_model is not None else None
+            if _qf_src is not None:
                 _active_qf = _qf_src.get_quick_filters()
             else:
                 _active_qf = self._active_proxy.get_quick_filters()
@@ -11014,6 +11029,23 @@ class MainWindow(QMainWindow):
         """
         col_key = ColumnFilterPopup.FILTERABLE.get(col_index, "")
         if not col_key:
+            return
+
+        # A pivot tab (chain / around) is its own scope, as for quick filters:
+        # replace this column's entries in THAT tab's quick filters and leave
+        # every other tab and the shared column bookkeeping alone.
+        _fp = self._active_file_tab
+        if _fp and _is_pivot_tab_key(_fp) and _fp in self._file_tabs:
+            _st = self._file_tabs[_fp]
+            _target = _st.model if isinstance(_st.proxy, _JMProxyShim) else _st.proxy
+            _qf = [q for q in _target.get_quick_filters() if q.get("key") != col_key]
+            if not (mode == "clear" or (mode == "exclude" and not values)):
+                _qf += [{"key": col_key, "value": v, "include": mode == "include"}
+                        for v in values]
+            _target.set_quick_filters(_qf)
+            self._invalidate_col_value_cache()
+            self._update_quick_filter_badge()
+            self._update_count_label()
             return
 
         # In separate-tabs mode ask which files to target before committing state.
@@ -12084,6 +12116,12 @@ class MainWindow(QMainWindow):
             active_fp = getattr(self, "_active_file_tab", None)
             file_state = self._file_tabs.get(active_fp) if active_fp else None
             if file_state:
+                if isinstance(file_state.model, EventTableModel):   # a chain tab
+                    total = file_state.model.event_count()
+                    shown = file_state.proxy.rowCount()
+                    self._lbl_count.setText(f"{total:,} events" if total == shown
+                                            else f"{shown:,} / {total:,} events")
+                    return
                 n = file_state.model._total_rows
                 self._lbl_count.setText(f"{n:,} events")
                 return
@@ -12135,11 +12173,13 @@ class MainWindow(QMainWindow):
         index = table.indexAt(pos)
         if not index.isValid():
             return
-        # Bug 1 fix: in JM separate mode use the per-file model (mirrors _on_hw_row_selected)
-        if self._hw_model is not None:
-            from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
-            _am = self._active_table.model()
-            _jm_active = _am if isinstance(_am, _ATM) else self._hw_model
+        # Read the row from the model of the table that was clicked.  In JM a
+        # chain tab is a Normal proxy over event dicts; falling back to the
+        # main model there used the main table's row N -- another event.
+        from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
+        _am = self._active_table.model()
+        if isinstance(_am, _ATM):
+            _jm_active = _am
             ev = _jm_active.get_event(index.row())
         else:
             _jm_active = None
@@ -12655,7 +12695,7 @@ class MainWindow(QMainWindow):
             return
         if self._hw_model is not None:
             self._hw_model.apply_bookmark_filter(related_keys)
-            for _fm in self._jm_file_models:
+            for _fm in self._global_filter_models():
                 _fm.apply_bookmark_filter(related_keys)
             # Remember active keys so tabs opened later inherit this filter.
             self._active_jm_session_keys = related_keys
@@ -12665,7 +12705,7 @@ class MainWindow(QMainWindow):
             # when a file tab is active, _active_proxy IS a file-tab proxy, so
             # calling it here AND in the loop below would double-invalidate that proxy.
             self._proxy_model.set_bookmark_filter(related_keys)
-            for _state in self._file_tabs.values():
+            for _state in self._global_filter_tabs():
                 _state.proxy.set_bookmark_filter(related_keys)
         self._ra_filter_active = True   # M1: track that RA applied a filter
         self._update_count_label()
@@ -12855,11 +12895,11 @@ class MainWindow(QMainWindow):
         if self._hw_model is not None:
             self._hw_model.set_quick_filters(filters)
             # Also push to per-file JM models so the per-file tab views match.
-            for _st in self._file_tabs.values():
+            for _st in self._global_filter_tabs():
                 _st.model.set_quick_filters(filters)
         else:
             self._proxy_model.set_quick_filters(filters)
-            for _st in self._file_tabs.values():
+            for _st in self._global_filter_tabs():
                 _st.proxy.set_quick_filters(filters)
         self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
@@ -13293,7 +13333,7 @@ class MainWindow(QMainWindow):
 
             # Apply composite-key filter to merged model and all open per-file JM tabs.
             _hw_model.apply_bookmark_filter(composite_keys)
-            for _fm in self._jm_file_models:
+            for _fm in self._global_filter_models():
                 _fm.apply_bookmark_filter(composite_keys)
             # Remember active keys so tabs opened later can inherit this filter.
             self._active_jm_session_keys = composite_keys
@@ -13357,7 +13397,7 @@ class MainWindow(QMainWindow):
             logon_id, computer, scope_start_ts, scope_end_ts, scope_end_inclusive,
             linked_lid=linked_lid,
         )
-        for state in self._file_tabs.values():
+        for state in self._global_filter_tabs():
             state.proxy.set_session_filter(
                 logon_id, computer, scope_start_ts, scope_end_ts, scope_end_inclusive,
                 linked_lid=linked_lid,
@@ -14753,7 +14793,7 @@ class MainWindow(QMainWindow):
 
     def _around_hosts(self, anchor: dict, scope: str):
         """(Computer names in scope or None for all hosts, display name, tooltip lines)."""
-        import os as _os
+        from evtx_tool.core.host_identity import link_reason
         if scope == "all":
             return None, "All hosts", ["Hosts: all"]
         identity = self._host_identity()
@@ -14762,20 +14802,17 @@ class MainWindow(QMainWindow):
         names = set(group.members) | {comp}
         lines = [f"Hosts: {', '.join(repr(n) if not n.strip() else n for n in sorted(names))}"]
         for ln in group.links:
-            if ln.kind == "rename":
-                lines.append(f"  {ln.a} = {ln.b}: rename at "
-                             f"{apply_tz(ln.evidence[0]) if ln.evidence else '?'}")
-            elif ln.kind == "domain_suffix":
-                lines.append(f"  {ln.a} = {ln.b}: domain suffix")
-            else:
-                lines.append(f"  {ln.a} = {ln.b}: confirmed, shared file "
-                             + ", ".join(_os.path.basename(f) for f in ln.evidence))
+            lines.append(f"  {ln.a} = {ln.b}: "
+                         + ("confirmed, " if ln.state == "confirmed" else "")
+                         + link_reason(ln, apply_tz))
         if scope == "host+suggested":
             for ln in identity.suggestions_for(comp):
-                names |= set(identity.group_of(ln.a).members) | set(identity.group_of(ln.b).members)
-                why = ("shared file " + ", ".join(_os.path.basename(f) for f in ln.evidence)
-                       if ln.kind == "same_file" else "domain suffix")
-                lines.append(f"  {ln.a} = {ln.b}: suggested, {why}")
+                # Only names on events: a suggested rename can point at a setup
+                # name that no event carries, which would add nothing but a count.
+                for end in (ln.a, ln.b):
+                    if identity.knows(end):
+                        names |= set(identity.group_of(end).members)
+                lines.append(f"  {ln.a} = {ln.b}: suggested, {link_reason(ln, apply_tz)}")
             lines[0] = f"Hosts: {', '.join(repr(n) if not n.strip() else n for n in sorted(names))}"
         return names, group.display_name.strip() or "(unknown)", lines
 
@@ -14862,6 +14899,17 @@ class MainWindow(QMainWindow):
         if clicked is b_flt:
             return "filtered"
         return None
+
+    def _global_filter_tabs(self) -> list:
+        """Tabs a filter applied elsewhere (session, Remote Assistance, "filter
+        to this computer") is pushed into.  Not around tabs: what they hold
+        was fixed by the filter question when they were opened."""
+        return [st for k, st in self._file_tabs.items() if not k.startswith("__around__")]
+
+    def _global_filter_models(self) -> list:
+        """JM per-file models a global filter is pushed into (not around tabs)."""
+        return [m for m in getattr(self, "_jm_file_models", None) or []
+                if not getattr(m, "_around_tab", False)]
 
     @staticmethod
     def _fmt_span(td) -> str:
@@ -15117,6 +15165,7 @@ class MainWindow(QMainWindow):
             fixed_params=win_params + host_params,
             parent=self,
         )
+        model._around_tab = True     # global filters are not pushed into it
         if getattr(self, "_jm_file_models", None) is None:
             self._jm_file_models = []
         self._jm_file_models.append(model)
@@ -15306,6 +15355,13 @@ class MainWindow(QMainWindow):
         _active_fp   = getattr(self, "_active_file_tab", None)
         _file_state  = self._file_tabs.get(_active_fp) if _active_fp else None
         _export_model = _file_state.model if _file_state else self._hw_model
+        from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
+        if not isinstance(_export_model, _ATM):
+            QMessageBox.information(
+                self, "Export",
+                "This tab holds a chain's events, which Juggernaut export cannot "
+                "read. Export from the All Events tab or a file tab instead.")
+            return
 
         total = _export_model._total_rows   # current filtered count
         if total == 0:
@@ -15372,8 +15428,11 @@ class MainWindow(QMainWindow):
         dlg.setAutoClose(False)
         dlg.setAutoReset(False)
 
+        # The tab's WHERE belongs to the tab's own table: an around tab made
+        # from a filtered snapshot holds a subset, and running its WHERE over
+        # the full table exported events the tab does not show.
         worker = _JMExportWorker(
-            self._hw_model._full_table, _shard_paths, where_sql, params,
+            _export_model._full_table, _shard_paths, where_sql, params,
             order_sql, path, ext, export_row_limit, parent=self,
         )
         self._jm_export_worker = worker   # keep a reference; QThread must outlive run()
@@ -16418,20 +16477,18 @@ class MainWindow(QMainWindow):
 
     def _on_bookmark_toggle(self) -> None:
         """Clicked handler for _btn_bookmark_event — toggle bookmark on the selected event."""
-        if self._hw_model is not None:
-            indexes = self._active_table.selectionModel().selectedRows()
-            if not indexes:
-                return
-            # The row index belongs to the tab in front (a per-file or pivot
-            # tab has its own model); reading it from the merged model
-            # bookmarked a different event.  Same rule as _on_hw_row_selected.
-            from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
-            _am = self._active_table.model()
-            ev = (_am if isinstance(_am, _ATM) else self._hw_model).get_event(indexes[0].row())
+        indexes = self._active_table.selectionModel().selectedRows()
+        if not indexes:
+            return
+        # The row index belongs to the tab in front: its own Arrow model (main,
+        # per-file or around tab), or a proxy over event dicts (Normal mode,
+        # and chain tabs in either mode).  Reading it from the merged model
+        # bookmarked a different event.
+        from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
+        _am = self._active_table.model()
+        if isinstance(_am, _ATM):
+            ev = _am.get_event(indexes[0].row())
         else:
-            indexes = self._active_table.selectionModel().selectedRows()
-            if not indexes:
-                return
             ev = self._active_proxy.get_source_event(indexes[0].row())
         if ev:
             self._bookmark_event(ev)
