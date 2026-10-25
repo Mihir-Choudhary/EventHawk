@@ -7319,6 +7319,67 @@ class _FilterTargetDialog(QDialog):
         return [fp for fp, cb in self._checkboxes if cb.isChecked()]
 
 
+class _AroundCustomDialog(QDialog):
+    """Custom "Around this event" window: before and after the event, each a
+    number and a unit, from 0 up to 365 days a side."""
+
+    _UNITS = (("minutes", 60), ("hours", 3600), ("days", 86400))
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        from evtx_tool.core.time_window import MAX_SIDE
+        self._max_side = MAX_SIDE
+        self.setWindowTitle("Around This Event — Custom Window")
+        self.setWindowFlags(
+            self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
+        )
+        self.setMinimumWidth(340)
+
+        layout = QVBoxLayout(self)
+        self._sides: list[tuple[QSpinBox, QComboBox]] = []
+        for name in ("Before the event:", "After the event:"):
+            row = QHBoxLayout()
+            lbl = QLabel(name)
+            lbl.setMinimumWidth(110)
+            row.addWidget(lbl)
+            spin = QSpinBox()
+            spin.setRange(0, 525_600)
+            spin.setValue(5)
+            combo = QComboBox()
+            combo.addItems([u for u, _ in self._UNITS])
+            spin.valueChanged.connect(self._update_ok)
+            combo.currentIndexChanged.connect(self._update_ok)
+            row.addWidget(spin)
+            row.addWidget(combo)
+            row.addStretch()
+            layout.addLayout(row)
+            self._sides.append((spin, combo))
+
+        self._lbl_limit = QLabel("Each side can be at most 365 days.")
+        layout.addWidget(self._lbl_limit)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        self._ok_button = btns.button(QDialogButtonBox.StandardButton.Ok)
+        layout.addWidget(btns)
+        self._update_ok()
+
+    def _side(self, i: int) -> timedelta:
+        spin, combo = self._sides[i]
+        return timedelta(seconds=spin.value() * dict(self._UNITS)[combo.currentText()])
+
+    def values(self) -> tuple[timedelta, timedelta]:
+        return self._side(0), self._side(1)
+
+    def _update_ok(self, *_args) -> None:
+        ok = all(self._side(i) <= self._max_side for i in range(2))
+        self._ok_button.setEnabled(ok)
+        self._lbl_limit.setStyleSheet("" if ok else "color: #a01800;")
+
+
 class _ExportScopeDialog(QDialog):
     """
     Clean export-scope chooser with four radio-button options:
@@ -12151,6 +12212,9 @@ class MainWindow(QMainWindow):
             act_bm.triggered.connect(lambda checked=False, e=ev: self._bookmark_event(e))
             menu.addSeparator()
 
+        self._add_around_menu(menu, ev, _jm_active if _jm_active is not None else proxy)
+        menu.addSeparator()
+
         act_copy = menu.addAction("Copy Row as Text")
         act_copy.triggered.connect(lambda: self._copy_event_row(ev))
 
@@ -14710,6 +14774,90 @@ class MainWindow(QMainWindow):
                 lines.append(f"  {ln.a} = {ln.b}: suggested, {why}")
             lines[0] = f"Hosts: {', '.join(repr(n) if not n.strip() else n for n in sorted(names))}"
         return names, group.display_name.strip() or "(unknown)", lines
+
+    def _add_around_menu(self, menu, ev: dict, source) -> None:
+        """Add "⏱ Around this event" to a table's context menu.
+
+        *source* is the clicked table's proxy (Normal) or ArrowTableModel (JM):
+        what "only events that pass the current filters" snapshots.
+        """
+        from evtx_tool.core.time_window import PRESETS, parse_event_ts
+        menu.setToolTipsVisible(True)
+        sub = menu.addMenu("⏱ Around this event")
+        if parse_event_ts(ev.get("timestamp")) is None:
+            sub.menuAction().setEnabled(False)
+            sub.menuAction().setToolTip("This event has no readable timestamp.")
+            return
+        sub.setToolTipsVisible(True)
+        scopes: list[tuple[str, str, str]] = []
+        try:
+            names, _d, lines = self._around_hosts(ev, "host")
+            n = len(names)
+            scopes.append(("host", f"On this host ({n} name{'s' if n != 1 else ''})",
+                           "\n".join(lines)))
+            s_names, _d, s_lines = self._around_hosts(ev, "host+suggested")
+            k = len(s_names - names)
+            if k:
+                scopes.append(("host+suggested",
+                               f"On this host + {k} suggested name{'s' if k != 1 else ''}",
+                               "\n".join(s_lines)))
+        except Exception as exc:
+            _na = sub.addAction("On this host")
+            _na.setEnabled(False)
+            _na.setToolTip(f"This event's host names could not be worked out:\n{exc}")
+        scopes.append(("all", "On all hosts", "Every host in the loaded events"))
+        for scope, text, tip in scopes:
+            sm = sub.addMenu(text)
+            sm.menuAction().setToolTip(tip)
+            for lbl, td in PRESETS:
+                a = sm.addAction(lbl)
+                a.triggered.connect(
+                    lambda _=False, s=scope, d=td: self._around_from_menu(ev, d, d, s, source))
+            c = sm.addAction("Custom…")
+            c.triggered.connect(lambda _=False, s=scope: self._around_custom(ev, s, source))
+
+    def _around_custom(self, ev: dict, scope: str, source) -> None:
+        dlg = _AroundCustomDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        before, after = dlg.values()
+        self._around_from_menu(ev, before, after, scope, source)
+
+    def _around_from_menu(self, ev: dict, before, after, scope: str, source) -> None:
+        choice = self._ask_around_filter_scope(source)
+        if choice is None:
+            return
+        self._open_around_tab(ev, before, after, scope,
+                              source if choice == "filtered" else None)
+
+    def _ask_around_filter_scope(self, source) -> "str | None":
+        """"all", "filtered" or None (cancelled).  Asked only when the clicked
+        table has a filter on; otherwise the two answers are the same."""
+        try:
+            active = bool(source is not None and source.has_any_filter_active())
+        except AttributeError:
+            active = False
+        if not active:
+            return "all"
+        box = QMessageBox(self)
+        box.setWindowTitle("Around This Event")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("This table has filters on. Which events should the new tab draw from?")
+        b_all = box.addButton("Include all loaded events", QMessageBox.ButtonRole.AcceptRole)
+        b_flt = box.addButton("Only events that pass the current filters",
+                              QMessageBox.ButtonRole.AcceptRole)
+        b_cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(b_all)
+        box.setEscapeButton(b_cancel)
+        box.raise_()
+        box.activateWindow()
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is b_all:
+            return "all"
+        if clicked is b_flt:
+            return "filtered"
+        return None
 
     @staticmethod
     def _fmt_span(td) -> str:
