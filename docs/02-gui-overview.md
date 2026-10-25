@@ -66,6 +66,13 @@ The main table showing all parsed (and optionally filtered) events. Columns:
 
 Click any column header to sort. Right-click a column header for the [Column Filter Popup](08-column-filters.md).
 
+Right-click an event row for:
+
+- **⚡ Quick Filter** on the clicked cell's value (= or ≠), and **Clear Quick Filters** — see [Quick Filters](07-quick-filters.md)
+- **☆ Bookmark Event** / **★ Remove Bookmark**
+- **⏱ Around this event** — the events within a time window on this machine or on all hosts, in a new tab — see [Around This Event](09c-around-this-event.md)
+- **Copy Row as Text**
+
 ### Event Detail Panel (Centre Middle)
 
 Shows the full content of whichever row is selected in the events table. Two view modes: **Brief** and **XML**. See [Event Detail Panel](05-event-detail-panel.md).

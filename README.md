@@ -133,6 +133,7 @@ python -m sentinel.cli analyze --evtx C:\Target   --baseline baseline/ --sigma C
 |---|---|
 | [Analysis Tabs](docs/09-analysis-tabs.md) | ATT&CK mapping, IOC extraction, attack chains, case notes |
 | [Missing Record ID Analysis](docs/09b-missing-record-ids.md) | Detect log tampering by scanning EventRecordID sequences for gaps |
+| [Around This Event](docs/09c-around-this-event.md) | Right-click an event to open everything within ±N minutes on that machine (all its names) or on all hosts |
 | [Hayabusa Integration](docs/10-hayabusa.md) | Download, configure, run Hayabusa — auto-detected paths, update-rules |
 | [PowerShell History Extraction](docs/10b-ps-extract.md) | PS session/command/script-block reconstruction — output files, ATT&CK detection, prerequisites |
 | [View Logon Sessions](docs/10c-logon-sessions.md) | Reconstruct Windows logon sessions, filter to a session, detect LUID reuse, linked UAC pairs |
