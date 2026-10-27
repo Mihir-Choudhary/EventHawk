@@ -9481,7 +9481,11 @@ class MainWindow(QMainWindow):
             return
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("⚡  Juggernaut Mode")
+        # Shared by Normal mode too (host names, logon sessions, big filters);
+        # titling it "Juggernaut Mode" there told the analyst the wrong mode.
+        _w = getattr(self, "_hw_worker", None)
+        _jm = self._hw_model is not None or (_w is not None and self._thread_running(_w))
+        dlg.setWindowTitle("⚡  Juggernaut Mode" if _jm else "EventHawk — Please Wait")
         # Remove the close / minimise / maximise buttons entirely
         dlg.setWindowFlags(
             Qt.WindowType.Dialog |

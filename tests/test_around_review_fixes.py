@@ -408,6 +408,24 @@ def pivots_target_main(mw):
         T.teardown(w, jm, m)
 
 
+def busy_dialog_title(mw):
+    """Found by driving the real GUI: the shared please-wait dialog was always
+    titled "⚡ Juggernaut Mode", also in Normal mode (host names, logon
+    sessions, large filters)."""
+    print("\n=== 13. please-wait dialog title matches the mode ===", flush=True)
+    for jm in (False, True):
+        tag = "JM" if jm else "Normal"
+        m = T.Mode(mw, jm)
+        w = mw.MainWindow()
+        m.load(w, T.dataset())
+        w._show_hw_loading_dialog(heading="Please Wait — Host Names", detail="x")
+        title = w._hw_loading_dlg.windowTitle() if w._hw_loading_dlg is not None else ""
+        w._close_hw_loading_dialog()
+        check(f"{tag}: please-wait title {'names' if jm else 'does not name'} Juggernaut Mode",
+              ("Juggernaut" in title) == jm, repr(title))
+        T.teardown(w, jm, m)
+
+
 def jm_chain_snapshot(mw):
     """A filtered snapshot of a JM chain tab (a proxy over event dicts) must
     open over exactly that tab's visible rows, not fail as 'not loaded'."""
@@ -455,6 +473,7 @@ def main() -> int:
         jm_chain_snapshot(mw)
         collector_file()
         pivots_target_main(mw)
+        busy_dialog_title(mw)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
