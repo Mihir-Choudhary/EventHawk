@@ -9204,6 +9204,8 @@ class MainWindow(QMainWindow):
         """Handle switching between file tabs."""
         if index < 0:
             return
+        # Column-popup values belong to the tab they were computed for.
+        self._invalidate_col_value_cache()
         widget = self._events_tab_widget.widget(index)
         if widget is None:
             return
@@ -9779,7 +9781,8 @@ class MainWindow(QMainWindow):
     def _invalidate_col_value_cache(self) -> None:
         """Drop cached column-popup values: the visible slice just changed.
 
-        The normal-mode cache key is ("normal", col_key, len(visible_events)) --
+        The normal-mode cache key is ("normal", col_key, len(visible_events),
+        id(proxy)) --
         a COUNT, not the filter's identity -- so two different filters that
         happen to select the same number of events collide, and the second is
         served the first's values.  On the real corpus event_id 8193 and 1025
@@ -9898,7 +9901,7 @@ class MainWindow(QMainWindow):
             if not _evs:
                 continue
             _sizes[_ck] = len(_evs)
-            if ("normal", _ck, len(_evs)) in self._col_cache():
+            if ("normal", _ck, len(_evs), id(self._active_proxy)) in self._col_cache():
                 continue
             by_col[_ck] = _evs
         if not by_col:
@@ -9908,8 +9911,8 @@ class MainWindow(QMainWindow):
         # and stuttering the UI this prewarm exists to keep smooth.
         _w = NormalColValuePrewarmWorker(by_col, parent=self)
         _w.column_ready.connect(
-            lambda ck, vals, sz=_sizes: (
-                self._col_cache().__setitem__(("normal", ck, sz.get(ck, 0)), vals)
+            lambda ck, vals, sz=_sizes, px=id(self._active_proxy): (
+                self._col_cache().__setitem__(("normal", ck, sz.get(ck, 0), px), vals)
                 if vals else None
             )
         )
@@ -10869,7 +10872,12 @@ class MainWindow(QMainWindow):
         # visible slice drops it -- _normal_filter_busy in its finally, and
         # _invalidate_col_value_cache everywhere else -- so only one slice is
         # ever cached at a time.  Keep that invariant if you add a filter path.
-        _nk = ("normal", col_key, len(visible_events))
+        # The tab's proxy is part of the key: two Around tabs with the same
+        # number of rows shared ("normal", col, size) and the second tab's
+        # popup offered the first tab's values (Codex review-1 F3).  The
+        # cache is also dropped on every tab switch (_on_file_tab_changed),
+        # so a proxy id reused after a tab closes cannot hit a stale entry.
+        _nk = ("normal", col_key, len(visible_events), id(self._active_proxy))
         _cache = self._col_cache()
         if _nk in _cache:
             self._show_col_filter_popup(logical_index, _cache[_nk])
@@ -16107,7 +16115,7 @@ class MainWindow(QMainWindow):
         # Drop the cached column-popup values.  "timestamp_date" is the one
         # column whose values depend on the display timezone, and neither cache
         # key carries the timezone -- normal mode keys on
-        # ("normal", col_key, len(visible_events)) and Juggernaut on
+        # ("normal", col_key, len(visible_events), id(proxy)) and Juggernaut on
         # (col_key, where_sql, where_params).  Neither changes when the analyst
         # switches zone, so the popup was served the PREVIOUS zone's dates:
         # measured on 12,000 real events, a UTC -> UTC+14 switch left every one

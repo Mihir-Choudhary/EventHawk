@@ -88,12 +88,14 @@ def main() -> int:
         check("normal mode prewarms its popups after a filter",
               len(wn._col_cache()) > 0, f"{len(wn._col_cache())} cached")
         wait_for(lambda: ("normal", "event_id",
-                          len(npx.collect_source_events_for_popup("event_id")))
+                          len(npx.collect_source_events_for_popup("event_id")), id(wn._active_proxy))
                  in wn._col_cache(), 120)
         # the key the click path computes must be the one that was prewarmed
         _ck = "event_id"
         _evs = npx.collect_source_events_for_popup(_ck)
-        _k = ("normal", _ck, len(_evs))
+        # The key carries the tab's proxy (two equal-size tabs must not share
+        # values: tests/test_popup_cache_tabs.py).
+        _k = ("normal", _ck, len(_evs), id(wn._active_proxy))
         check("the prewarmed key matches what the click path looks up",
               _k in wn._col_cache(), f"{_k} vs {list(wn._col_cache())[:2]}")
         check("the prewarmed entry holds real values",
