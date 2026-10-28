@@ -372,12 +372,18 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | boo
         opcode_val = _safe_int(system.get("Opcode"))
 
         # Qualifiers (classic-provider events) — previously dropped in JM.
+        # A present Qualifiers="0" is a value, not an absence: "or None" here
+        # stored NULL for it, so JM showed and exported no qualifier where the
+        # log (and Normal mode) has 0.
         eid_raw    = system.get("EventID")
         qualifiers = None
         if isinstance(eid_raw, dict):
-            qualifiers = _safe_int(
-                (eid_raw.get("#attributes") or {}).get("Qualifiers"), 0
-            ) or None
+            _q = (eid_raw.get("#attributes") or {}).get("Qualifiers")
+            if _q is not None and str(_q).strip() != "":
+                try:
+                    qualifiers = int(_q)
+                except (ValueError, TypeError):
+                    qualifiers = None
 
         exe = system.get("Execution") or {}
         if isinstance(exe, dict):

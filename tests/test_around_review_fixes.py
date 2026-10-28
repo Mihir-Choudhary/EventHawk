@@ -426,6 +426,28 @@ def busy_dialog_title(mw):
         T.teardown(w, jm, m)
 
 
+def attack_panel_text(mw):
+    """Found by driving the real GUI: in Juggernaut mode the ATT&CK panel said
+    "run with ATT&CK Mapping enabled", but that option is disabled there by
+    design -- the analyst was told to do something they cannot do."""
+    print("\n=== 14. ATT&CK panel text matches the mode ===", flush=True)
+    for jm in (False, True):
+        tag = "JM" if jm else "Normal"
+        m = T.Mode(mw, jm)
+        w = mw.MainWindow()
+        m.load(w, T.dataset())
+        w._attack_summary = None
+        w._refresh_attack_tab()
+        txt = w._lbl_attack_summary.text()
+        if jm:
+            check("JM: ATT&CK panel says it is not available in Juggernaut Mode",
+                  "not available in Juggernaut Mode" in txt and "enabled" not in txt, txt)
+        else:
+            check("Normal: ATT&CK panel still says how to get ATT&CK data",
+                  "run with ATT&CK Mapping enabled" in txt, txt)
+        T.teardown(w, jm, m)
+
+
 def jm_chain_snapshot(mw):
     """A filtered snapshot of a JM chain tab (a proxy over event dicts) must
     open over exactly that tab's visible rows, not fail as 'not loaded'."""
@@ -474,6 +496,7 @@ def main() -> int:
         collector_file()
         pivots_target_main(mw)
         busy_dialog_title(mw)
+        attack_panel_text(mw)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

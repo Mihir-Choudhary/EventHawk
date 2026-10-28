@@ -6207,47 +6207,89 @@ class _JMExportWorker(QThread):
                     pass
 
     # ── CSV / JSON: streaming, no full-set buffer ─────────────────────────
+    #
+    # Same layout as a Normal-mode export of the same events: each row is
+    # rebuilt as the event record Normal mode holds and written by the same
+    # exporter code.  This used to stream the storage columns instead
+    # (record_id, timestamp_utc without T/Z, an internal row_id, EventData as
+    # one JSON string), so a report built on one mode's export broke on the
+    # other's.
+    _EVENT_COLS = (
+        "e.record_id", "e.event_id", "p._q", "e.timestamp_utc", "e.channel", "e.provider",
+        "e.event_source_name", "p._pg", "e.computer", "e.level", "e.level_name", "e.task",
+        "e.opcode", "e.keywords", "p._ver", "e.process_id", "e.thread_id",
+        "e.correlation_id", "e.user_id", "p._ed", "e.source_file",
+    )
+
+    @staticmethod
+    def _event_of(r) -> dict:
+        """One export row as Normal mode's event record (engine field order).
+
+        event_source_name is kept although Normal mode does not capture it:
+        dropping a value the log holds would lose evidence.
+        """
+        import orjson as _json      # what the parser wrote it with; ~3x json.loads
+        (rid, eid, q, ts, ch, prov, esn, pg, comp, lvl, lvln, task, op, kw, ver,
+         pid, tid, corr, uid, ed, sf) = r
+        return {
+            "record_id": rid, "event_id": eid, "qualifiers": q,
+            "timestamp": f"{ts.replace(' ', 'T')}Z" if ts else "",
+            "channel": ch or "", "provider": prov or "", "event_source_name": esn or "",
+            "provider_guid": pg or "", "computer": comp or "", "level": lvl,
+            "level_name": lvln or "", "task": task, "opcode": op, "keywords": kw or "",
+            "version": ver, "process_id": pid, "thread_id": tid,
+            "correlation_id": corr or "", "user_id": uid or "",
+            # Written by the parser as JSON; a record that cannot be read
+            # fails the export loudly rather than going out without its data.
+            "event_data": _json.loads(ed) if ed else {},
+            "source_file": sf or "",
+        }
+
     def _run_streaming(self, con) -> int:
         import csv as _csv
-        import json as _json
-        # Without re-attaching event_data_json from the Parquet shards, CSV/JSON
-        # exports would silently omit ALL EventData -- incomplete forensic
-        # records.  The 1:1 composite-key LEFT JOIN preserves streaming and the
-        # exact filtered/ordered row set (no dup, no loss).
+        from evtx_tool.output.exporters import csv_headers, csv_row, fast_dumps
+        # EventData (and the header fields the Arrow table does not load) come
+        # from the Parquet shards: a 1:1 composite-key LEFT JOIN keeps the
+        # exact filtered, ordered row set (no dup, no loss) while streaming.
         if self._shard_paths:
-            cursor = con.execute(
-                f"SELECT e.* EXCLUDE (ed_values), p.ed_json_full AS event_data_json "
-                f"FROM events e "
-                f"LEFT JOIN (SELECT record_id AS _jrid, "
-                f"           source_file AS _jsf, "
-                f"           event_data_json AS ed_json_full "
-                f"           FROM parquet_scan({self._shard_paths})) p "
-                f"  ON e.record_id = p._jrid AND e.source_file = p._jsf "
-                f"WHERE {self._where_sql} "
-                f"ORDER BY {self._order_sql}",
-                self._params,
-            )
+            src = (f"FROM events e LEFT JOIN (SELECT record_id AS _jrid, source_file AS _jsf, "
+                   f"event_data_json AS _ed, qualifiers AS _q, provider_guid AS _pg, "
+                   f"version AS _ver FROM parquet_scan({self._shard_paths})) p "
+                   f"ON e.record_id = p._jrid AND e.source_file = p._jsf "
+                   f"WHERE {self._where_sql}")
         else:
-            cursor = con.execute(
-                f"SELECT * EXCLUDE (ed_values) FROM events "
-                f"WHERE {self._where_sql} "
-                f"ORDER BY {self._order_sql}",
-                self._params,
-            )
-        col_names = [d[0].strip() for d in cursor.description]
+            src = (f"FROM events e, (SELECT NULL AS _ed, NULL AS _q, NULL AS _pg, NULL AS _ver) p "
+                   f"WHERE {self._where_sql}")
+        cols = ", ".join(self._EVENT_COLS)
         written = 0
         if self._ext == "csv":
-            with open(self._path, "w", newline="", encoding="utf-8") as fh:
+            # The header exactly as export_csv builds it: the EventData field
+            # names and the row count of the exported set decide the layout.
+            keys = [k for (k,) in con.execute(
+                f"SELECT DISTINCT unnest(json_keys(p._ed)) {src}", self._params).fetchall()
+                if k is not None]
+            n_rows = con.execute(f"SELECT count(*) {src}", self._params).fetchone()[0]
+            headers = csv_headers(keys, n_rows)
+            pos, width = {h: i for i, h in enumerate(headers)}, len(headers)
+            cursor = con.execute(f"SELECT {cols} {src} ORDER BY {self._order_sql}", self._params)
+            with open(self._path, "w", newline="", encoding="utf-8-sig") as fh:
                 writer = _csv.writer(fh)
-                writer.writerow(col_names)
+                writer.writerow(headers)
                 while not self._cancel:
                     batch = cursor.fetchmany(self._BATCH)
                     if not batch:
                         break
-                    writer.writerows(batch)
+                    writer.writerows(csv_row(self._event_of(row), pos, width) for row in batch)
                     written += len(batch)
                     self.progress.emit(written)
         else:
+            # Normal mode's events carry the semantic *_desc keys (and the
+            # _normalized marker) that ParseWorker adds before they reach the
+            # table, so its JSON does too; add the same here.  (CSV is
+            # unaffected: its columns are fixed.)
+            from evtx_tool.analysis.normalizer import SemanticNormalizer
+            normalize = SemanticNormalizer.get().enrich
+            cursor = con.execute(f"SELECT {cols} {src} ORDER BY {self._order_sql}", self._params)
             with open(self._path, "w", encoding="utf-8") as fh:
                 fh.write("[\n")
                 first = True
@@ -6258,11 +6300,9 @@ class _JMExportWorker(QThread):
                     for row in batch:
                         if not first:
                             fh.write(",\n")
-                        # strict=True — col_names and row both come from the same cursor, so
-                        # they always match; without it a mismatch would silently
-                        # drop fields from an EXPORTED record.
-                        fh.write(_json.dumps(dict(zip(col_names, row, strict=True)),
-                                             default=str))
+                        ev = self._event_of(row)
+                        normalize(ev)
+                        fh.write(fast_dumps(ev, indent=2))
                         first = False
                     written += len(batch)
                     self.progress.emit(written)
@@ -10133,6 +10173,7 @@ class MainWindow(QMainWindow):
             "Not available in Juggernaut Mode — ATT&CK tagging annotates the "
             "in-memory events, which this mode does not hold"
         )
+        self._refresh_attack_tab()      # say so on the ATT&CK tab too
         for chk in (self._chk_ioc, self._chk_correlate):
             chk.setEnabled(True)
             chk.setToolTip(
@@ -13836,7 +13877,15 @@ class MainWindow(QMainWindow):
             atk = self._attack_summary
         self._tbl_attack.setRowCount(0)
         if not atk:
-            self._lbl_attack_summary.setText("No ATT&CK data — run with ATT&CK Mapping enabled.")
+            if self._hw_model is not None:
+                # The ATT&CK option is disabled in this mode by design (it tags
+                # in-memory events); "run with it enabled" asked the impossible.
+                self._lbl_attack_summary.setText(
+                    "ATT&CK mapping is not available in Juggernaut Mode — it tags events "
+                    "held in memory, which this mode does not keep. Parse in Normal Mode "
+                    "to map ATT&CK.")
+            else:
+                self._lbl_attack_summary.setText("No ATT&CK data — run with ATT&CK Mapping enabled.")
             return
 
         total = atk.get("total_tagged", 0)

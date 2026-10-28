@@ -41,49 +41,63 @@ _WASM_PKG_DIR = Path(__file__).resolve().parents[2] / "evtx_search_wasm" / "pkg"
 LEVEL_NAMES = {0: "LogAlways", 1: "Critical", 2: "Error", 3: "Warning",
                4: "Information", 5: "Verbose"}
 
-def _flatten_event(event: dict) -> dict:
-    """Flatten event_data into top-level keys for CSV/tabular export."""
-    flat = {
-        "RecordID":   event.get("record_id", ""),
-        "EventID":    event.get("event_id", ""),
-        "Timestamp":  event.get("timestamp", ""),
-        "Channel":    event.get("channel", ""),
-        "Provider":   event.get("provider", ""),
-        "Computer":   event.get("computer", ""),
-        "Level":      event.get("level", ""),
-        "LevelName":  event.get("level_name", ""),
-        "Task":       event.get("task", ""),
-        "Keywords":   event.get("keywords", ""),
-        "UserID":     event.get("user_id", ""),
-        "ProcessID":  event.get("process_id", ""),
-        "SourceFile": os.path.basename(event.get("source_file", "")),
-        "ATT&CK":     "; ".join(
-            f"{t['tid']}:{t['name']}"
-            for t in (event.get("attack_tags") or [])
-        ),
-    }
-    ed = event.get("event_data", {}) or {}
-    if isinstance(ed, dict):
-        for k, v in ed.items():
-            flat[f"ED_{k}"] = str(v) if v is not None else ""
-    return flat
-
-
-def _collect_csv_headers(events: list[dict]) -> list[str]:
-    """Collect all unique column names from all events."""
-    base_keys = ["RecordID", "EventID", "Timestamp", "Channel", "Provider",
+# The CSV layout, shared by Normal mode (export_csv) and Juggernaut mode
+# (main_window._JMExportWorker): the same events must give the same file in
+# either mode.  EventData follows as one ED_<name> column per field.
+CSV_BASE_KEYS = ["RecordID", "EventID", "Timestamp", "Channel", "Provider",
                  "Computer", "Level", "LevelName", "Task", "Keywords",
                  "UserID", "ProcessID", "SourceFile", "ATT&CK"]
-    extra_keys: list[str] = []
-    seen_extra = set()
-    for ev in events:
-        ed = ev.get("event_data", {}) or {}
-        for k in ed:
-            key = f"ED_{k}"
-            if key not in seen_extra:
-                seen_extra.add(key)
-                extra_keys.append(key)
-    return base_keys + sorted(extra_keys)
+
+
+# When rows x distinct EventData field names exceeds this, an export writes
+# EventData as ONE JSON column ("EventData") instead of one ED_<name> column
+# per field.  The cost of per-field columns is that grid of mostly empty
+# cells: a mixed 1.7M-event export with ~2,850 field names (4.9 billion
+# cells) was 5.2 GB and 138 s per-field against 0.94 GB and 26 s compact,
+# while a whole machine's Security+System export (4,414 events, 232 names,
+# ~1M cells) stays per-field.  The same rule in both modes, so the same events
+# still give the same file.
+MAX_ED_CELLS = 50_000_000
+
+
+def csv_headers(ed_keys, rows: int) -> list[str]:
+    """Full CSV header for *rows* events whose EventData field names are *ed_keys*."""
+    names = set(ed_keys)
+    if len(names) * rows > MAX_ED_CELLS:
+        return CSV_BASE_KEYS + ["EventData"]
+    return CSV_BASE_KEYS + sorted(f"ED_{k}" for k in names)
+
+
+def csv_row(event: dict, ed_pos: dict, width: int) -> list:
+    """One CSV row in the ``csv_headers`` layout.
+
+    *ed_pos* maps each "ED_<name>" header to its column; *width* is the header
+    length.  Only the fields an event has are filled, so the cost per row does
+    not grow with the hundreds of ED_ columns a mixed export carries (mapping
+    every row over every header made a 1.7M-row export take minutes).
+
+    SourceFile is the full path: logs collected from several machines are
+    usually all named Security.evtx, so a bare name cannot say which one a
+    row came from.
+    """
+    row = [
+        event.get("record_id", ""), event.get("event_id", ""), event.get("timestamp", ""),
+        event.get("channel", ""), event.get("provider", ""), event.get("computer", ""),
+        event.get("level", ""), event.get("level_name", ""), event.get("task", ""),
+        event.get("keywords", ""), event.get("user_id", ""), event.get("process_id", ""),
+        event.get("source_file", "") or "",
+        "; ".join(f"{t['tid']}:{t['name']}" for t in (event.get("attack_tags") or [])),
+    ]
+    row.extend([""] * (width - len(row)))
+    ed = event.get("event_data", {}) or {}
+    if "EventData" in ed_pos:                    # compact layout (see MAX_ED_COLUMNS)
+        # Always valid JSON, "{}" for an event without data, so the column can
+        # be parsed row by row.
+        row[ed_pos["EventData"]] = fast_dumps(ed)
+    elif isinstance(ed, dict):
+        for k, v in ed.items():
+            row[ed_pos[f"ED_{k}"]] = str(v) if v is not None else ""
+    return row
 
 
 # ── CSV ────────────────────────────────────────────────────────────────────────
@@ -94,20 +108,14 @@ def export_csv(events: list[dict], filepath: str, **_) -> int:
     # list+set overhead) with a tight set comprehension — same O(n) complexity
     # but avoids the extra function call, list.append() loop, and intermediate
     # list construction.
-    base_keys = ["RecordID", "EventID", "Timestamp", "Channel", "Provider",
-                 "Computer", "Level", "LevelName", "Task", "Keywords",
-                 "UserID", "ProcessID", "SourceFile", "ATT&CK"]
-    headers = base_keys + sorted({
-        f"ED_{k}"
-        for ev in events
-        for k in (ev.get("event_data") or {})
-    })
+    headers = csv_headers({k for ev in events for k in (ev.get("event_data") or {})}, len(events))
+    pos, width = {h: i for i, h in enumerate(headers)}, len(headers)
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
-        writer.writeheader()
+        writer = csv.writer(f)
+        writer.writerow(headers)
         count = 0
         for ev in events:
-            writer.writerow(_flatten_event(ev))
+            writer.writerow(csv_row(ev, pos, width))
             count += 1
     logger.info("CSV export: %d events -> %s", count, filepath)
     return count

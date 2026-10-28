@@ -71,16 +71,26 @@ def main() -> int:
         if r.get("ok"):
             print(f"      exported {r['n']:,} rows in {elapsed:.1f}s")
             check("CSV row count equals the table", r["n"] == total, f"{r['n']} vs {total}")
-            with open(out_csv, newline="", encoding="utf-8") as fh:
+            # Same layout as a Normal-mode export (tests/test_export_parity.py),
+            # UTF-8 with BOM.  This corpus is ~2,850 field names x 1.7M rows,
+            # far past MAX_ED_CELLS, so EventData is the one JSON column.
+            ed_filled = 0
+            with open(out_csv, newline="", encoding="utf-8-sig") as fh:
                 rd = csv.reader(fh)
                 hdr = next(rd)
-                body_n = sum(1 for _ in rd)
+                ed_cols = [i for i, h in enumerate(hdr) if h.startswith("ED_") or h == "EventData"]
+                body_n = 0
+                for row in rd:
+                    body_n += 1
+                    if any(row[i] not in ("", "{}") for i in ed_cols):
+                        ed_filled += 1
             check("CSV file holds every row", body_n == total, f"{body_n} vs {total}")
-            check("CSV carries event_data_json (EventData not dropped)",
-                  "event_data_json" in hdr, str(hdr[:6]))
+            check("CSV carries EventData (filled)",
+                  ed_cols and ed_filled > total // 2,
+                  f"columns {[hdr[i] for i in ed_cols][:3]}, {ed_filled:,} rows with data")
             # ordering
-            ts_i = hdr.index("timestamp_utc")
-            with open(out_csv, newline="", encoding="utf-8") as fh:
+            ts_i = hdr.index("Timestamp")
+            with open(out_csv, newline="", encoding="utf-8-sig") as fh:
                 rd = csv.reader(fh); next(rd)
                 ts = [row[ts_i] for _, row in zip(range(20000), rd)]
             check("CSV rows are in the requested order", ts == sorted(ts),

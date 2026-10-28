@@ -23,34 +23,53 @@ EventHawk can export the currently loaded (and optionally filtered) events, IOCs
 
 **Best for:** Machine-readable output, further processing in Python/scripts, ingesting into SIEM.
 
-Exports a JSON array of event objects. Each object contains all parsed fields:
+Exports a JSON array of event objects, one per event, with the same fields in the same order in Normal and Juggernaut mode:
 
 ```json
 [
   {
     "record_id": 12345,
     "event_id": 4624,
-    "level": "Information",
-    "timestamp_utc": "2025-05-10T18:08:16.313420Z",
-    "computer": "DC01.corp.local",
-    "provider": "Microsoft-Windows-Security-Auditing",
+    "qualifiers": null,
+    "timestamp": "2025-05-10T18:08:16.313420Z",
     "channel": "Security",
-    "user_id": "S-1-5-18",
+    "provider": "Microsoft-Windows-Security-Auditing",
+    "provider_guid": "54849625-5478-4994-A5BA-3E3B0328C30D",
+    "computer": "DC01.corp.local",
+    "level": 0,
+    "level_name": "LogAlways",
+    "task": 12544,
+    "opcode": 0,
+    "keywords": "0x8020000000000000",
+    "version": 2,
+    "process_id": 632,
+    "thread_id": 636,
+    "correlation_id": "",
+    "user_id": "",
     "event_data": {
       "SubjectUserName": "john",
-      "LogonType": "2",
+      "LogonType": 2,
       "IpAddress": "192.168.1.5"
-    }
+    },
+    "source_file": "C:\\Cases\\DC01\\Security.evtx"
   },
   ...
 ]
 ```
 
+Timestamps are UTC (ISO 8601, `Z`). After `source_file`, an event carries readable meanings of coded fields where EventHawk knows them, in both modes: `logon_type_desc`, `status_code_desc`, `failure_reason_desc` and similar `*_desc` keys, and `"_normalized": true`. In Normal mode an event also carries `attack_tags` when ATT&CK Mapping ran. In Juggernaut mode an event also carries `event_source_name` (the classic provider's legacy source name), which Normal mode does not capture.
+
 ### CSV
 
 **Best for:** Spreadsheet analysis in Excel / LibreOffice Calc.
 
-Exports a flat CSV with one column per parsed field. `event_data` fields are flattened with dot notation (e.g. `event_data.SubjectUserName`). Timestamps are in ISO 8601 format.
+The same layout in Normal and Juggernaut mode (UTF-8 with BOM, so Excel opens it correctly):
+
+`RecordID, EventID, Timestamp, Channel, Provider, Computer, Level, LevelName, Task, Keywords, UserID, ProcessID, SourceFile, ATT&CK`, then one `ED_<name>` column per EventData field in the exported events, sorted by name (e.g. `ED_SubjectUserName`).
+
+**Very large mixed exports:** when *rows × distinct EventData field names* exceeds 50 million, the `ED_` columns are replaced by one `EventData` column holding each event's EventData as JSON (`{}` when it has none). Otherwise such a file is mostly empty cells: 1.7 million mixed events with ~2,850 field names gave 5.2 GB per-field against 0.9 GB with one `EventData` column. A whole machine's Security and System logs (a few thousand events, a few hundred field names) stay per-field. The same rule applies in both modes, so the same events always give the same file.
+
+`Timestamp` is UTC (ISO 8601, `Z`). `SourceFile` is the full path, since logs collected from several machines are usually all named `Security.evtx`. `ATT&CK` is empty in Juggernaut mode, where ATT&CK mapping is not available.
 
 > **Note:** Not all event_data fields are the same across different event IDs. Sparse columns are expected in a mixed-event-type CSV.
 
