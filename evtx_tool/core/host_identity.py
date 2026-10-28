@@ -253,8 +253,12 @@ class HostIdentity:
             ln = _link("rename", old, new, (r.ts, r.source_file, r.record_id), state)
             self._links.setdefault(ln, ln)
 
-        # domain suffix
-        nodes = set(self._raw_by_node)
+        # domain suffix.  Rename endpoints take part even when they are on no
+        # event: "OLD renamed NEW" plus events stamped NEW.corp.local is one
+        # machine, but with only observed names the unseen NEW never reached
+        # its FQDN (Codex review-1 F4).  Members still come only from names
+        # seen on events (_raw_by_node).
+        nodes = set(self._raw_by_node) | {n for old, new, _r in pairs for n in (old, new)}
         fqdn_by_short: dict[str, list[str]] = {}
         for n in nodes:
             if n != UNKNOWN and not is_ip_literal(n) and "." in n:
