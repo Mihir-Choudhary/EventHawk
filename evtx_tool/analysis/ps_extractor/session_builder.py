@@ -1,14 +1,17 @@
 """
 PowerShell forensic extraction — session builder.
 
-Correlates EID 400/403/600/800/4103/4104 events into PSSession objects
-using HostId (primary) and ProcessID (cross-log correlation).
+Correlates EID 300/400/403/600/800/4100/4102/4103/4104/53504 events into
+PSSession objects using HostId (primary) and ProcessID (cross-log correlation).
+Every event ends up in a session or in the "_unsessioned" bucket; none is
+dropped for lack of a match.
 """
 
 from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from datetime import datetime
 
 from .constants import ZERO_GUID
 from .models import PSSession
@@ -43,6 +46,38 @@ def _best_session_for_event(
     return min(sess_objs, key=lambda s: s.start_ts)
 
 
+# 53504 (IPC listener) is written as the process loads the engine, just
+# before its EID 400: on the test corpora 744 of 810 came 0-60 s before the
+# 400 of the same PID (724 within a second) and the other 66 had no later 400.
+_IPC_TO_START_MAX_S = 60
+
+
+def _epoch(ts: str) -> float | None:
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return None
+
+
+def _session_started_by(
+    candidates: list[str],
+    sessions: dict[str, "PSSession"],
+    event_ts: str,
+) -> "PSSession | None":
+    """The session of the same PID whose engine start follows *event_ts*
+    within _IPC_TO_START_MAX_S, or None.  Never a session that started
+    before the event: with PID reuse that is a different process."""
+    t = _epoch(event_ts)
+    if t is None:
+        return None
+    best = None
+    for h in candidates:
+        st = _epoch(sessions[h].start_ts)
+        if st is not None and 0 <= st - t <= _IPC_TO_START_MAX_S and (best is None or st < best[0]):
+            best = (st, sessions[h])
+    return best[1] if best else None
+
+
 def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
     """
     Reconstruct PowerShell session timelines from classic-channel events.
@@ -63,7 +98,9 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
     events_400 = buckets.get(400, [])
     events_403 = buckets.get(403, [])
     events_600 = buckets.get(600, [])
-    events_4103 = buckets.get(4103, [])
+    # EID 4100 (PowerShell error) and 4102 (warning) carry the same ContextInfo
+    # as 4103, so they attach to their session the same way.
+    events_4103 = buckets.get(4103, []) + buckets.get(4100, []) + buckets.get(4102, [])
     events_800 = buckets.get(800, [])
 
     # Build sessions from EID 400 records (one per HostId)
@@ -108,27 +145,41 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
         if sess.pid:
             pid_to_host_ids[sess.pid].append(host_id)
 
-    # Attach EID 403 (engine stop) — match by HostId
-    for ev403 in events_403:
+    # Attach EID 403 (engine stop) — match by HostId.  A stop whose start has
+    # rolled out of the log (or a second stop) is still evidence: keep it.
+    for ev403 in sorted(events_403, key=lambda e: e.get("timestamp", "")):
         host_id = ev403.get("host_id", "").strip("{}")
         if host_id in sessions_by_host_id:
             sess = sessions_by_host_id[host_id]
             if not sess.stop_ts:
                 sess.stop_ts = ev403.get("timestamp", "")
-                sess.session_events.append(ev403)
+            sess.session_events.append(ev403)
         else:
-            # No matching session — orphan stop event; log it
-            logger.debug("EID 403 HostId=%s has no matching EID 400", host_id)
+            _ensure_unsessioned(sessions_by_host_id, ev403)
 
-    # Attach EID 600 (provider start) — match by HostId
-    for ev600 in events_600:
+    # Attach EID 600 (provider start) and 300 (provider/engine error) — match
+    # by HostId; with no matching start they are kept unsessioned.
+    for ev600 in events_600 + buckets.get(300, []):
         host_id = ev600.get("host_id", "").strip("{}")
         if host_id in sessions_by_host_id:
             sess = sessions_by_host_id[host_id]
             pname = ev600.get("provider_name", "")
-            if pname and pname not in sess.providers:
+            if ev600.get("event_id") == 600 and pname and pname not in sess.providers:
                 sess.providers.append(pname)
             sess.session_events.append(ev600)
+        else:
+            _ensure_unsessioned(sessions_by_host_id, ev600)
+
+    # Attach EID 53504 (process hosting the engine) to the engine start it
+    # precedes; a process that never started an engine in this log stays
+    # unsessioned, where it is easiest to see.
+    for ev in buckets.get(53504, []):
+        pid = ev.get("pid", "")
+        sess = _session_started_by(pid_to_host_ids.get(pid, []), sessions_by_host_id, ev.get("timestamp", ""))
+        if sess is not None:
+            sess.session_events.append(ev)
+        else:
+            _ensure_unsessioned(sessions_by_host_id, ev)
 
     # Attach EID 4103 (command exec) — match by PID then by HostId from ContextInfo
     for ev4103 in events_4103:

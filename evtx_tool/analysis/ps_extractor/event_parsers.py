@@ -24,10 +24,87 @@ import re
 
 # ── Low-level field extractors ────────────────────────────────────────────────
 
+# Field names Windows writes in the classic "Windows PowerShell" log's detail
+# block (EID 300/400/403/600/800), one "Name=value" per line.
+_CLASSIC_KEYS = frozenset({
+    "NewEngineState", "PreviousEngineState", "NewProviderState", "ProviderName",
+    "ExceptionClass", "ErrorCategory", "ErrorId", "ErrorMessage", "Severity",
+    "SequenceNumber", "DetailSequence", "DetailTotal", "UserId", "UserID",
+    "HostName", "HostVersion", "HostId", "HostID", "HostApplication", "EngineVersion",
+    "RunspaceId", "RunspaceID", "PipelineId", "PipelineID", "CommandName", "CommandType",
+    "ScriptName", "CommandPath", "CommandLine",
+})
+
+# Field names in the Operational log's ContextInfo (EID 4100/4103/4104), one
+# "Name = value" per line.
+_CONTEXT_KEYS = frozenset({
+    "Severity", "Host Name", "Host Version", "Host ID", "Host Application", "Engine Version",
+    "Runspace ID", "Pipeline ID", "Command Name", "Command Type", "Script Name",
+    "Command Path", "Sequence Number", "User", "Connected User", "Shell ID",
+})
+
+_FIELD_LINE = re.compile(r"\s*([^=\r\n]+?)\s*=(.*)")
+
+
+def _parse_fields(text: str, keys: frozenset) -> dict[str, str]:
+    """
+    Parse a Windows "Name=value" detail block whose values can span lines.
+
+    A line starts a field only if its name is one of *keys* and has not been
+    seen yet; any other line continues the field before it.  HostApplication
+    holds the whole command line PowerShell was started with, and a command
+    passed with -Command can contain newlines and "x=y" lines of its own
+    (about a third of EID 400 in the test corpus).  Splitting every line on
+    "=" cut those commands short and invented fields from their lines.
+    Blank lines inside a value are kept; blank lines after it are not.
+    """
+    result: dict[str, str] = {}
+    current = None
+    pending_blank = 0
+    for line in str(text).replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        m = _FIELD_LINE.match(line)
+        name = m.group(1).strip() if m else ""
+        if m and name in keys and name not in result:
+            result[name] = m.group(2)
+            current = name
+            pending_blank = 0
+        elif current is None:
+            continue
+        elif not line.strip():
+            pending_blank += 1
+        else:
+            # Kept exactly, spaces included: it is part of the command.
+            result[current] += "\n" * (pending_blank + 1) + line
+            pending_blank = 0
+    return {k: v.strip() for k, v in result.items()}
+
+
+def _parse_classic_texts(texts: list) -> dict[str, str]:
+    """
+    EventData of the classic channel as pyevtx-rs gives it: a list of
+    unnamed strings, e.g. EID 400 [new state, previous state, detail block],
+    EID 800 [command line, detail block, CommandInvocation/ParameterBinding].
+    Each string is kept by position as "_0", "_1", ...; the detail block's
+    fields are added by name.
+    """
+    result: dict[str, str] = {}
+    for i, t in enumerate(texts):
+        s = "" if t is None else str(t)
+        result[f"_{i}"] = s
+        for k, v in _parse_fields(s, _CLASSIC_KEYS).items():
+            result.setdefault(k, v)
+    return result
+
+
 def extract_eventdata(event: dict) -> dict[str, str]:
     """
-    Normalise all three EventData shapes into a flat {name: value} dict.
+    Normalise the EventData shapes pyevtx-rs produces into a flat {name: value} dict.
     Returns empty dict on any parse failure.
+
+    The classic "Windows PowerShell" log (EID 400/403/600/800) comes as
+    ``{"Data": {"#text": [str, str, str]}}``: a LIST of unnamed strings.  Only a
+    single string used to be parsed, so every one of those events came out
+    empty -- no HostApplication, no HostId -- on every real log tested.
     """
     try:
         ed = event["Event"]["EventData"]
@@ -40,62 +117,42 @@ def extract_eventdata(event: dict) -> dict[str, str]:
 
     raw = ed.get("Data", ed) if isinstance(ed, dict) else ed
 
-    # Shape B: single raw key=value string
+    # Shape B: a single unnamed string (the classic detail block on its own)
     if isinstance(raw, str):
-        result: dict[str, str] = {}
-        for line in raw.splitlines():
-            if "=" in line:
-                k, _, v = line.partition("=")
-                result[k.strip()] = v.strip()
-        return result
+        return _parse_classic_texts([raw])
 
     # Shape C: flat dict keyed by field name
     if isinstance(raw, dict):
         result: dict[str, str] = {k: str(v) for k, v in raw.items() if not k.startswith("#")}
-        # Fallback: pyevtx-rs sometimes stores the entire classic-channel key=value
-        # block as the "#text" pseudo-key of the EventData dict (e.g. Windows PowerShell
-        # EID 400/403/600/800). The filter above strips it, leaving an empty result.
-        # Detect this case and parse the text as Shape B.
         if not result:
+            # The classic channel: the unnamed strings are the "#text" of Data,
+            # either one string or (what pyevtx-rs actually emits) a list.
             text = raw.get("#text", "")
+            if isinstance(text, list):
+                return _parse_classic_texts(text)
             if text and isinstance(text, str):
-                for line in text.splitlines():
-                    if "=" in line:
-                        k, _, v = line.partition("=")
-                        k = k.strip()
-                        if k:
-                            result[k] = v.strip()
+                return _parse_classic_texts([text])
         return result
 
-    # Shape A: list of {"#attributes": {"Name": ...}, "#text": ...}
-    # Also handles a pyevtx-rs variant seen on the classic "Windows PowerShell"
-    # channel where the entire key=value block is wrapped in a single un-named
-    # list element: [{"#text": "HostName=ConsoleHost\nHostId=...\n..."}].
-    # In that case name == "" so we fall back to parsing #text as Shape B.
+    # Shape A: list of {"#attributes": {"Name": ...}, "#text": ...}; un-named
+    # items (and bare strings) are the classic channel's unnamed strings.
     if isinstance(raw, list):
         result = {}
+        unnamed: list = []
         for item in raw:
             if not isinstance(item, dict):
-                # Bare string in list — treat as Shape B line
-                if isinstance(item, str) and "=" in item:
-                    k, _, v = item.partition("=")
-                    k = k.strip()
-                    if k:
-                        result[k] = v.strip()
+                if isinstance(item, str):
+                    unnamed.append(item)
                 continue
             attrs = item.get("#attributes", {})
             name = attrs.get("Name", "")
             value = item.get("#text", "")
             if name:
                 result[name] = value if value is not None else ""
-            elif value and isinstance(value, str):
-                # Un-named item with text — parse as embedded Shape B string
-                for line in value.splitlines():
-                    if "=" in line:
-                        k, _, v = line.partition("=")
-                        k = k.strip()
-                        if k:
-                            result[k] = v.strip()
+            elif isinstance(value, str):
+                unnamed.append(value)
+        for k, v in _parse_classic_texts(unnamed).items():
+            result.setdefault(k, v)
         return result
 
     return {}
@@ -177,40 +234,50 @@ def parse_context_info(ctx: str) -> dict[str, str]:
         Host Name = ConsoleHost
         Host Version = 5.1.19041.1
         Host ID = 2c84a7f8-...
+        Host Application = powershell.exe -Command ...   (may span lines)
         ...
+    A multi-line Host Application keeps all its lines (see _parse_fields).
     """
-    result: dict[str, str] = {}
-    for line in ctx.splitlines():
-        line = line.strip()
-        if "=" in line:
-            k, _, v = line.partition("=")
-            result[k.strip()] = v.strip()
-    return result
+    return _parse_fields(ctx or "", _CONTEXT_KEYS)
+
+
+# -EncodedCommand as powershell.exe / pwsh.exe accept it: any unambiguous
+# prefix ("-e", "-en", "-enco", ... "-encodedcommand") or "-ec", with "-" or "/".
+_ENC_FLAG = re.compile(
+    r"(?:^|\s)[-/–—]"
+    r"(?:encodedcommand|encodedcomman|encodedcomma|encodedcomm|encodedcom|encodedco|encodedc|"
+    r"encoded|encode|encod|enco|enc|en|ec|e)"
+    r"\s+[\"']?([A-Za-z0-9+/]{8,}={0,2})",
+    re.IGNORECASE,
+)
 
 
 def _extract_encoded_command(host_app: str) -> str:
     """
-    Detect and decode -EncodedCommand / -enc / -ec parameter from HostApplication.
-    PowerShell encodes the command as UTF-16LE base64.
-    Returns decoded string or "" if not found.
+    Detect and decode the -EncodedCommand argument in a command line.
+
+    PowerShell encodes the command as UTF-16LE base64.  Returns the decoded
+    command, "" if there is none, or "[not decodable: ...]" when the flag is
+    there but its argument is not UTF-16LE base64 -- never a guess.
     """
     if not host_app:
         return ""
-    m = re.search(
-        r'(?:-EncodedCommand|-enc|-ec)\s+([A-Za-z0-9+/=]{4,})',
-        host_app,
-        re.IGNORECASE,
-    )
+    m = _ENC_FLAG.search(host_app)
     if not m:
         return ""
     b64 = m.group(1)
-    # Pad to multiple of 4
     pad = (4 - len(b64) % 4) % 4
     try:
-        decoded_bytes = base64.b64decode(b64 + "=" * pad)
-        return decoded_bytes.decode("utf-16-le", errors="replace")
+        text = base64.b64decode(b64 + "=" * pad, validate=True).decode("utf-16-le")
     except Exception:
-        return f"[decode_failed:{b64[:50]}]"
+        return f"[not decodable: {b64[:60]}]"
+    # Text that is not script (UTF-16 read from base64 that was never UTF-16
+    # tends to land in CJK, which isprintable() accepts) is reported, not shown
+    # as a command.
+    plain = sum(1 for c in text if c in "\r\n\t" or (c.isprintable() and ord(c) < 0x2000))
+    if not text or plain < 0.9 * len(text):
+        return f"[not decodable: {b64[:60]}]"
+    return text
 
 
 # ── Per-event-ID parsers ──────────────────────────────────────────────────────
@@ -304,6 +371,116 @@ def parse_4103(record: dict) -> dict:
     }
 
 
+def parse_4100(record: dict) -> dict:
+    """
+    EID 4100 — "Error Message = ..." (Shape C, like 4103).
+    Channel: Microsoft-Windows-PowerShell/Operational or PowerShellCore/Operational
+
+    A PowerShell error: the command that failed, the script, the user and the
+    host application that ran it.  A blocked or failed attacker command often
+    leaves only this event.
+    """
+    return _parse_context_message(record, 4100)
+
+
+def parse_4102(record: dict) -> dict:
+    """
+    EID 4102 — a PowerShell warning, written exactly like 4100: ContextInfo
+    (with Host Application) plus "Error Message = ..." in Payload.
+    """
+    return _parse_context_message(record, 4102)
+
+
+def _parse_context_message(record: dict, event_id: int) -> dict:
+    try:
+        sys = record["Event"]["System"]
+    except (KeyError, TypeError):
+        return {}
+    ed = extract_eventdata(record)
+    ctx = parse_context_info(ed.get("ContextInfo", ""))
+    payload = ed.get("Payload", "") or ""
+    err = _parse_fields(payload, frozenset({"Error Message", "Fully Qualified Error ID"}))
+    return {
+        "event_id":         event_id,
+        "timestamp":        _get_time_created(sys),
+        "pid":              _get_execution(sys).get("ProcessID", ""),
+        "computer":         get_system_field(record, "Computer"),
+        "host_id":          ctx.get("Host ID", ""),
+        "runspace_id":      ctx.get("Runspace ID", ""),
+        "pipeline_id":      ctx.get("Pipeline ID", ""),
+        "command_name":     ctx.get("Command Name", ""),
+        "command_type":     ctx.get("Command Type", ""),
+        "script_name":      ctx.get("Script Name", ""),
+        "host_application": ctx.get("Host Application", ""),
+        "user":             ctx.get("User", ""),
+        "error_message":    err.get("Error Message", ""),
+        "error_id":         err.get("Fully Qualified Error ID", ""),
+        "payload":          payload,
+        "user_data":        ed.get("UserData", ""),
+        "event_record_id":  record.get("_record_id", 0),
+        "channel":          get_system_field(record, "Channel"),
+    }
+
+
+def parse_53504(record: dict) -> dict:
+    """
+    EID 53504 — "Windows PowerShell has started an IPC listening thread on
+    process: <param1> in AppDomain: <param2>".
+    Channel: Microsoft-Windows-PowerShell/Operational or PowerShellCore/Operational
+
+    Written when any process loads the PowerShell engine, so it names the
+    process that hosted PowerShell even when that is not powershell.exe.
+    """
+    try:
+        sys = record["Event"]["System"]
+    except (KeyError, TypeError):
+        return {}
+    ed = extract_eventdata(record)
+    ex = _get_execution(sys)
+    return {
+        "event_id":        53504,
+        "timestamp":       _get_time_created(sys),
+        "pid":             ed.get("param1") or ex.get("ProcessID", ""),
+        "computer":        get_system_field(record, "Computer"),
+        "app_domain":      ed.get("param2", ""),
+        "event_record_id": record.get("_record_id", 0),
+        "channel":         get_system_field(record, "Channel"),
+    }
+
+
+def parse_300(record: dict) -> dict:
+    """
+    EID 300 — a provider or engine error (Shape B, classic log): the message
+    first, then the detail block with ExceptionClass, the command that hit it
+    and HostApplication.
+    Channel: Windows PowerShell
+    """
+    ed = extract_eventdata(record)
+    try:
+        sys = record["Event"]["System"]
+    except (KeyError, TypeError):
+        return {}
+    host_id = ed.get("HostId", ed.get("HostID", ""))
+    return {
+        "event_id":         300,
+        "timestamp":        _get_time_created(sys),
+        "pid":              _get_execution(sys).get("ProcessID", ""),
+        "computer":         get_system_field(record, "Computer"),
+        "error_message":    ed.get("ErrorMessage") or ed.get("_0", ""),
+        "exception_class":  ed.get("ExceptionClass", ""),
+        "provider_name":    ed.get("ProviderName", ""),
+        "severity":         ed.get("Severity", ""),
+        "command_name":     ed.get("CommandName", ""),
+        "command_line":     ed.get("CommandLine", ""),
+        "script_name":      ed.get("ScriptName", ""),
+        "host_id":          host_id.strip("{}"),
+        "host_application": ed.get("HostApplication", ""),
+        "runspace_id":      ed.get("RunspaceId", ed.get("RunspaceID", "")).strip("{}"),
+        "event_record_id":  record.get("_record_id", 0),
+        "channel":          get_system_field(record, "Channel"),
+    }
+
+
 def parse_400(record: dict) -> dict:
     """
     EID 400 — Engine Start (Shape B, classic log).
@@ -343,8 +520,8 @@ def parse_400(record: dict) -> dict:
         "encoded_command":   encoded_cmd,
         "engine_version":    ed.get("EngineVersion", ""),
         "runspace_id":       runspace_id.strip("{}"),
-        "new_engine_state":  ed.get("NewEngineState", ""),
-        "prev_engine_state": ed.get("PreviousEngineState", ""),
+        "new_engine_state":  ed.get("NewEngineState") or ed.get("_0", ""),
+        "prev_engine_state": ed.get("PreviousEngineState") or ed.get("_1", ""),
         "user_sid":          user_sid,
         "event_record_id":   record.get("_record_id", 0),
         "channel":           get_system_field(record, "Channel"),
@@ -375,9 +552,10 @@ def parse_403(record: dict) -> dict:
         "host_name":         ed.get("HostName", ""),
         "host_version":      ed.get("HostVersion", ""),
         "host_id":           host_id.strip("{}"),
+        "host_application":  ed.get("HostApplication", ""),
         "runspace_id":       runspace_id.strip("{}"),
-        "new_engine_state":  ed.get("NewEngineState", ""),
-        "prev_engine_state": ed.get("PreviousEngineState", ""),
+        "new_engine_state":  ed.get("NewEngineState") or ed.get("_0", ""),
+        "prev_engine_state": ed.get("PreviousEngineState") or ed.get("_1", ""),
         "event_record_id":   record.get("_record_id", 0),
         "channel":           get_system_field(record, "Channel"),
     }
@@ -404,9 +582,10 @@ def parse_600(record: dict) -> dict:
         "timestamp":          ts,
         "pid":                ex.get("ProcessID", ""),
         "computer":           get_system_field(record, "Computer"),
-        "provider_name":      ed.get("ProviderName", ""),
-        "new_provider_state": ed.get("NewProviderState", ""),
+        "provider_name":      ed.get("ProviderName") or ed.get("_0", ""),
+        "new_provider_state": ed.get("NewProviderState") or ed.get("_1", ""),
         "host_id":            host_id.strip("{}"),
+        "host_application":   ed.get("HostApplication", ""),
         "runspace_id":        runspace_id.strip("{}"),
         "sequence_number":    ed.get("SequenceNumber", ""),
         "event_record_id":    record.get("_record_id", 0),
@@ -430,17 +609,34 @@ def parse_800(record: dict) -> dict:
     host_id = ed.get("HostId", ed.get("HostID", ""))
     runspace_id = ed.get("RunspaceId", ed.get("RunspaceID", ""))
 
+    # Classic layout: [command line, detail block, details].  The command line
+    # is the first string ("Pipeline execution details for command line: %1");
+    # the block's own CommandLine= is usually empty.  The third string holds
+    # CommandInvocation(...) / ParameterBinding(...) lines: the parameters.
+    details = next((ed[k] for k in ("_2", "_0", "_1")
+                    if "CommandInvocation(" in ed.get(k, "") or "ParameterBinding(" in ed.get(k, "")), "")
+    command_line = ed.get("CommandLine", "")
+    first = ed.get("_0", "")
+    if first.strip() and first != details and "HostApplication=" not in first:
+        command_line = first.strip()
+    command_name = ed.get("CommandName", "")
+    if not command_name and details:
+        m = re.search(r"CommandInvocation\(([^)]*)\)", details)
+        command_name = m.group(1) if m else ""
+
     return {
         "event_id":        800,
         "timestamp":       ts,
         "pid":             ex.get("ProcessID", ""),
         "computer":        get_system_field(record, "Computer"),
         "host_id":         host_id.strip("{}"),
+        "host_application": ed.get("HostApplication", ""),
         "runspace_id":     runspace_id.strip("{}"),
         "pipeline_id":     ed.get("PipelineId", ed.get("PipelineID", "")),
-        "command_name":    ed.get("CommandName", ""),
+        "command_name":    command_name,
         "command_type":    ed.get("CommandType", ""),
-        "command_line":    ed.get("CommandLine", ""),
+        "command_line":    command_line,
+        "details":         details,
         "script_name":     ed.get("ScriptName", ""),
         "user_id":         ed.get("UserId", ed.get("UserID", "")),
         "sequence_number": ed.get("SequenceNumber", ""),

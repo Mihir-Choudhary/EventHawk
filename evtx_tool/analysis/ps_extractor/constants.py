@@ -18,7 +18,25 @@ ALL_PS_CHANNELS: frozenset[str] = PS_OPERATIONAL_CHANNELS | frozenset({PS_CLASSI
 
 # ── Event IDs we care about ───────────────────────────────────────────────────
 
-RELEVANT_EVENT_IDS: frozenset[int] = frozenset({4103, 4104, 400, 403, 600, 800})
+RELEVANT_EVENT_IDS: frozenset[int] = frozenset({
+    4100, 4102, 4103, 4104, 53504, 300, 400, 403, 600, 800,
+})
+
+# PowerShell events that carry nothing beyond an ID or a marker.  They are
+# not extracted, but each one is counted by ID in the summary so that none
+# is passed over unseen.  Any other ID on a PowerShell channel is counted too.
+NOT_EXTRACTED_EVENT_NAMES: dict[int, str] = {
+    4105:  "Script block start",
+    4106:  "Script block stop",
+    40961: "Console starting",
+    40962: "Console ready",
+    8193:  "Remoting: runspace created",
+    8194:  "Remoting: runspace pool created",
+    8195:  "Remoting: runspace pool opened",
+    8196:  "Remoting: activity correlated",
+    12039: "Remoting: activity transferred",
+    32784: "Remoting: error",
+}
 
 # ── Safety-net auto-logging keyword patterns ──────────────────────────────────
 # Derived from PowerShell source (CompiledScriptBlock.cs) and public MS research.

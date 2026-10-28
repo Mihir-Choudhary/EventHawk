@@ -31,7 +31,8 @@ from typing import Callable, Iterable
 from .constants import ALL_PS_CHANNELS, RELEVANT_EVENT_IDS
 from .content_analysis import analyze_script_block
 from .event_parsers import (
-    parse_400, parse_403, parse_4103, parse_4104, parse_600, parse_800,
+    parse_300, parse_400, parse_403, parse_4100, parse_4102, parse_4103, parse_4104,
+    parse_53504, parse_600, parse_800,
 )
 from .models import ContentAnalysisResult, ScriptBlockAccumulator
 from .reassembler import build_script_block_index
@@ -45,7 +46,11 @@ logger = logging.getLogger(__name__)
 
 # EID → parser function mapping
 _PARSERS = {
+    4100: parse_4100,
+    4102: parse_4102,
     4103: parse_4103,
+    53504: parse_53504,
+    300:  parse_300,
     4104: parse_4104,
     400:  parse_400,
     403:  parse_403,
@@ -83,6 +88,8 @@ class PSExtractor:
         self.progress_callback: Callable[[str, float], None] = lambda s, p: None
         self.cancel_check: Callable[[], bool] = lambda: False
         self._errors: list[str] = []
+        # PowerShell-channel events with an ID that is not extracted: {eid: count}
+        self._not_extracted: dict[int, int] = {}
 
     def add_error(self, message: str) -> None:
         """Record a problem found outside the pipeline (e.g. while reading the
@@ -184,6 +191,7 @@ class PSExtractor:
                 source_files=self.source_files,
                 total_scanned=total,
                 errors=self._errors,
+                not_extracted=self._not_extracted,
             )
         except Exception as exc:
             self._errors.append(f"ps_extraction_summary.txt write failed: {type(exc).__name__}: {exc}")
@@ -255,9 +263,7 @@ class PSExtractor:
         emits indeterminate progress (pct stays at ~0.0–0.25 range without
         a denominator). Returns (buckets, total_scanned).
         """
-        buckets: dict[int, list[dict]] = {
-            4103: [], 4104: [], 400: [], 403: [], 600: [], 800: [],
-        }
+        buckets: dict[int, list[dict]] = {eid: [] for eid in sorted(RELEVANT_EVENT_IDS)}
         total = 0
         total_hint = self.total_hint
         CHUNK = max(1, total_hint // 20) if total_hint > 0 else 50_000
@@ -316,6 +322,7 @@ class PSExtractor:
                     continue
 
                 if eid not in RELEVANT_EVENT_IDS:
+                    self._not_extracted[eid] = self._not_extracted.get(eid, 0) + 1
                     continue
 
                 # Shallow-copy to avoid mutating input record dict

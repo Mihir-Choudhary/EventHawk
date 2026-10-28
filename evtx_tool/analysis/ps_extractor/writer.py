@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from .constants import NOTABLE_PROVIDERS, ZERO_GUID
+from .constants import NOT_EXTRACTED_EVENT_NAMES, NOTABLE_PROVIDERS, ZERO_GUID
 from .models import ContentAnalysisResult, PSSession, ScriptBlockAccumulator
 
 _SEP = "=" * 80
@@ -207,10 +207,15 @@ def _format_event_line(
     pid = ev.get("pid", "")
 
     if eid == 400:
-        return (
+        result = [
             f"[{ts}] EID:400  ENGINE_START     PID:{pid}"
-            f"  State: {ev.get('prev_engine_state','?')} -> {ev.get('new_engine_state','?')}"
-        )
+            f"  State: {ev.get('prev_engine_state','?')} -> {ev.get('new_engine_state','?')}",
+        ]
+        if ev.get("host_application"):
+            result.append(f"  HostApplication : {ev.get('host_application')}")
+        if ev.get("encoded_command"):
+            result.append(f"  [ENCODED_COMMAND_DETECTED] Decoded: {ev.get('encoded_command')}")
+        return "\n".join(result)
     if eid == 403:
         return (
             f"[{ts}] EID:403  ENGINE_STOP      PID:{pid}"
@@ -260,12 +265,33 @@ def _format_event_line(
                 result.append(f"  Content : {preview}")
         return "\n".join(result)
     if eid == 800:
-        cmd = ev.get("command_name", "")
-        cmd_line = ev.get("command_line", "")[:200]
-        return (
-            f"[{ts}] EID:800  PIPELINE_DETAIL  PID:{pid}"
-            f"  Cmd:{cmd}  Line:{cmd_line}"
-        )
+        result = [
+            f"[{ts}] EID:800  PIPELINE_DETAIL  PID:{pid}  Cmd:{ev.get('command_name', '')}",
+            f"  CommandLine : {ev.get('command_line', '')}",
+        ]
+        if ev.get("details"):
+            result.append(f"  Details     : {ev.get('details')}")
+        return "\n".join(result)
+    if eid == 300:
+        result = [
+            f"[{ts}] EID:300  ENGINE_ERROR     PID:{pid}  {ev.get('exception_class', '')}",
+            f"  Error           : {ev.get('error_message', '')}",
+        ]
+        if ev.get("command_name"):
+            result.append(f"  Command         : {ev.get('command_name')}")
+        if ev.get("host_application"):
+            result.append(f"  HostApplication : {ev.get('host_application')}")
+        return "\n".join(result)
+    if eid == 53504:
+        return f"[{ts}] EID:53504 ENGINE_HOSTED   PID:{pid}  AppDomain: {ev.get('app_domain', '')}"
+    if eid in (4100, 4102):
+        kind = "POWERSHELL_ERROR" if eid == 4100 else "POWERSHELL_WARN "
+        return "\n".join([
+            f"[{ts}] EID:{eid} {kind} PID:{pid}",
+            f"  Command : {ev.get('command_name', '')}",
+            f"  Script  : {ev.get('script_name', '') or '(interactive)'}",
+            f"  Error   : {ev.get('error_message', '') or ev.get('payload', '')}",
+        ])
     return f"[{ts}] EID:{eid}  PID:{pid}"
 
 
@@ -415,9 +441,13 @@ def write_summary(
     source_files: list[str],
     total_scanned: int,
     errors: list[str],
+    not_extracted: dict[int, int] | None = None,
 ) -> dict:
     """
     Write ps_extraction_summary.txt and return a summary dict for the GUI.
+
+    *not_extracted* counts the PowerShell-channel events whose ID is not
+    extracted, by ID; they are listed so that none goes unseen.
     """
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     source_names = ", ".join(os.path.basename(f) for f in source_files) or "(unknown)"
@@ -444,6 +474,7 @@ def write_summary(
     ]
 
     # Session stats
+    unsessioned = next((s.session_events for s in sessions if s.host_id == "_unsessioned"), [])
     real_sessions = [s for s in sessions if s.host_id != "_unsessioned"]
     ghost_sessions = [s for s in real_sessions if _is_ghost_session(s)]
     real_sessions_with_data = [s for s in real_sessions if not _is_ghost_session(s)]
@@ -548,10 +579,16 @@ def write_summary(
         "EVENT COUNTS BY TYPE:",
         f"  EID 4104 (Script Block Logging)    : {counts.get(4104, 0):>8,}",
         f"  EID 4103 (Module/Param Binding)    : {counts.get(4103, 0):>8,}",
+        f"  EID 4100 (PowerShell Error)        : {counts.get(4100, 0):>8,}",
+        f"  EID 4102 (PowerShell Warning)      : {counts.get(4102, 0):>8,}",
+        f"  EID 53504 (Engine hosted: IPC)     : {counts.get(53504, 0):>8,}",
+        f"  EID 300  (Provider/Engine Error)   : {counts.get(300,  0):>8,}",
         f"  EID 400  (Engine Start)            : {counts.get(400,  0):>8,}",
         f"  EID 403  (Engine Stop)             : {counts.get(403,  0):>8,}",
         f"  EID 600  (Provider Start)          : {counts.get(600,  0):>8,}",
         f"  EID 800  (Pipeline Details)        : {counts.get(800,  0):>8,}",
+        f"  Not tied to an engine start        : {len(unsessioned):>8,}"
+        + ("  [listed as UNSESSIONED in ps_commands.txt and the JSON]" if unsessioned else ""),
         "",
         "SCRIPT BLOCK ANALYSIS:",
         f"  Unique ScriptBlockIds              : {len(sb_index):>8,}",
@@ -585,6 +622,12 @@ def write_summary(
     if attck_lines:
         lines += ["", "ATT&CK TECHNIQUE SUMMARY:"] + attck_lines
 
+    if not_extracted:
+        lines += ["", "POWERSHELL EVENTS NOT EXTRACTED (counted only; they carry no command):"]
+        for eid, cnt in sorted(not_extracted.items()):
+            label = f"EID {eid:<6}({NOT_EXTRACTED_EVENT_NAMES.get(eid, 'other')})"
+            lines.append(f"  {label:<35}: {cnt:>8,}")
+
     lines += ["", f"PARSE ERRORS: {len(errors)}"]
     if error_lines:
         lines += error_lines
@@ -614,6 +657,8 @@ def write_summary(
         "safety_net":       len(safety_net_blocks),
         "ps_core_blocks":   len(ps_core_blocks),
         "parse_errors":     len(errors),
+        "unsessioned":      len(unsessioned),
+        "not_extracted":    {str(k): v for k, v in sorted((not_extracted or {}).items())},
     }
 
 
@@ -635,15 +680,17 @@ def write_json_export(
         """Flatten one session event to a compact JSON-friendly dict."""
         eid = ev.get("event_id")
         base = {
-            "event_id":  eid,
-            "timestamp": _fmt_ts(ev.get("timestamp", "")),
-            "pid":       ev.get("pid", ""),
+            "event_id":        eid,
+            "event_record_id": ev.get("event_record_id", 0),
+            "timestamp":       _fmt_ts(ev.get("timestamp", "")),
+            "pid":             ev.get("pid", ""),
         }
         if eid == 400:
             base.update({
                 "new_engine_state":  ev.get("new_engine_state", ""),
                 "prev_engine_state": ev.get("prev_engine_state", ""),
                 "host_application":  ev.get("host_application", ""),
+                "encoded_command":   ev.get("encoded_command", ""),
             })
         elif eid == 403:
             base.update({
@@ -652,6 +699,19 @@ def write_json_export(
             })
         elif eid == 600:
             base["provider_name"] = ev.get("provider_name", "")
+        elif eid == 300:
+            base.update({
+                "error_message":    ev.get("error_message", ""),
+                "exception_class":  ev.get("exception_class", ""),
+                "provider_name":    ev.get("provider_name", ""),
+                "severity":         ev.get("severity", ""),
+                "command_name":     ev.get("command_name", ""),
+                "command_line":     ev.get("command_line", ""),
+                "script_name":      ev.get("script_name", ""),
+                "host_application": ev.get("host_application", ""),
+            })
+        elif eid == 53504:
+            base["app_domain"] = ev.get("app_domain", "")
         elif eid == 4103:
             base.update({
                 "command_name": ev.get("command_name", ""),
@@ -673,8 +733,19 @@ def write_json_export(
             })
         elif eid == 800:
             base.update({
-                "command_name": ev.get("command_name", ""),
-                "command_line": ev.get("command_line", ""),
+                "command_name":     ev.get("command_name", ""),
+                "command_line":     ev.get("command_line", ""),
+                "details":          ev.get("details", ""),
+                "host_application": ev.get("host_application", ""),
+            })
+        elif eid in (4100, 4102):
+            base.update({
+                "command_name":     ev.get("command_name", ""),
+                "script_name":      ev.get("script_name", ""),
+                "user":             ev.get("user", ""),
+                "error_message":    ev.get("error_message", ""),
+                "error_id":         ev.get("error_id", ""),
+                "host_application": ev.get("host_application", ""),
             })
         return base
 
@@ -702,6 +773,15 @@ def write_json_export(
             "event_count":      len(sess.session_events),
             "events":           [_serialize_event(ev) for ev in sess.session_events],
         })
+
+    # Events with no engine start to hang on (start rolled out of the log, a
+    # 4103 from a process with no 400, a process hosting the engine...).
+    unsessioned_data = [
+        dict(_serialize_event(ev), host_id=ev.get("host_id", ""),
+             host_application=ev.get("host_application", ""))
+        for sess in sessions if sess.host_id == "_unsessioned"
+        for ev in sess.session_events
+    ]
 
     blocks_data = {}
     for key, acc in sb_index.items():
@@ -732,6 +812,7 @@ def write_json_export(
         },
         "summary":       summary,
         "sessions":      sessions_data,
+        "unsessioned_events": unsessioned_data,
         "script_blocks": blocks_data,
         "parse_errors":  errors[:200],
     }
@@ -776,11 +857,18 @@ def write_csv_timeline(
         403:  "ENGINE_STOP",
         600:  "PROVIDER_START",
         800:  "PIPELINE_DETAIL",
+        300:  "ENGINE_ERROR",
+        4100: "POWERSHELL_ERROR",
+        4102: "POWERSHELL_WARNING",
         4103: "COMMAND_EXEC",
+        53504: "ENGINE_HOSTED",
         4104: "SCRIPT_BLOCK",
     }
 
-    _DETAIL_MAX = 500
+    # Excel's cell limit is 32,767 characters.  This used to be 500, which cut
+    # HostApplication (and any -EncodedCommand in it) with only "..." to show.
+    # A value longer than this is marked, and is whole in ps_extraction.json.
+    _DETAIL_MAX = 32_000
     _CTRL_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]')
 
     def _sanitize(v, max_len: int = 0) -> str:
@@ -792,7 +880,7 @@ def write_csv_timeline(
         s = _CTRL_RE.sub("", s)
         s = " ".join(s.split())
         if max_len and len(s) > max_len:
-            s = s[:max_len] + "..."
+            s = s[:max_len] + f"... [{len(s):,} chars; whole value in ps_extraction.json]"
         return s
 
     HEADERS = [
@@ -849,6 +937,18 @@ def write_csv_timeline(
             elif eid == 800:
                 command = ev.get("command_name", "")
                 detail  = ev.get("command_line", "")
+                if ev.get("details"):
+                    detail += "  | " + ev.get("details", "")
+            elif eid in (4100, 4102):
+                command = ev.get("command_name", "")
+                detail  = ev.get("error_message", "") or ev.get("payload", "")
+            elif eid == 300:
+                command = ev.get("command_name", "")
+                detail  = ev.get("error_message", "")
+                if ev.get("host_application"):
+                    detail += "  | HostApplication: " + ev.get("host_application", "")
+            elif eid == 53504:
+                detail  = "AppDomain: " + ev.get("app_domain", "")
             elif eid == 4104:
                 sbid    = ev.get("script_block_id", "")
                 path    = ev.get("path", "")
@@ -865,6 +965,8 @@ def write_csv_timeline(
                 command = ev.get("provider_name", "")
             elif eid == 400:
                 detail = ev.get("host_application", "")
+                if ev.get("encoded_command"):
+                    detail += "  | Decoded -EncodedCommand: " + ev.get("encoded_command", "")
 
             all_rows.append((
                 ts, eid, etype, pid, s_id, usid, uname,
