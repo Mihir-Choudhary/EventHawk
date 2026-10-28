@@ -2,9 +2,9 @@
 
 ## What They Are
 
-DFIR Profiles are pre-configured event filters that narrow parsed events to only those relevant to a specific investigation type. Instead of loading every event from every log file (which could be millions of noisy Information events), a profile pre-filters during parsing — only matching events are processed and stored.
+DFIR Profiles are pre-configured event filters that narrow the events you see to those relevant to a specific investigation type.
 
-This dramatically reduces parse time, memory usage, and noise for focused investigations.
+In the GUI a profile filters the **view**: every event is still parsed and loaded, so you can switch profiles, untick them or clear them at any time without re-parsing, and the Tools menu (Logon Sessions, WiFi History, Remote sessions, PowerShell History…) always works on every loaded event. In the CLI, `--profile` filters during parsing, which keeps only the matching events in the output.
 
 ---
 
@@ -12,11 +12,12 @@ This dramatically reduces parse time, memory usage, and noise for focused invest
 
 ### In the GUI
 
-1. Open the **Profile** dropdown in the left panel.
-2. Select the desired profile.
-3. Click **Parse**.
+1. Open the **Profile** dropdown in the left panel and tick one or more profiles.
+2. Click **Apply Profiles** (or, before loading, just click **Parse**: the ticked profiles are applied as soon as the events are loaded).
 
-Only events matching that profile's event IDs (and any additional filters) will be loaded into the table.
+The table then shows only the events matching the applied profiles (stacked with any Advanced Filter). Ticking a box on its own changes nothing until you click Apply Profiles.
+
+To remove a profile: untick it (or click **None**) and click **Apply Profiles**, or click **Clear All Filters**, which also unticks every profile. Every loaded event comes back immediately, with no re-parse. Clearing only the Advanced Filter keeps the applied profiles.
 
 <img src="screenshots/profile_dropdown.png" alt="Profile dropdown open in left panel listing all 20 built-in DFIR profiles"/>
 
@@ -142,7 +143,7 @@ A built-in profile editor is accessible from **File → Profile Editor**. It pro
 
 ## Limitations
 
-- Profiles filter at parse time — applying a profile after loading requires a full re-parse.
+- In the GUI, every event is loaded whatever profile is ticked, so a profile no longer reduces parse time or memory; use the CLI `--profile` option when you want only the matching events parsed.
 - If `event_ids` is empty, all event IDs pass (no event ID filtering). This is intentional for channel-only or keyword-only profiles.
 - The `keywords` filter is a simple substring match on the raw event XML — it is slower than event ID filtering for large datasets.
 - Custom profiles must be valid JSON. Use `profiles validate` to check before using.

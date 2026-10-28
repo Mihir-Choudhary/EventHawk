@@ -39,7 +39,7 @@ Quick Filters are one-click preset filter combinations displayed as chips/button
 
 ## Interaction with Other Filters
 
-Quick Filters are one layer in the [4-layer filter stack](06-advanced-filter.md#filter-stacking-4-layer-model). They combine with the Advanced Filter, Text Search, and Record ID filters using AND logic.
+Quick Filters are one layer in the [filter stack](06-advanced-filter.md#filter-stacking). They combine with the Advanced Filter, Text Search, Record ID filters and applied profiles using AND logic.
 
 **Example:** If you have a time range set in the Advanced Filter dialog AND activate the "Failed Logons" Quick Filter, you will see only failed logon events within that time window.
 

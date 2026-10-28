@@ -124,16 +124,17 @@ This means text search in JM is slightly slower than metadata filters (90–310 
 ## Applying and Clearing Filters
 
 - Click **Apply** to activate all configured conditions.
-- Click **Clear All Filters** in the toolbar to reset every filter layer (Advanced, Quick Filters, Text Search, Record ID) simultaneously.
+- Click **Clear All Filters** in the toolbar to reset every filter layer (Advanced, Quick Filters, Text Search, Record ID, applied profiles) simultaneously. It also unticks every profile, so the table shows every loaded event.
+- Clearing only the Advanced Filter (the X on its badge) keeps any applied profiles.
 - Individual conditions can be cleared by blanking their fields and clicking Apply again.
 
 > **Important:** "Clear All Filters" clears **all** active filters including any Quick Filters — not just the Advanced Filter.
 
 ---
 
-## Filter Stacking (4-layer model)
+## Filter Stacking
 
-EventHawk uses a 4-layer filter stack. All layers are active simultaneously using AND logic:
+EventHawk uses a layered filter stack. All layers are active simultaneously using AND logic:
 
 | Layer | Set by |
 |---|---|
@@ -141,6 +142,7 @@ EventHawk uses a 4-layer filter stack. All layers are active simultaneously usin
 | **Quick filters** | Quick filter chips in the toolbar |
 | **Text search** | Text search section of the Advanced Filter dialog |
 | **Record ID filter** | Programmatic — set when pivoting from Analysis tabs |
+| **Profiles** | Profile dropdown + **Apply Profiles** (stacked with the Advanced filter) |
 
 Each layer can be cleared independently or all at once via **Clear All Filters**.
 

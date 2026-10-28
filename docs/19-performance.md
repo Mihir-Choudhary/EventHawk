@@ -110,7 +110,7 @@ The baseline build phases (parse → stability → sigma → normalize → freq 
 **Normal Mode:**
 - Match `--workers` to your physical core count (not logical/hyperthreaded).
 - Put EVTX files on the fastest drive available — at high worker counts, file read speed is the bottleneck.
-- Use a profile to filter at parse time — fewer matched events = less RAM and faster analysis.
+- In the CLI, use `--profile` to filter at parse time — fewer matched events = less RAM and faster analysis. (In the GUI a profile filters the view; every event is still loaded so it can be brought back without re-parsing.)
 
 **Juggernaut Mode:**
 - Ensure the temp drive has free space of at least 50% of your total EVTX size.

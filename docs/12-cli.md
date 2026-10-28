@@ -231,7 +231,7 @@ Launches the full PySide6 desktop application. Equivalent to double-clicking `Ev
 
 ## Limitations
 
-- The CLI does not support all GUI filter combinations (e.g. the 4-layer filter stack is simplified in CLI mode to single-pass filtering).
+- The CLI does not support all GUI filter combinations (e.g. the layered filter stack is simplified in CLI mode to single-pass filtering).
 - Interactive mode does not persist between runs.
 - `--tui` and `--juggernaut` cannot be used simultaneously in this version.
 - PDF export from CLI requires all analysis modules to have run — use without `--no-analysis`.

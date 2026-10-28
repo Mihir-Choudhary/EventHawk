@@ -7652,6 +7652,11 @@ class MainWindow(QMainWindow):
 
         # ── Advanced filter state ────────────────────────────────────────────
         self._adv_filter_cfg:  dict | None = None   # last-used FilterDialog config
+        # Profiles in the live view: set by Apply Profiles (and after a parse,
+        # from the profiles ticked when Parse was clicked).  A profile that is
+        # only ticked does not filter.  The view is always the Advanced Filter
+        # AND these profiles; they never filter the parse itself.
+        self._applied_profiles: list[str] = []
 
         # ── Column header dropdown filter state ─────────────────────────────
         # col_idx → (mode, values) where mode in {"include", "exclude"}.
@@ -9908,12 +9913,14 @@ class MainWindow(QMainWindow):
         self._btn_parse.setEnabled(False)
         self._btn_stop.setEnabled(True)
 
-        # Build filter config from current UI state
-        fc = self._build_filter_config() if hasattr(self, "_build_filter_config") else None
-
+        # Parse EVERYTHING.  Ticked profiles used to be passed here as the
+        # parse filter, so the events outside them were never loaded: unticking,
+        # None + Apply or Clear All Filters could not bring them back (only a
+        # re-parse could), and the Tools menu saw only the profile's events.
+        # The ticked profiles are applied to the VIEW once loading finishes.
         self._hw_worker = HeavyweightParseWorker(
             files=files,
-            filter_config=fc,
+            filter_config=None,
         )
         self._hw_worker.progress.connect(self._on_hw_progress)
         self._hw_worker.finished.connect(self._on_hw_finished)
@@ -10244,6 +10251,9 @@ class MainWindow(QMainWindow):
         # Dismiss the "Please Wait" overlay — data is now visible in the table.
         self._close_hw_loading_dialog()
         self._hw_worker = None
+        # Profiles ticked when Parse was clicked now filter the view.
+        if self._get_checked_profiles():
+            QTimer.singleShot(0, self._on_apply_profiles_clicked)
 
     def _load_jm_metadata(self, parquet_dir: str) -> None:
         """Populate FilterDialog metadata from the Arrow table in a background thread.
@@ -10596,6 +10606,7 @@ class MainWindow(QMainWindow):
         ON TOP of any active Advanced Filter cfg (same slot), so applying a
         profile never wipes the advanced filter and vice-versa.
         """
+        self._applied_profiles = self._get_checked_profiles()
         fc = self._build_filter_config(base=getattr(self, "_adv_filter_cfg", None))
 
         if self._hw_model is not None:
@@ -11260,18 +11271,19 @@ class MainWindow(QMainWindow):
         """Build a filter config, optionally stacking on top of a *base* cfg.
 
         With ``base=None`` (the default) this returns just the profile-derived
-        config — used at parse time, when nothing else is active yet.
+        config.
 
-        With ``base=<dialog cfg>`` it stacks the active profiles ON TOP of
-        the dialog cfg.  This is what JM-mode live filtering must use so that
-        applying the Advanced Filter does not silently wipe an active profile
-        selection (and vice-versa).
+        With ``base=<dialog cfg>`` it stacks the applied profiles ON TOP of
+        the dialog cfg, so applying or clearing the Advanced Filter never
+        silently wipes an applied profile (and vice-versa).
+
+        The profiles are the APPLIED ones (``_applied_profiles``), not the
+        ticked ones: ticking a box does nothing until Apply Profiles.
         """
         from evtx_tool.core.filters import empty_filter
         fc = dict(base) if base else empty_filter()
 
-        # Apply profiles (parse-time event ID / provider filtering)
-        checked_profiles = self._get_checked_profiles()
+        checked_profiles = list(getattr(self, "_applied_profiles", []))
         if checked_profiles:
             try:
                 from evtx_tool.profiles.manager import ProfileManager
@@ -11394,9 +11406,12 @@ class MainWindow(QMainWindow):
 
         max_threads = self._cmb_threads.currentData()  # None = Auto
 
+        from evtx_tool.core.filters import empty_filter
         self._worker = ParseWorker(
             files         = files,
-            filter_config = self._build_filter_config(),
+            # Everything is parsed; ticked profiles filter the view after
+            # loading (see _launch_juggernaut_mode for why).
+            filter_config = empty_filter(),
             do_attack     = self._chk_attack.isChecked(),
             do_ioc        = self._chk_ioc.isChecked(),
             do_correlate  = self._chk_correlate.isChecked(),
@@ -11635,6 +11650,10 @@ class MainWindow(QMainWindow):
         self._update_header_indicators()
         self._update_count_label()
         self._progress_bar.setValue(100)
+
+        # Profiles ticked when Parse was clicked now filter the view.
+        if events and self._get_checked_profiles():
+            self._on_apply_profiles_clicked()
 
         # ── Show events + ATT&CK tab immediately ──────────────────────
         QTimer.singleShot(0, self._refresh_attack_tab)
@@ -11927,7 +11946,7 @@ class MainWindow(QMainWindow):
             # When no profiles are checked this returns empty_filter(), which
             # apply_filter() treats as "no filter".
             profile_only_fc = self._build_filter_config(base=None)
-            checked = self._get_checked_profiles()
+            checked = self._applied_profiles
             if checked:
                 self._hw_model.apply_filter(profile_only_fc)
                 for _fp, _st in self._file_tabs.items():
@@ -11945,10 +11964,20 @@ class MainWindow(QMainWindow):
             self._update_adv_filter_badge()
             self._update_count_label()
             return
-        self._active_proxy.clear_advanced_filter()
-        # Also clear per-file tab proxies (separate-tabs mode)
-        for _st in self._file_tabs.values():
-            _st.proxy.clear_advanced_filter()
+        # Normal mode: an applied profile lives in the same proxy slot as the
+        # dialog cfg, so clearing the slot used to wipe the profile while its
+        # box stayed ticked.  Keep the applied profiles.
+        if self._applied_profiles:
+            _profile_fc = self._build_filter_config(base=None)
+            self._active_proxy.set_advanced_filter(_profile_fc)
+            for _fp, _st in self._file_tabs.items():
+                if not _is_pivot_tab_key(_fp):
+                    _st.proxy.set_advanced_filter(_profile_fc)
+        else:
+            self._active_proxy.clear_advanced_filter()
+            # Also clear per-file tab proxies (separate-tabs mode)
+            for _st in self._file_tabs.values():
+                _st.proxy.clear_advanced_filter()
         self._update_adv_filter_badge()
         self._update_count_label()
 
@@ -11959,14 +11988,14 @@ class MainWindow(QMainWindow):
         session LogonId filter, ATT&CK tactic filter, bookmark/IOC pivot
         (record-ID filter).  Safe to call even when no filters are active.
 
-        **Profile selection is NOT cleared** — the profile combo's checkboxes
-        stay as they were and the profile-derived filter is re-applied at
-        the end so the user's "what kind of events am I investigating"
-        choice survives a Clear All.  Without this, JM mode would visibly
-        wipe the profile filter even though the checkboxes still showed
-        checked (the underlying model state was reset, leaving the UI and
-        the live filter inconsistent).
+        **Profiles are cleared too**: unticked and no longer applied, so the
+        view is every parsed event.  They used to stay ticked and be
+        re-applied, which read as "Clear All does not work" -- the user
+        reported exactly that.  Clearing only the Advanced Filter (its badge)
+        keeps the applied profiles.
         """
+        self._profile_combo.uncheckAll()
+        self._applied_profiles = []
         # RA session filters are implemented on top of the bookmark/record-id
         # filter layer.  Clear the ownership flag up front so a later dataset
         # change cannot accidentally re-clear a different bookmark filter.
@@ -12005,36 +12034,14 @@ class MainWindow(QMainWindow):
                 if not _is_pivot_tab_key(_fp):
                     _st.model.clear_all_filters()
 
-            # ── Re-apply the profile-only filter ─────────────────────────────
-            # We just wiped self._hw_model's filter state.  If the user has
-            # any profile checked, restore that filter so the profile combo
-            # selection stays consistent with the live data view.  When no
-            # profile is checked, _build_filter_config(base=None) returns
-            # empty_filter() which apply_filter() treats as "no filter" — so
-            # the model stays unfiltered, matching what the user sees.
-            try:
-                if self._get_checked_profiles():
-                    _profile_fc = self._build_filter_config(base=None)
-                    self._hw_model.apply_filter(_profile_fc)
-                    for _fp, _st in self._file_tabs.items():
-                        if _is_pivot_tab_key(_fp):
-                            continue
-                        try:
-                            _st.model.apply_filter(_profile_fc)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
         else:
             # Batch: clear all filter layers in one invalidateFilter() call.
             self._active_proxy.clear_all_filters()
             # Also clear per-file tab proxies in one pass each.
             for state in self._file_tabs.values():
                 state.proxy.clear_all_filters()
-            # Normal mode: profile is applied at PARSE TIME (events are pre-
-            # filtered before they reach the proxy), so the proxy needs no
-            # restore step — clearing proxy filters returns to the pre-
-            # filtered event set the user originally loaded.
+            # Normal mode: an applied profile lives in the proxy's advanced
+            # slot, which clear_all_filters() has just emptied.
 
         # 5. Session filter — JM: cleared above (step 3 resets _hw_model + per-file models
         #    + _active_jm_session_keys).  Normal mode: cleared by clear_all_filters() above.
@@ -15842,6 +15849,7 @@ class MainWindow(QMainWindow):
         # newly loaded dataset would silently re-apply the previous session's
         # advanced filter to it.  Also refresh the badge so it hides cleanly.
         self._adv_filter_cfg = None
+        self._applied_profiles = []
         # Clear bookmarks — events no longer exist after a reset
         self._bookmarks.clear()
         self._bookmarked_keys.clear()
@@ -16021,7 +16029,7 @@ class MainWindow(QMainWindow):
         # only the dialog cfg, so passing it through unchanged is correct.
         _cfg = getattr(self, "_adv_filter_cfg", None)
         if _cfg is not None or (
-            self._hw_model is not None and self._get_checked_profiles()
+            self._hw_model is not None and self._applied_profiles
         ):
             if self._hw_model is not None:
                 try:
@@ -16038,16 +16046,19 @@ class MainWindow(QMainWindow):
                     pass
             elif _cfg is not None:
                 # Merged-mode proxy
+                # The proxy holds the dialog cfg AND any applied profile;
+                # re-setting the dialog cfg alone would drop the profile.
+                _effective = self._build_filter_config(base=_cfg)
                 try:
                     if self._proxy_model.has_advanced_filter():
-                        self._proxy_model.set_advanced_filter(_cfg)
+                        self._proxy_model.set_advanced_filter(_effective)
                 except Exception:
                     pass
                 # Per-file tab proxies (separate mode)
                 for _state in self._file_tabs.values():
                     try:
                         if _state.proxy.has_advanced_filter():
-                            _state.proxy.set_advanced_filter(_cfg)
+                            _state.proxy.set_advanced_filter(_effective)
                     except Exception:
                         pass
 
