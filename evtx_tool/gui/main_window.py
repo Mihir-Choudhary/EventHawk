@@ -13309,12 +13309,16 @@ class MainWindow(QMainWindow):
             if _computer:
                 _where_parts.append("computer = ?")
                 _params.append(_computer)
+            # timestamp_utc is stored as TEXT in the shards.  Comparing it with
+            # a TIMESTAMP made DuckDB refuse the query ("Cannot compare values
+            # of type VARCHAR and type TIMESTAMP") on every session with a time
+            # scope, and the view silently fell back to a subset (audit-2 A1).
             if _start_ts:
-                _where_parts.append("timestamp_utc >= CAST(? AS TIMESTAMP)")
+                _where_parts.append("TRY_CAST(timestamp_utc AS TIMESTAMP) >= CAST(? AS TIMESTAMP)")
                 _params.append(_start_ts)
             if _end_ts:
                 _where_parts.append(
-                    f"timestamp_utc {'<=' if _end_inclusive else '<'} CAST(? AS TIMESTAMP)"
+                    f"TRY_CAST(timestamp_utc AS TIMESTAMP) {'<=' if _end_inclusive else '<'} CAST(? AS TIMESTAMP)"
                 )
                 _params.append(_end_ts)
             _where_sql = " AND ".join(_where_parts)
@@ -13399,6 +13403,20 @@ class MainWindow(QMainWindow):
                 composite_keys = frozenset(
                     (session_info or {}).get("linked_related_keys")
                     or (session_info or {}).get("related_keys", ())
+                )
+                # The fallback keys are only the events the session browser
+                # used to build the row, not every event of the session.  A log
+                # line alone left the analyst reading a subset as the whole.
+                import html as _html
+                QMessageBox.warning(
+                    self, "Session Filter Incomplete",
+                    f"The query for every event of this logon session failed:<br>"
+                    f"<i>{_html.escape(str(_query_result[1]))[:300]}</i><br><br>"
+                    f"The filtered view below shows only the <b>{len(composite_keys):,}</b> "
+                    f"event(s) the Logon Sessions browser used for this row, and is "
+                    f"<b>INCOMPLETE</b>: other events of the session are not shown. "
+                    f"Do not read an absence here as evidence that something did "
+                    f"not happen.",
                 )
             else:
                 composite_keys = _query_result[0] or frozenset()
