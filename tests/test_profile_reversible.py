@@ -110,6 +110,9 @@ def run(mode, files, total):
     n_prof = shown()
     check(f"{mode}: ...and the ticked profile is applied to the view", 0 < n_prof < total,
           f"shown {n_prof:,} of {total:,}")
+    w._update_count_label()
+    check(f"{mode}: the event count says how many are shown of how many",
+          w._lbl_count.text() == f"{n_prof:,} / {total:,} events", w._lbl_count.text())
 
     tick(w, [])
     w._btn_apply_profiles.click()
@@ -129,6 +132,8 @@ def run(mode, files, total):
     n = shown()
     check(f"{mode}: Clear All Filters shows every event and unticks the profiles",
           n == total and not w._get_checked_profiles(), f"{n:,} of {total:,}; ticked {w._get_checked_profiles()}")
+    w._update_count_label()
+    check(f"{mode}: ...and the event count says so", w._lbl_count.text() == f"{total:,} events", w._lbl_count.text())
 
     tick(w, [PROFILE])                              # ticked, NOT applied
     w._clear_advanced_filter()

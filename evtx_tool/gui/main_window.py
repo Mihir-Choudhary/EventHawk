@@ -12209,7 +12209,11 @@ class MainWindow(QMainWindow):
                 self._lbl_count.setText(f"{n:,} events")
                 return
             n = self._hw_model.total_event_count()
-            self._lbl_count.setText(f"{n:,} events")
+            # Shown / total when a filter is active, as in Normal mode.  The
+            # label used to give the unfiltered total under every filter, so a
+            # filtered (or un-filtered) view never showed in the count.
+            shown = getattr(self._hw_model, "_total_rows", n)
+            self._lbl_count.setText(f"{n:,} events" if shown == n else f"{shown:,} / {n:,} events")
             # Warn when Qt silently truncates the display.  rowCount() caps at
             # MAX_QT_SAFE_ROWS (71 M); events beyond that are invisible with no
             # error.  The flag is set by _refresh_count() after each COUNT(*).
