@@ -136,7 +136,9 @@ class ParseWorker(QThread):
                 "Parsing failed — no events were produced.\n\n"
                 + "\n".join(self.parse_errors[:15])
                 + ("\n…" if len(self.parse_errors) > 15 else "")
-                + "\n\nSee eventhawk_gui.log for details."
+                + "\n\nDetails are in eventhawk_gui.log, in "
+                + __import__("evtx_tool.core.logsetup", fromlist=["log_directory"]).log_directory()
+                + " (Help > Open Log Folder)."
             )
             return
 

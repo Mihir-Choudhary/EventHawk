@@ -1235,6 +1235,12 @@ class FileTabState:
     iocs: dict | None = None
 
 
+def _log_folder() -> str:
+    """Where the log files are (see evtx_tool.core.logsetup)."""
+    from evtx_tool.core.logsetup import log_directory
+    return log_directory()
+
+
 def _is_pivot_tab_key(key: str) -> bool:
     """True for a chain tab or an "around this event" tab.
 
@@ -2705,7 +2711,8 @@ class _LogonSessionDialog(QDialog):
             QMessageBox.critical(
                 self, "Session Filter Error",
                 "An error occurred applying the session filter.\n"
-                "Details have been written to eventhawk_gui.log in the tool folder."
+                f"Details are in eventhawk_gui.log, in {_log_folder()} "
+                "(Help > Open Log Folder)."
             )
             return
         # False means the callback ran but no filter was applied (user canceled,
@@ -7790,6 +7797,12 @@ class MainWindow(QMainWindow):
         # by default; the underlying value is stored at full precision so this
         # is display-only and applies live with no re-parse.
         from PySide6.QtGui import QActionGroup
+        hm = mb.addMenu("Help")
+        a = hm.addAction("Open Log Folder")
+        a.setToolTip("Open the folder holding EventHawk's log files")
+        a.triggered.connect(self._open_log_folder)
+        self._act_open_log_folder = a
+
         prec_menu = mb.addMenu("Precision")
         prec_menu.setToolTip(
             "Fractional-second precision for displayed timestamps "
@@ -9931,6 +9944,7 @@ class MainWindow(QMainWindow):
         # None + Apply or Clear All Filters could not bring them back (only a
         # re-parse could), and the Tools menu saw only the profile's events.
         # The ticked profiles are applied to the VIEW once loading finishes.
+        logger.info("Parse started: %d file(s), Juggernaut Mode", len(files))
         self._hw_worker = HeavyweightParseWorker(
             files=files,
             filter_config=None,
@@ -10100,7 +10114,8 @@ class MainWindow(QMainWindow):
                 logger.exception("Juggernaut load failed for %s", parquet_dir)
                 self._on_parse_error(
                     "Juggernaut Mode could not load the parsed results:\n\n"
-                    f"{exc}\n\nSee eventhawk_gui.log for details."
+                    f"{exc}\n\nDetails are in eventhawk_gui.log, in {_log_folder()} "
+                    "(Help > Open Log Folder)."
                 )
                 return
         self._hw_model = ArrowTableModel(
@@ -10620,6 +10635,7 @@ class MainWindow(QMainWindow):
         profile never wipes the advanced filter and vice-versa.
         """
         self._applied_profiles = self._get_checked_profiles()
+        logger.info("Apply Profiles: %s", self._applied_profiles or "(none)")
         fc = self._build_filter_config(base=getattr(self, "_adv_filter_cfg", None))
 
         if self._hw_model is not None:
@@ -10750,6 +10766,15 @@ class MainWindow(QMainWindow):
 
     def _select_no_profiles(self) -> None:
         self._profile_combo.uncheckAll()
+
+    def _open_log_folder(self) -> None:
+        """Help > Open Log Folder: the folder every EventHawk log is in."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        folder = _log_folder()
+        logger.info("Open Log Folder: %s", folder)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(folder)):
+            QMessageBox.information(self, "Log Folder", f"EventHawk's log files are in:\n\n{folder}")
 
     def _get_checked_profiles(self) -> list[str]:
         return self._profile_combo.checkedItems()
@@ -11416,6 +11441,7 @@ class MainWindow(QMainWindow):
         self._btn_export.setEnabled(False)
         self._act_export.setEnabled(False)
         self._set_status(f"Parsing {len(files)} file(s)...")
+        logger.info("Parse started: %d file(s), Normal mode", len(files))
 
         max_threads = self._cmb_threads.currentData()  # None = Auto
 
@@ -11677,6 +11703,7 @@ class MainWindow(QMainWindow):
         self._act_export.setEnabled(export_ok)
 
         self._lbl_matched.setText(f"Events: {len(events):,}")
+        logger.info("Parse finished: %d events in %.1f s, Normal mode", len(events), elapsed)
         self._lbl_elapsed.setText(f"Time: {elapsed:.1f}s")
 
         parts = [f"{len(events):,} events", f"{elapsed:.1f}s"]
@@ -11886,6 +11913,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         cfg = dlg.get_filter_config()
+        logger.info("Advanced Filter applied")
 
         # ── Stack the dialog cfg ON TOP of any active profile selection ──
         # Both the profile filter and the dialog filter are applied via the same
@@ -11952,6 +11980,7 @@ class MainWindow(QMainWindow):
         cfg is gone) so the profile filter survives the clear.
         """
         self._adv_filter_cfg = None
+        logger.info("Advanced Filter cleared")
         # Bug 3 fix: in Juggernaut Mode clear via hw_model — but keep profiles.
         if self._hw_model is not None:
             # Rebuild filter from profiles only (no dialog cfg).
@@ -12008,6 +12037,7 @@ class MainWindow(QMainWindow):
         reported exactly that.  Clearing only the Advanced Filter (its badge)
         keeps the applied profiles.
         """
+        logger.info("Clear All Filters")
         self._profile_combo.uncheckAll()
         self._applied_profiles = []
         # RA session filters are implemented on top of the bookmark/record-id

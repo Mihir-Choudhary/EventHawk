@@ -143,7 +143,7 @@ Use [Semantic Versioning](https://semver.org/):
 | File / folder | Why excluded |
 |---|---|
 | `__pycache__/` | Compiled bytecode — not portable, regenerated automatically |
-| `evtx_tool_logs/` | Runtime logs — user-specific |
+| `evtx_tool_logs/` | CLI runtime logs — user-specific (the GUI logs to `%LOCALAPPDATA%\EventHawk\logs`) |
 | `.claude/` | Development tooling — not user-facing |
 | `_test_ev_str.py` | Internal debug script |
 | `*.evtx` | User data — never ship sample EVTX files |

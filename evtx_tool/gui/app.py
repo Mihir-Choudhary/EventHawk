@@ -29,7 +29,7 @@ def _flush_log_handlers() -> None:
 def _setup_gui_logging() -> None:
     """Configure comprehensive logging for the GUI process.
 
-    Layer 1 — Rotating file handler (WARNING+): all Python/Qt warnings and
+    Layer 1 — Rotating file handler (INFO+): all Python/Qt warnings and
                errors land in evtx_tool_logs/eventhawk_gui.log (5 MB × 3).
     Layer 2 — Startup / clean-exit markers in the log (context for crashes).
     Layer 3 — faulthandler: writes a Python traceback to
@@ -56,14 +56,11 @@ def _setup_gui_logging() -> None:
     # Files (per-machine), the app's own directory is read-only for non-admin
     # users, so creating evtx_tool_logs next to the app raises PermissionError
     # and crashes startup. Prefer %LOCALAPPDATA%\EventHawk\logs, then fall back.
-    _log_base = (os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
-                 or tempfile.gettempdir())
-    log_dir = os.path.join(_log_base, "EventHawk", "logs")
-    try:
-        os.makedirs(log_dir, exist_ok=True)
-    except OSError:
-        log_dir = tempfile.gettempdir()
-    log_path   = os.path.join(log_dir, "eventhawk_gui.log")
+    # (Same resolution for every EventHawk process: core.logsetup.)
+    from evtx_tool.core.logsetup import GUI_LOG, log_directory, roll_workers_log
+    log_dir = log_directory()
+    roll_workers_log()
+    log_path   = os.path.join(log_dir, GUI_LOG)
     crash_path = os.path.join(log_dir, "eventhawk_crash.log")
 
     # ── Layer 1: rotating file handler ───────────────────────────────────
@@ -73,14 +70,16 @@ def _setup_gui_logging() -> None:
         backupCount=3,               # keep 3 rotated backups
         encoding="utf-8",
     )
-    handler.setLevel(logging.WARNING)
+    # INFO, not WARNING only: at WARNING a whole session left two lines (start
+    # and exit) and the user found "the logs are not being written".
+    handler.setLevel(logging.INFO)
     handler.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     ))
 
     root = logging.getLogger()
-    root.setLevel(logging.WARNING)
+    root.setLevel(logging.INFO)
     # Avoid adding duplicate handlers if launch() is somehow called twice
     if not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
         root.addHandler(handler)
@@ -110,7 +109,7 @@ def _setup_gui_logging() -> None:
     _startup_log = logging.getLogger("eventhawk.startup")
     _startup_log.warning(
         "═══ EventHawk starting  pid=%d  python=%s  platform=%s ═══"
-        "  [log level: WARNING+; INFO/DEBUG not captured here]",
+        "  [log file: INFO+; worker processes: eventhawk_workers.log]",
         os.getpid(),
         sys.version.split()[0],
         platform.platform(),

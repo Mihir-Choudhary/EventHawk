@@ -38,24 +38,23 @@ logger = logging.getLogger(__name__)
 
 def _setup_worker_file_logging() -> None:
     """
-    Wire the root logger in this worker subprocess to the same rotating log
-    file used by the GUI process.  On Windows, each mp.Process(spawn) gets a
-    fresh interpreter with no file handlers — without this, every
-    logger.warning() call inside the worker is silently discarded.
+    Wire the root logger in this worker subprocess to a rotating log file in
+    the GUI's log folder.  On Windows, each mp.Process(spawn) gets a fresh
+    interpreter with no file handlers — without this, every logger.warning()
+    call inside the worker is silently discarded.  It used to write to
+    ``evtx_tool_logs`` beside the code: another folder from the GUI's, and
+    read-only under Program Files.  It has its own file because two processes
+    rotating one file fail on Windows.
     """
     try:
         from logging.handlers import RotatingFileHandler
-        log_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "..", "..", "evtx_tool_logs",
-        )
-        os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(log_dir, "eventhawk_gui.log")
+        from evtx_tool.core.logsetup import ANALYSIS_LOG, log_directory
+        log_path = os.path.join(log_directory(), ANALYSIS_LOG)
 
         root = logging.getLogger()
         # Avoid adding a duplicate handler if somehow called twice
         if any(
-            isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", "").endswith("eventhawk_gui.log")
+            isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", "").endswith(ANALYSIS_LOG)
             for h in root.handlers
         ):
             return

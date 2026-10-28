@@ -46,6 +46,9 @@ def _worker_init(pkg_root: str) -> None:
     """Called once per worker process to make the package importable."""
     if pkg_root not in sys.path:
         sys.path.insert(0, pkg_root)
+    # A warning raised in a worker process used to reach no file at all.
+    from evtx_tool.core.logsetup import setup_child_logging
+    setup_child_logging("parse-worker")
     # Pre-import heavy modules so they're cached for subsequent calls
     try:
         from evtx_tool.core._json_compat import fast_loads  # noqa: F401 — pre-warm orjson/json

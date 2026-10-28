@@ -650,6 +650,10 @@ def _hw_worker_loop(in_q, out_q, stop_event) -> None:
     (or a worker process dying) previously left the count short; the except
     below closes that hole.
     """
+    # In a worker PROCESS, give its warnings a file (a no-op in the thread
+    # fallback, which runs inside the GUI process and its log).
+    from evtx_tool.core.logsetup import setup_child_logging
+    setup_child_logging("jm-worker")
     while True:
         try:
             task = in_q.get()

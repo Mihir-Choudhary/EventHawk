@@ -99,6 +99,23 @@ py -3 evtx_tool.py gui
 
 ---
 
+## Log Files
+
+EventHawk writes its logs to **`%LOCALAPPDATA%\EventHawk\logs`** (usually
+`C:\Users\<you>\AppData\Local\EventHawk\logs`). Open it with **Help → Open Log Folder**; error
+messages that mention the log also give this path.
+
+| File | Written by | What is in it |
+|---|---|---|
+| `eventhawk_gui.log` | the application | parses started and finished (file count, events, time), profiles applied, filters cleared, warnings and errors. Rotates at 5 MB, keeping 3 older files |
+| `eventhawk_workers.log` | parse worker processes (both modes) | warnings and errors raised while parsing a file |
+| `eventhawk_analysis.log` | the background analysis process | warnings and errors from IOC / correlation / Hayabusa analysis |
+| `eventhawk_crash.log` | the application | low-level crash traces, if the program ever crashes |
+
+Attach these files when you report a problem. They contain file names and counts from your case, so share
+them only with people who may see the case. The command-line tool (`evtx_tool.py parse …`) writes its own log to
+`evtx_tool_logs\evtx_parser.log` in the folder you run it from.
+
 ## Limitations
 
 - The window layout is fixed — panels are not independently detachable.
