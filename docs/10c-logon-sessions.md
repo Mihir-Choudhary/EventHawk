@@ -46,10 +46,11 @@ EventHawk builds sessions from six Security log event IDs:
 | Type | Logon type number and label (see below) |
 | Session ID | LogonId (LUID) — Windows-assigned session identifier |
 | Start | Timestamp of the EID 4624 logon event |
-| End | Timestamp of the logoff or last seen event |
-| Duration | Wall-clock session duration (HH:MM:SS or seconds) |
+| End | Timestamp of the logoff (EID 4634/4647). **Not logged** when the log holds no logoff for the session |
+| Duration | Logon to logoff. Shown only when both are in the log; otherwise **Unavailable** (see Duration Notes) |
 | Procs | Number of EID 4688 process-create events attributed to this session |
 | Priv Events | Number of EID 4672 special-privilege events |
+| Last Activity | Timestamp of the last event seen for the session (activity, not proof that it ended) |
 
 Columns are sortable. Duration and numeric columns sort numerically, not lexicographically.
 
@@ -124,9 +125,12 @@ This means multi-host and multi-reboot captures can be loaded together without s
 
 ## Duration Notes
 
-- **Active** — shown when a start time is known but no logoff was recorded. The session may still be open, or the logoff event was not captured.
+A duration is shown only when the log proves both ends of the session: its logon and its logoff. EventHawk never derives one from the last event seen or the next logon, because a session can stay open long after its last logged event. The **Last Activity** column shows the last event seen for the session, so the observed span is still visible, labelled as what it is.
+
+
+- **Unavailable (no logoff in log)** — the logon is known but no logoff was recorded. The session may still be open, or the logoff event was not captured.
 - **RDP sessions (Type 10)** show `(wall clock)` appended to the duration. RDP sessions can have disconnect gaps (the session persists but the user is disconnected). Without EID 4778/4779 reconnect events, only wall-clock time can be reported.
-- Sessions with neither a logon event nor a logoff event show no duration.
+- **Unavailable (no logon in log)** — the session is known only from later events (its logon is not in the loaded logs).
 
 ---
 
@@ -139,7 +143,7 @@ View Logon Sessions works in both **Normal Mode** and **Juggernaut Mode**. The s
 ## Limitations
 
 - Session reconstruction depends on the presence of EID 4624 in the loaded files. Sessions only seen via 4688 (process creates with no corresponding logon event) will appear as partial rows.
-- The duration of sessions that span a reboot (or where the logoff event was in a different EVTX file not loaded) may appear shorter than actual.
+- If the logoff is in an EVTX file that was not loaded, the duration reads Unavailable; load that file to get it.
 - Type-5 (Service) sessions represent Windows service accounts, not human users. Hide them with the checkbox to reduce noise.
 - LUID reuse across reboots on the same host is handled automatically (see Session Identity above), but if logoff events are missing, the time-window boundary is estimated from the last seen event, which may be slightly imprecise.
 - View Logon Sessions is GUI-only — not available from the CLI.

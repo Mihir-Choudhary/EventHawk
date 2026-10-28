@@ -1959,7 +1959,7 @@ class _DurationItem(QTableWidgetItem):
 
     @staticmethod
     def _secs(text: str) -> float:
-        if not text or text in ("?", "Active", "(wall clock)"):
+        if not text or text in ("?", "Active", "(wall clock)") or text.startswith("Unavailable"):
             return -1.0
         import re as _re
         total = 0.0
@@ -2077,6 +2077,7 @@ class _LogonSessionDialog(QDialog):
     _HEADERS = [
         "User", "Computer", "Logon Type", "Initiation", "Session ID",
         "Start", "End", "Duration", "Procs", "Priv Events", "⚠ Dangerous",
+        "Last Activity",
     ]
 
     def __init__(self, events: list[dict], on_filter_fn, parent=None):
@@ -2311,16 +2312,23 @@ class _LogonSessionDialog(QDialog):
                     scope_end_ts_full = candidate_end_full
                     scope_end_inclusive = bool(scope_end_ts)
 
-                if scope_start_ts and scope_end_ts:
-                    dur_str = self._calc_duration(scope_start_ts, scope_end_ts)
+                # Duration only when the log proves BOTH ends: the logon and its
+                # logoff.  The scope end above (last event seen, or the next
+                # logon's start) bounds the session filter; it is not a logoff,
+                # and a duration from it was a number the log never recorded
+                # (393 of 406 sessions on a public baseline, Codex audit-2 A2).
+                if logon_ev and explicit_end_norm and _norm_ts(start_ts):
+                    dur_str = self._calc_duration(_norm_ts(start_ts), explicit_end_norm)
                     # RDP/RemoteInteractive sessions can have disconnect gaps where
                     # the session persists but is idle.  Without 4778/4779 events
                     # we can only report wall-clock time, so flag it clearly.
                     if logon_type == "10":
                         dur_str += " (wall clock)"
                     duration = dur_str
+                elif logon_ev:
+                    duration = "Unavailable (no logoff in log)"
                 else:
-                    duration = "Active" if scope_start_ts else ""
+                    duration = "Unavailable (no logon in log)"
 
                 has_dangerous = any(
                     any(dp in str((p.get("event_data") or {}).get("PrivilegeList", ""))
@@ -2343,6 +2351,8 @@ class _LogonSessionDialog(QDialog):
                     "scope_end_ts":        scope_end_ts,
                     "scope_end_inclusive": scope_end_inclusive,
                     "duration":            duration,
+                    "logoff_ts":           explicit_end_ts,     # raw; "" when no logoff is logged
+                    "last_seen_ts_full":   sess["last_seen_ts_raw"] or explicit_end_ts,
                     "proc_count":          len(sess.get("procs", [])),
                     "priv_count":          len(sess.get("privs", [])),
                     "has_dangerous":       has_dangerous,
@@ -2588,9 +2598,13 @@ class _LogonSessionDialog(QDialog):
             # real sub-second detail rather than fabricated zeros.
             _digits = get_ts_precision()
             start_disp = _fmt_ts_precision(s["start_ts"], _digits) if s["start_ts"] else ""
+            # End is the logoff, and only the logoff.  The last event seen is
+            # its own column: it shows activity, not that the session ended.
             end_disp   = (
-                _fmt_ts_precision(s.get("end_ts_full") or s["end_ts"], _digits)
-                if s["end_ts"] else "Active"
+                _fmt_ts_precision(s["logoff_ts"], _digits) if s.get("logoff_ts") else "Not logged"
+            )
+            last_disp  = (
+                _fmt_ts_precision(s["last_seen_ts_full"], _digits) if s.get("last_seen_ts_full") else ""
             )
 
             cells = [
@@ -2605,6 +2619,7 @@ class _LogonSessionDialog(QDialog):
                 str(s["proc_count"]),
                 str(s["priv_count"]),
                 "⚠ Yes" if s["has_dangerous"] else "No",
+                last_disp,
             ]
             right_align_cols = {8, 9}   # Procs, Priv Events (shifted +1 by new column)
 
@@ -5266,6 +5281,16 @@ class _RemoteAssistanceDialog(QDialog):
             if len(evs) == 1 and not (bkt["_has_start"] and bkt["_has_end"]):
                 # Single-point evidence cannot prove elapsed session duration.
                 dur_str, dur_secs = "?", -1.0
+            if (type_label not in ("RDP Session", "RDP (Outbound)")
+                    and not (bkt["_has_start"] and bkt["_has_end"])):
+                # A span from the first to the last event seen is not a
+                # session duration unless both its start and its end are
+                # logged: a Classic RA start + control event showed "10s", and
+                # Remote Help (whose start/end events are not documented, so
+                # never proved) showed one too (Codex audit-2 A2).  Inbound
+                # RDP's pairing is its own open item; outbound RDP has its
+                # stricter rule below.
+                dur_str, dur_secs = "Unavailable", -1.0
             if type_label == "RDP (Outbound)":
                 # A source-side duration is only real when this session logged
                 # BOTH its own connect and its own disconnect and the pairing

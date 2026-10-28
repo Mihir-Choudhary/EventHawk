@@ -31,7 +31,13 @@ _app = QApplication.instance() or QApplication([])
 
 GOLDEN_COUNTS = {"Remote Help": 6, "RDP (Outbound)": 89, "Classic RA": 43,
                  "RDP Session": 67, "Quick Assist": 25}
-GOLDEN_SHA = "929f398c8f114032ba58453d9a21a8e7b3afe57f66c6bb2744a8ee05c0ca98c5"
+# Updated for "a duration needs a logged start AND end" (Codex audit-2 A2).
+# Diffed against the previous build on this same synthetic set: 230 sessions,
+# same types and fields; only "duration" (and duration_secs) changed, to
+# "Unavailable", on the 25 Quick Assist, 6 Remote Help and 33 Classic RA rows
+# without both a start and an end.  No completed session changed.
+# Previous value: 929f398c8f114032ba58453d9a21a8e7b3afe57f66c6bb2744a8ee05c0ca98c5
+GOLDEN_SHA = "918ecf0e0c90362e31e1a7603ded84ed48d8f9884bd42537b6d854cc9301a933"
 
 CHECKS = []
 
