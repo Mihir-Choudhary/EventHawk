@@ -15134,7 +15134,20 @@ class MainWindow(QMainWindow):
         if a_dt is None:
             self._set_status("This event has no timestamp, so there is no window around it.")
             return
-        start, end = window_bounds(a_dt, before, after)
+        try:
+            start, end = window_bounds(a_dt, before, after)
+        except OverflowError:
+            # An event stamped near year 1 or 9999 (unusual, or tampered): the
+            # window cannot be represented.  Say so; never clamp it silently
+            # (Codex review-1 F5: the error used to escape the action).
+            self._warn_blocking(
+                "Around This Event",
+                f"This event is stamped {anchor.get('timestamp')}. A window of "
+                f"{before} before and {after} after it falls outside the dates "
+                f"EventHawk can represent (years 1 to 9999), so no tab was opened.\n\n"
+                f"A timestamp this close to the limit is unusual and may be worth "
+                f"checking. A smaller window may still work.")
+            return
         try:
             names, host_label, host_lines = self._around_hosts(anchor, scope)
         except Exception as exc:
