@@ -8849,6 +8849,19 @@ class MainWindow(QMainWindow):
         return self._proxy_model
 
     @property
+    def _global_proxy(self) -> EventFilterProxyModel:
+        """The proxy a GLOBAL filter (profiles, merged Advanced Filter) goes to.
+
+        The active tab's proxy, except when that tab is an Around/pivot tab:
+        its window is fixed, so the global filter goes to All Events instead.
+        Using ``_active_proxy`` here narrowed the Around window (6 -> 1) and
+        left All Events untouched (Codex review-1 F1).
+        """
+        if self._active_file_tab and _is_pivot_tab_key(self._active_file_tab):
+            return self._proxy_model
+        return self._active_proxy
+
+    @property
     def _active_table(self) -> QTableView:
         if self._active_file_tab:
             state = self._file_tabs.get(self._active_file_tab)
@@ -10629,7 +10642,7 @@ class MainWindow(QMainWindow):
                     )
         else:
             # Normal mode — apply live to the view proxy (no re-parse).
-            _proxy = getattr(self, "_active_proxy", None) or getattr(self, "_proxy_model", None)
+            _proxy = self._global_proxy if getattr(self, "_proxy_model", None) is not None else None
             if _proxy is None:
                 QMessageBox.information(
                     self, "No Events",
@@ -11925,7 +11938,7 @@ class MainWindow(QMainWindow):
             self._update_count_label()
             return
         with self._normal_filter_busy("Applying advanced filter…"):
-            self._active_proxy.set_advanced_filter(cfg_effective)
+            self._global_proxy.set_advanced_filter(cfg_effective)
         self._update_adv_filter_badge()
         self._update_count_label()
 
@@ -11969,15 +11982,16 @@ class MainWindow(QMainWindow):
         # box stayed ticked.  Keep the applied profiles.
         if self._applied_profiles:
             _profile_fc = self._build_filter_config(base=None)
-            self._active_proxy.set_advanced_filter(_profile_fc)
+            self._global_proxy.set_advanced_filter(_profile_fc)
             for _fp, _st in self._file_tabs.items():
                 if not _is_pivot_tab_key(_fp):
                     _st.proxy.set_advanced_filter(_profile_fc)
         else:
-            self._active_proxy.clear_advanced_filter()
+            self._global_proxy.clear_advanced_filter()
             # Also clear per-file tab proxies (separate-tabs mode)
-            for _st in self._file_tabs.values():
-                _st.proxy.clear_advanced_filter()
+            for _fp, _st in self._file_tabs.items():
+                if not _is_pivot_tab_key(_fp):
+                    _st.proxy.clear_advanced_filter()
         self._update_adv_filter_badge()
         self._update_count_label()
 
@@ -12030,14 +12044,21 @@ class MainWindow(QMainWindow):
             # Use clear_all_filters() to reset everything in one _invalidate()
             # call instead of calling clear_filter() + clear_quick_filters()
             # separately (which would dispatch two redundant round-trips each).
+            # Around/pivot tabs included: clear_all_filters() keeps their
+            # window (fixed_where) and drops only their own filters.  Skipping
+            # them left a quick filter set inside an Around tab in place
+            # after Clear All (Codex review-1 F2).
             for _fp, _st in self._file_tabs.items():
-                if not _is_pivot_tab_key(_fp):
-                    _st.model.clear_all_filters()
+                _st.model.clear_all_filters()
 
         else:
             # Batch: clear all filter layers in one invalidateFilter() call.
-            self._active_proxy.clear_all_filters()
-            # Also clear per-file tab proxies in one pass each.
+            # All Events' proxy always, not only when it is the active one:
+            # with an Around tab in front, _active_proxy is that tab's proxy
+            # and All Events kept its filter.
+            self._proxy_model.clear_all_filters()
+            # Also clear per-file tab proxies (Around tabs included: their
+            # window is their event snapshot, not a filter) in one pass each.
             for state in self._file_tabs.values():
                 state.proxy.clear_all_filters()
             # Normal mode: an applied profile lives in the proxy's advanced
