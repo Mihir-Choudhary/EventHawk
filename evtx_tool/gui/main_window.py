@@ -4186,7 +4186,7 @@ class _RemoteAssistanceDialog(QDialog):
         # file(s) the session was reconstructed from.  A duration is only as
         # trustworthy as the two events it was measured between, so the analyst
         # must be able to see them without opening the event list.
-        "Evidence", "Source Log",
+        "Evidence", "Source Log", "Row", "Continuity",
     ]
 
     # Hover text for the Flags column.  Several of these exist purely to warn
@@ -4223,6 +4223,12 @@ class _RemoteAssistanceDialog(QDialog):
                         "be derived from a single point in time.",
         "UNFILTERABLE_EVENTS": "Some events lack a record ID and cannot be included "
                                "when filtering the main view to this session.",
+        "BOOT_BOUNDARY": "A loaded system-start event prevents pairing across the reboot.",
+        "NO_END_BEFORE_NEW_START": "The ID was used by a new start before this interval logged an end.",
+        "IDENTITY_CONFLICT": "The same ID carries conflicting users. The events were kept in separate rows.",
+        "MISSING_ID_HOST_OR_TIME": "A missing identifier, computer or timestamp prevents a proved interval.",
+        "DISCONNECT_DIAGNOSTIC": "LSM 39/40 reports a disconnect, not a logoff; Source in 39 is a session number.",
+        "USER_NOT_CORROBORATED": "The ID matches, but one boundary has no user to corroborate the pairing.",
     }
 
     _TYPE_COLORS: dict[str, str] = {
@@ -4334,19 +4340,6 @@ class _RemoteAssistanceDialog(QDialog):
         _OPEN_KEY_CORR_SECS = 604800.0  # 7 days
         # Only these classic RA event IDs carry the start/control/end semantics used below.
         _RA_EIDS = frozenset({1, 2, 3})
-        # TerminalServices IDs that are session-semantic (exclude diagnostics noise).
-        _TS_EIDS = frozenset({
-            21,   # LocalSessionManager: session logon
-            22,   # shell start
-            23,   # session logoff
-            24,   # session disconnect
-            25,   # session reconnect
-            39,   # session disconnect (alt)
-            40,   # session logoff (alt)
-            41,   # session connect (alt)
-            261,  # RemoteConnectionManager: listener got connection
-            1149, # RemoteConnectionManager: auth succeeded
-        })
         # SOURCE-SIDE / OUTBOUND RDP (SANS 508.2 "RDP Logs - Source System").
         # TerminalServices-RDPClient/Operational is recorded on the system that
         # INITIATED the connection and details everywhere it moved OUT to.
@@ -4503,22 +4496,8 @@ class _RemoteAssistanceDialog(QDialog):
             # (handled above).  RdpCoreTS could enrich the inbound "RDP Session"
             # type in future, but needs sample data to verify its field names.
             if _TS_CHAN in chan:
-                # Gate on EIDs that are meaningful for session reconstruction;
-                # other TerminalServices operational events (diagnostics, licensing,
-                # etc.) create false sessions without this guard.
-                if eid not in _TS_EIDS:
-                    return None   # skip unrelated TS operational events
-                sess_id = (ed.get("SessionID") or ed.get("Session") or "").strip()
-                return "RDP Session", sess_id
+                return None  # inbound events were handled before bucketing
             if _SEC_CHAN in chan:
-                if eid in (4624, 4634):
-                    if str(ed.get("LogonType", "")) != "10":
-                        return None   # not remote-interactive
-                    lid = (ed.get("TargetLogonId") or "").strip()
-                    return "RDP Session", lid
-                if eid in (4778, 4779):
-                    lid = (ed.get("TargetLogonId") or "").strip()
-                    return "RDP Session", lid
                 if eid == 4648:
                     # "A logon was attempted using explicit credentials" — the
                     # SOURCE side of an outbound RDP (logged when NLA is enabled
@@ -4553,6 +4532,12 @@ class _RemoteAssistanceDialog(QDialog):
                         return "Quick Assist", _qa_key
                 return None
             return None
+
+        # Inbound intervals have explicit boundaries, not proximity buckets.
+        # Keep the full input here so loaded reboot evidence is a barrier.
+        from evtx_tool.analysis.inbound_rdp import build_inbound_sessions, is_inbound_event
+        inbound_sessions = build_inbound_sessions(events, _extract_ed)
+        events = [e for e in events if not is_inbound_event(e, _extract_ed)]
 
         import os as _os_mod   # local alias: this scope rebinds other names
 
@@ -4652,7 +4637,7 @@ class _RemoteAssistanceDialog(QDialog):
             if "rdpclient" in chan:
                 return eid in _RDPCLIENT_EIDS
             if _TS_CHAN in chan:
-                return eid in _TS_EIDS
+                return False  # inbound reconstruction has its own boundaries
             if _SEC_CHAN in chan:
                 return eid in _SEC_EIDS
             return False
@@ -5105,133 +5090,6 @@ class _RemoteAssistanceDialog(QDialog):
                 if eid in (1026, 1105):         # disconnected / transport closed
                     _mark_end()
 
-        # ── M2: merge TS-channel and Security-channel RDP buckets ────────────
-        # TerminalServices events use a small integer SessionID as their explicit
-        # key; Security 4624/4634/4778/4779 events use a hex TargetLogonId.  The
-        # two identifiers are never equal, so the same physical RDP connection
-        # produces two separate buckets.  Post-processing: if one bucket contains
-        # exclusively TS-channel events and another on the same computer contains
-        # exclusively Security-channel events AND their time windows overlap within
-        # a 5-minute tolerance, absorb the Security bucket into the TS bucket so
-        # the session row has both the remote-host (from Security) and the
-        # start/end flags (from TS events).
-        def _merge_rdp_buckets(buckets: list) -> None:
-            from datetime import timedelta as _td
-            _MERGE_TOL  = _td(seconds=300)
-            _TS_STR     = "terminalservices"
-            _SEC_STR    = "security"
-
-            def _kind(bkt: dict) -> str:
-                has_ts  = any(_TS_STR  in str(e.get("channel", "")).lower()
-                              for e in bkt["_events"])
-                has_sec = any(_SEC_STR in str(e.get("channel", "")).lower()
-                              for e in bkt["_events"])
-                if has_ts and not has_sec:
-                    return "ts"
-                if has_sec and not has_ts:
-                    return "sec"
-                return "mixed"   # already contains both — no merge needed
-
-            def _overlaps(a: dict, b: dict) -> bool:
-                as_ = a["_start_dt"];  ae = a["_end_dt"] or a["_start_dt"]
-                bs_ = b["_start_dt"];  be = b["_end_dt"] or b["_start_dt"]
-                if as_ is None or bs_ is None:
-                    return False
-                # M1 fix: expand each window outward by tolerance (not inward).
-                # Correct overlap: window A ends within MERGE_TOL of B's start,
-                # or vice versa.
-                return (ae + _MERGE_TOL >= bs_) and (be + _MERGE_TOL >= as_)
-
-            by_comp: dict = {}
-            for bkt in buckets:
-                if bkt["_type"] == "RDP Session" and not bkt.get("_absorbed"):
-                    by_comp.setdefault(bkt["_computer"], []).append(bkt)
-
-            for comp_bkts in by_comp.values():
-                ts_list  = [b for b in comp_bkts if _kind(b) == "ts"]
-                sec_list = [b for b in comp_bkts if _kind(b) == "sec"]
-                for sec_b in sec_list:
-                    if sec_b.get("_absorbed"):
-                        continue
-                    candidates: list[tuple[bool, float, dict]] = []
-                    sec_ref = sec_b["_start_dt"] or sec_b["_end_dt"]
-                    for ts_b in ts_list:
-                        if ts_b.get("_absorbed"):
-                            continue
-                        # User compatibility: skip if both are known and differ.
-                        u_ts  = ts_b["_user"].lower().strip()
-                        u_sec = sec_b["_user"].lower().strip()
-                        if u_ts and u_sec and u_ts != u_sec:
-                            continue
-                        # Remote-host guard: different origin IPs → different
-                        # connections.  Only fires when both sides are populated
-                        # so blank entries (common in TS events) stay neutral.
-                        rh_ts  = ts_b["_remote_host"].strip()
-                        rh_sec = sec_b["_remote_host"].strip()
-                        if rh_ts and rh_sec and rh_ts != rh_sec:
-                            continue
-                        if not _overlaps(ts_b, sec_b):
-                            continue
-                        corroborated = bool(
-                            (u_ts and u_sec and u_ts == u_sec)
-                            or (rh_ts and rh_sec and rh_ts == rh_sec)
-                        )
-                        ts_ref = ts_b["_start_dt"] or ts_b["_end_dt"]
-                        if sec_ref is not None and ts_ref is not None:
-                            dist = abs((sec_ref - ts_ref).total_seconds())
-                        else:
-                            dist = float("inf")
-                        candidates.append((corroborated, dist, ts_b))
-                    if not candidates:
-                        continue
-                    corroborated = [c for c in candidates if c[0]]
-                    if corroborated:
-                        _ts_pick = min(corroborated, key=lambda t: t[1])[2]
-                    else:
-                        # Require at least one strong positive join key (user or
-                        # remote-host match).  Overlap-only merges are too risky.
-                        continue
-                    ts_b = _ts_pick
-                    # Absorb sec_b into ts_b
-                    ts_b["_events"].extend(sec_b["_events"])
-                    for _v in (sec_b["_start_dt"], sec_b["_end_dt"]):
-                        if _v is None:
-                            continue
-                        if ts_b["_start_dt"] is None or _v < ts_b["_start_dt"]:
-                            ts_b["_start_dt"] = _v
-                        if ts_b["_end_dt"]   is None or _v > ts_b["_end_dt"]:
-                            ts_b["_end_dt"]   = _v
-                    if not ts_b["_user"]        and sec_b["_user"]:
-                        ts_b["_user"]        = sec_b["_user"]
-                    if not ts_b["_remote_host"] and sec_b["_remote_host"]:
-                        ts_b["_remote_host"] = sec_b["_remote_host"]
-                    if sec_b["_has_start"]:
-                        ts_b["_has_start"] = True
-                    if sec_b["_has_end"]:
-                        ts_b["_has_end"]   = True
-                    # Evidence must follow the events it describes: keep the
-                    # EARLIEST start proof and the LATEST end proof of the two
-                    # buckets, so the Evidence column still names the events
-                    # that actually bound the merged span.
-                    def _ev_dt(_e):
-                        return _parse_ts(str((_e or {}).get("timestamp") or ""))
-
-                    for _fld, _keep_earliest in (("_start_ev", True), ("_end_ev", False)):
-                        _mine, _theirs = ts_b.get(_fld), sec_b.get(_fld)
-                        if _theirs is None:
-                            continue
-                        if _mine is None:
-                            ts_b[_fld] = _theirs
-                            continue
-                        _a, _b2 = _ev_dt(_mine), _ev_dt(_theirs)
-                        if _a is None or _b2 is None:
-                            continue
-                        if (_b2 < _a) if _keep_earliest else (_b2 > _a):
-                            ts_b[_fld] = _theirs
-                    sec_b["_absorbed"] = True
-
-        _merge_rdp_buckets(all_buckets)
-
         # ── Build final session dicts ─────────────────────────────────────
         sessions: list[dict] = []
         for bkt in all_buckets:
@@ -5506,7 +5364,17 @@ class _RemoteAssistanceDialog(QDialog):
         # Sort on the full-precision start: ordering by the second-truncated
         # value left sessions that begin in the same second in arbitrary order,
         # which reads as a bug once the display is set to milliseconds.
-        sessions.sort(key=lambda s: (s.get("start_ts_full") or s["start_ts"] or ""))
+        sessions.extend(inbound_sessions)
+        sessions.sort(key=lambda s: (s.get("_observed_order") or s.get("start_ts_full") or s["start_ts"] or ""))
+        row_numbers = {id(s): n for n, s in enumerate(sessions, 1)}
+        for n, s in enumerate(sessions, 1):
+            previous = s.pop("_continuation_row", None)
+            s.pop("_observed_order", None)
+            s["row_ref"] = n
+            s["continuity"] = (
+                f"continues the session in row {row_numbers[id(previous)]} (reconnect)"
+                if previous is not None else ""
+            )
         return sessions
 
     # ── UI building ────────────────────────────────────────────────────────
@@ -5537,6 +5405,7 @@ class _RemoteAssistanceDialog(QDialog):
         self._cmb_status = QComboBox()
         self._cmb_status.addItems([
             "All Statuses", "Completed", "Active / Ongoing",
+            "Start logged (no end)",
             "Partial (no start)", "Disconnected (no auth logged)",
             # Source-side (outbound) RDP statuses — previously produced by
             # _build_sessions but missing here, so they could not be filtered.
@@ -5629,7 +5498,7 @@ class _RemoteAssistanceDialog(QDialog):
                 haystack = " ".join([
                     s["computer"], s["user"], s["remote_host"], s.get("remote_ip", ""),
                     s["session_key"], s["status"], ", ".join(s["flags"]),
-                    s.get("evidence", ""), s.get("source_log", ""),
+                    s.get("evidence", ""), s.get("source_log", ""), s.get("continuity", ""),
                 ]).lower()
                 if needle not in haystack:
                     continue
@@ -5670,6 +5539,8 @@ class _RemoteAssistanceDialog(QDialog):
                 ", ".join(s["flags"]),
                 s.get("evidence", ""),
                 s.get("source_log", ""),
+                str(s.get("row_ref", "")),
+                s.get("continuity", ""),
             ]
             _COL_TYPE     = 0
             _COL_DURATION = 4
@@ -5684,6 +5555,10 @@ class _RemoteAssistanceDialog(QDialog):
                     _sort_key = float("inf") if _dsecs < 0 else _dsecs
                     item = _NumericSortItem(text)
                     item.setData(Qt.ItemDataRole.UserRole, _sort_key)
+                elif c == 14:  # stable reconstruction row number
+                    item = _NumericSortItem(text)
+                    item.setData(Qt.ItemDataRole.UserRole, s.get("row_ref", 0))
+                    item.setToolTip("Stable row reference; sorting and filtering do not renumber it.")
                 elif c == _COL_EVENTS:
                     # Numeric sort: UserRole = integer event count
                     item = _NumericSortItem(text)
@@ -5836,6 +5711,8 @@ class _RemoteAssistanceDialog(QDialog):
                     lambda s: ", ".join(s["flags"]),
                     lambda s: s.get("evidence", ""),
                     lambda s: s.get("source_log", ""),
+                    lambda s: s.get("row_ref", ""),
+                    lambda s: s.get("continuity", ""),
                 ]
                 assert len(_EXTRACTORS) == len(self._HEADERS), (
                     f"CSV extractors ({len(_EXTRACTORS)}) out of sync with "
@@ -5962,11 +5839,15 @@ class _RemoteAssistJMFetchWorker(QThread):
         #           NewProcessName OR CommandLine OR Application (plus list-of-Data fallback).
         sql = (
             f"SELECT event_id, timestamp_utc, event_data_json, channel, "
-            f"       computer, record_id, source_file "
+            f"       computer, record_id, source_file, provider "
             f"FROM parquet_scan({shard_list}) "
             f"WHERE ("
             f"    channel IN ({chan_placeholders})"
             f"    OR (channel = 'Security' AND event_id IN (4778, 4779))"
+            # Reboot evidence prevents an inbound ID from joining across boots.
+            f"    OR (channel = 'Security' AND event_id = 4608)"
+            f"    OR (channel = 'System' AND event_id = 12"
+            f"        AND provider = 'Microsoft-Windows-Kernel-General')"
             f"    OR (channel = 'Security' AND event_id IN (4624, 4634)"
             f"        AND ("
             f"            json_extract_string(event_data_json, '$.LogonType') = '10'"
@@ -6043,7 +5924,7 @@ class _RemoteAssistJMFetchWorker(QThread):
             rows = rows[:200_000]
 
         events: list[dict] = []
-        for eid, ts_utc, ed_json, channel, computer, record_id, source_file in rows:
+        for eid, ts_utc, ed_json, channel, computer, record_id, source_file, provider in rows:
             try:
                 ed = _json.loads(ed_json) if ed_json else {}
             except Exception:
@@ -6056,6 +5937,7 @@ class _RemoteAssistJMFetchWorker(QThread):
                 "computer":    str(computer or ""),
                 "record_id":   record_id,
                 "source_file": str(source_file or ""),
+                "provider":    str(provider or ""),
             })
         self.finished.emit(events, truncated)
 
