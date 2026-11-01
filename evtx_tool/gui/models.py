@@ -900,6 +900,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._adv_rel_cutoff: object | None = None   # datetime or None
         self._adv_rel_exclude: bool = False
         self._adv_conditions: list[dict] = []
+        self._adv_cond_groups: list[list[dict]] = []
 
         self.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -1002,6 +1003,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._adv_rel_cutoff = None
         self._adv_rel_exclude = False
         self._adv_conditions = []
+        self._adv_cond_groups = []
         self._any_filter_active = False
         self.invalidateFilter()
 
@@ -1120,6 +1122,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             self._adv_rel_cutoff = None
             self._adv_rel_exclude = False
             self._adv_conditions = []
+            self._adv_cond_groups = []
             self._update_filter_active()
             self.invalidateFilter()
             return
@@ -1341,6 +1344,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                     entry["compiled"] = None
             prepped.append(entry)
         self._adv_conditions = prepped
+        from evtx_tool.core.filters import condition_groups
+        self._adv_cond_groups = condition_groups(prepped)
 
         self._update_filter_active()
         self.invalidateFilter()
@@ -1895,7 +1900,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             ed_flat = _flatten_fields(ed)
             # Lazy-imported once outside the condition loop
             from evtx_tool.core.heavyweight.filter_sql import _FIELD_DUAL_SOURCE
-            for cond in self._adv_conditions:
+            def _cond_ok(cond) -> bool:
                 name = cond["name"]
                 # Build the list of candidate field values this condition can
                 # match against.  Normally one value (top-level event dict or
@@ -1988,6 +1993,12 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                     # filters.py._conditions_pass and JM's filter_sql.  Falling
                     # through to `return True` here would silently pass every
                     # event on a typo'd operator — a silent divergence.
+                    return False
+                return True
+
+            # Same-field "equals" rows are alternatives (core.filters.condition_groups).
+            for _grp in self._adv_cond_groups:
+                if not any(_cond_ok(c) for c in _grp):
                     return False
 
         return True

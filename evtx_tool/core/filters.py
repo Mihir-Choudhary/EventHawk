@@ -445,8 +445,35 @@ _PARSE_TIME_DUAL_SOURCE: dict[str, str] = {
 }
 
 
+# Several "equals" conditions on the same field are alternatives: "LogonType equals 4"
+# plus "LogonType equals 10" means either, as in Event Viewer (ANDing them asked for
+# a field holding two values at once and matched nothing).  Every other operator
+# keeps AND, where it means something: two "contains" narrow, "greater than" plus
+# "less than" is a range, two "not equals" exclude both.  Shared by the parse-time
+# filter, the Normal view (models.py) and Juggernaut's SQL (filter_sql.py).
+def condition_groups(conditions) -> "list[list[dict]]":
+    """Split *conditions* into AND-ed groups whose members are OR-ed.
+
+    "equals" conditions on the same field share one group; every other
+    condition is a group of its own.  Order follows first appearance.
+    """
+    groups: "list[list[dict]]" = []
+    equals_group: "dict[str, list[dict]]" = {}
+    for c in conditions or ():
+        if c.get("operator", "contains") == "equals" and c.get("name", ""):
+            g = equals_group.get(c["name"])
+            if g is None:
+                g = equals_group[c["name"]] = []
+                groups.append(g)
+            g.append(c)
+        else:
+            groups.append([c])
+    return groups
+
+
 def _conditions_pass(event: dict, conditions: "list[dict]", cs: bool) -> bool:
-    """Return True iff *event* satisfies every condition (AND-combined).
+    """Return True iff *event* satisfies the conditions: AND-combined, except
+    that "equals" rows on the same field are OR-ed (see condition_groups).
 
     Mirrors models.py ``_passes_advanced`` conditions logic but works on a
     plain event dict at parse time (no Qt proxy state required).  Supports:
@@ -465,6 +492,10 @@ def _conditions_pass(event: dict, conditions: "list[dict]", cs: bool) -> bool:
     """
     if not conditions:
         return True
+    groups = condition_groups(conditions)
+    if len(groups) < len(conditions):
+        # Same-field equals present: each group passes if any member does.
+        return all(any(_conditions_pass(event, [c], cs) for c in g) for g in groups)
 
     # Lazy module-level import — kept here (not at file top) to avoid any
     # risk of a circular import with core.heavyweight.filter_sql, which

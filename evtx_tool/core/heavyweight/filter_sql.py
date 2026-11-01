@@ -866,7 +866,11 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
         clauses.append(combined)
 
     # ── conditions (custom field operators) ────────────────────────────────
+    # Where each condition's clause and params start, so same-field "equals"
+    # rows can be OR-ed afterwards (core.filters.condition_groups).
+    _cond_marks: list[tuple[dict, int, int]] = []
     for cond in fc.get("conditions", []):
+        _cond_marks.append((cond, len(clauses), len(params)))
         name = cond.get("name", "")
         if not name:
             continue
@@ -1055,6 +1059,29 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             # while dropping every event in normal mode — a silent divergence.
             logger.warning("filter_sql: unknown condition operator %r — matching no rows", op)
             clauses.append("1=0")
+
+    if _cond_marks:
+        from evtx_tool.core.filters import condition_groups
+        conds = [m[0] for m in _cond_marks]
+        groups = condition_groups(conds)
+        if len(groups) < len(conds):
+            # Slice out each condition's clause and params, then rebuild the
+            # conditions part with every same-field equals group as one OR.
+            ends = [(m[1], m[2]) for m in _cond_marks[1:]] + [(len(clauses), len(params))]
+            piece = {id(c): (clauses[c0:c1], params[p0:p1])
+                     for (c, c0, p0), (c1, p1) in zip(_cond_marks, ends)}
+            c_start, p_start = _cond_marks[0][1], _cond_marks[0][2]
+            del clauses[c_start:], params[p_start:]
+            for g in groups:
+                parts = [piece[id(c)] for c in g if piece[id(c)][0]]
+                if not parts:
+                    continue                    # every member was skipped
+                if len(parts) == 1:
+                    clauses.extend(parts[0][0])
+                else:
+                    clauses.append("(" + " OR ".join(f"({' AND '.join(pc)})" for pc, _pp in parts) + ")")
+                for _pc, pp in parts:
+                    params.extend(pp)
 
     if not clauses:
         return "1=1", []
