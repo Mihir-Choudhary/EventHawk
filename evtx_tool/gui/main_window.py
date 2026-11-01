@@ -7869,7 +7869,10 @@ class MainWindow(QMainWindow):
         # "include" means "keep only rows whose value is in values".
         # "exclude" means "drop rows whose value is in values".
         # An entry exists only while a non-trivial filter is active on the column.
-        self._col_filters: dict[int, tuple[str, list[str], str]] = {}
+        # Column filters per tab (key: _filter_tab_key()), then per column:
+        # (mode, values, quick-filter key).  A filter belongs to the tab it was
+        # set in; it used to be one window-wide dict that every tab shared.
+        self._col_filters: dict[str, dict[int, tuple[str, list[str], str]]] = {}
 
         # ── Per-file tab/tree state ───────────────────────────────────────────
         self._view_mode: str = "merged"                   # "merged" or "separate"
@@ -8479,7 +8482,7 @@ class MainWindow(QMainWindow):
         self._btn_clear_quick.setStyleSheet(
             "QPushButton{font-size:8pt; padding:0 6px;}"
         )
-        self._btn_clear_quick.clicked.connect(self._clear_quick_filters)
+        self._btn_clear_quick.clicked.connect(lambda: self._clear_quick_filters())
 
         qf_row.addStretch()
         qf_row.addWidget(self._btn_clear_quick)
@@ -9345,6 +9348,7 @@ class MainWindow(QMainWindow):
         state.proxy.setSourceModel(None)
         state.model.set_events([])
         del self._file_tabs[filepath]
+        self._col_filters.pop(filepath, None)
         self._around_anchor_pending.pop(filepath, None)
 
         if _is_pivot_tab_key(filepath):
@@ -9410,6 +9414,9 @@ class MainWindow(QMainWindow):
         # always exists, so hasattr on it would never be False.
         if hasattr(self, "_table"):
             self._update_header_indicators()
+        # The quick-filter badge belongs to the tab in front, too.
+        if hasattr(self, "_quick_filter_widget"):
+            self._update_quick_filter_badge()
         # _detail_browser is built in _build_bottom_panel(), which runs after
         # _build_events_panel().  The first addTab() fires currentChanged(0)
         # before _detail_browser exists, so guard against that.
@@ -11504,27 +11511,16 @@ class MainWindow(QMainWindow):
             self._update_count_label()
             return
 
-        # In separate-tabs mode ask which files to target before committing state.
-        # Call _filter_target_tabs() exactly once and reuse scope_dlg below to avoid
-        # a NameError if the first call returns empty or state changes between two calls.
-        scope_dlg = None
-        if self._view_mode == "separate":
-            target_tabs = self._filter_target_tabs()
-            if target_tabs:
-                scope_dlg = _FilterTargetDialog(target_tabs, self)
-                if scope_dlg.exec() != QDialog.DialogCode.Accepted:
-                    return  # cancelled — _col_filters stays unchanged
-
-        # Commit column filter state now that we know we're applying.
+        # Only the tab in front: each tab keeps its own column filters.
+        tab_filters = self._tab_col_filters()
         # "clear" with non-empty values is a programmer error from the popup,
         # but we treat it the same as clear for robustness.
         if mode == "clear" or (mode == "exclude" and not values):
-            # No filtering needed on this column
-            self._col_filters.pop(col_index, None)
+            tab_filters.pop(col_index, None)
         else:
-            self._col_filters[col_index] = (mode, list(values), col_key)
+            tab_filters[col_index] = (mode, list(values), col_key)
 
-        # Build the full quick-filter list from all current column filters.
+        # Build the tab's full quick-filter list from its column filters.
         # Each column contributes 0..N quick-filter entries, all sharing
         # the column's mode (include or exclude).
         #
@@ -11532,52 +11528,43 @@ class MainWindow(QMainWindow):
         # unchecked" case is emitted as ("exclude", all_visible_values) so we
         # never need a sentinel here.  See ColumnFilterPopup._apply.
         new_qf: list[dict] = []
-        for ci, (col_mode, col_values, ck) in self._col_filters.items():
+        for ci, (col_mode, col_values, ck) in tab_filters.items():
             if not ck:
                 continue
             include_flag = (col_mode == "include")
             for val in col_values:
                 new_qf.append({"key": ck, "value": val, "include": include_flag})
 
-        if self._view_mode == "separate":
-            if scope_dlg is not None:
-                is_jm = self._hw_model is not None
-                # Per-file tabs in normal mode filter on the GUI thread too, and
-                # the scope loop can hit several of them in a row.
-                with contextlib.nullcontext() if is_jm else self._normal_filter_busy(
-                        "Applying quick filter…"):
-                    for fp in scope_dlg.selected():
-                        if fp == "__all_events__":
-                            if is_jm:
-                                self._hw_model.set_quick_filters(new_qf)
-                            else:
-                                self._proxy_model.set_quick_filters(new_qf)
-                            continue
-                        state = self._file_tabs.get(fp)
-                        if state is None:
-                            continue
-                        if is_jm:
-                            state.model.set_quick_filters(new_qf)
-                        else:
-                            state.proxy.set_quick_filters(new_qf)
-                self._update_quick_filter_badge()
-                self._update_count_label()
-                self._update_header_indicators()
-            return  # Always return in separate mode — never fall through to merged path
-
-        # Merged mode — apply to active model as before
+        target = self._active_quick_target()
         if self._hw_model is not None:
-            self._hw_model.set_quick_filters(new_qf)
-            self._update_quick_filter_badge()
-            self._update_count_label()
-            self._update_header_indicators()
-            return
-
-        with self._normal_filter_busy("Applying quick filter…"):
-            self._active_proxy.set_quick_filters(new_qf)
+            target.set_quick_filters(new_qf)
+        else:
+            with self._normal_filter_busy("Applying quick filter…"):
+                target.set_quick_filters(new_qf)
+        self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
         self._update_count_label()
         self._update_header_indicators()
+
+    def _active_quick_target(self):
+        """What holds the quick filters of the tab in front: its Arrow model in
+        Juggernaut (the main model when no tab-specific one is in front), its
+        proxy in Normal mode."""
+        if self._hw_model is not None:
+            m = self._jm_col_model()
+            if m is not None:
+                return m
+            st = self._file_tabs.get(self._active_file_tab) if self._active_file_tab else None
+            return self._tab_filter_target(st) if st is not None else self._hw_model
+        return self._active_proxy
+
+    def _filter_tab_key(self) -> str:
+        """The tab in front, as the key of its column-filter state."""
+        return self._active_file_tab or "__all__"
+
+    def _tab_col_filters(self) -> dict:
+        """Column filters of the tab in front (created empty on first use)."""
+        return self._col_filters.setdefault(self._filter_tab_key(), {})
 
     def _build_column_values(self, col_key: str) -> dict:
         """Build {value: count} dict from the current events for a given key."""
@@ -11631,19 +11618,20 @@ class MainWindow(QMainWindow):
             # Juggernaut mode: update HW model's _header_overrides dict
             if not hasattr(self._hw_model, "_header_overrides"):
                 self._hw_model._header_overrides = {}
-            self._hw_model._header_overrides.clear()
-            for col, entry in self._col_filters.items():
-                if _is_active(entry) and col < len(COLUMNS):
-                    self._hw_model._header_overrides[col] = f"▼ {COLUMNS[col]}"
-            self._hw_model.headerDataChanged.emit(
-                Qt.Orientation.Horizontal, 0, self._hw_model.columnCount() - 1
+            tab_filters = self._col_filters.get(self._filter_tab_key(), {})
+            jm_model = self._active_quick_target()
+            jm_model._header_overrides = {
+                col: f"▼ {COLUMNS[col]}" for col, entry in tab_filters.items()
+                if _is_active(entry) and col < len(COLUMNS)}
+            jm_model.headerDataChanged.emit(
+                Qt.Orientation.Horizontal, 0, jm_model.columnCount() - 1
             )
             return
         model = self._active_model
         if not isinstance(model, EventTableModel):
             return   # a Juggernaut tab still in front while Clear tears JM down
         model._header_overrides.clear()
-        for col, entry in self._col_filters.items():
+        for col, entry in self._col_filters.get(self._filter_tab_key(), {}).items():
             if _is_active(entry) and col < len(COLUMNS):
                 model._header_overrides[col] = f"▼ {COLUMNS[col]}"
         model.headerDataChanged.emit(
@@ -12452,9 +12440,12 @@ class MainWindow(QMainWindow):
         self._active_technique_filter = None
         self._tactic_filter_widget.setVisible(False)
 
-        # 7. Column filter tracking state + header indicators
+        # 7. Column filter tracking state + header indicators.  The popup value
+        # cache is keyed on the slice size, which is only safe because every
+        # path that changes a filter drops it -- this one included.
         self._col_filters.clear()
         self._update_header_indicators()
+        self._invalidate_col_value_cache()
 
         # 8. Refresh all badges and count label
         self._update_adv_filter_badge()
@@ -12711,7 +12702,7 @@ class MainWindow(QMainWindow):
         if _has_qf:
             n = len(_qf_list)
             act_clear = menu.addAction(f"✕ Clear Quick Filters ({n} active)")
-            act_clear.triggered.connect(self._clear_quick_filters)
+            act_clear.triggered.connect(lambda: self._clear_quick_filters())
             menu.addSeparator()
 
         # Bookmark toggle
@@ -12748,41 +12739,8 @@ class MainWindow(QMainWindow):
             self._update_count_label()
             return
 
-        # In separate-tabs mode ask which files to target
-        if self._view_mode == "separate":
-            target_tabs = self._filter_target_tabs()
-            if target_tabs:
-                scope_dlg = _FilterTargetDialog(target_tabs, self)
-                if scope_dlg.exec() != QDialog.DialogCode.Accepted:
-                    return
-                is_jm = self._hw_model is not None
-                for fp in scope_dlg.selected():
-                    if fp == "__all_events__":
-                        if is_jm:
-                            self._hw_model.add_quick_filter(key, value, include)
-                        else:
-                            self._proxy_model.add_quick_filter(key, value, include)
-                        continue
-                    state = self._file_tabs.get(fp)
-                    if state is None:
-                        continue
-                    if is_jm:
-                        state.model.add_quick_filter(key, value, include)
-                    else:
-                        state.proxy.add_quick_filter(key, value, include)
-                self._invalidate_col_value_cache()
-                self._update_quick_filter_badge()
-                self._update_count_label()
-                return
-
-        # Merged mode — apply to active model as before
-        if self._hw_model is not None:
-            self._hw_model.add_quick_filter(key, value, include)
-            self._invalidate_col_value_cache()
-            self._update_quick_filter_badge()
-            self._update_count_label()
-            return
-        self._active_proxy.add_quick_filter(key, value, include)
+        # Only the tab in front: each tab keeps its own quick filters.
+        self._active_quick_target().add_quick_filter(key, value, include)
         self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
         self._update_count_label()
@@ -12797,25 +12755,20 @@ class MainWindow(QMainWindow):
         return st.model if isinstance(st.model, _ATM) else st.proxy
 
     def _clear_quick_filters(self) -> None:
-        """Remove all quick filters and update the UI."""
-        if self._hw_model is not None:
-            # Bug 4 fix: clear merged model AND all per-file JM tab models
-            self._hw_model.clear_quick_filters()
-            for _st in self._file_tabs.values():
-                self._tab_filter_target(_st).clear_quick_filters()
-        else:
-            # Bug 5 fix: clear merged proxy AND all per-file tab proxies
-            self._proxy_model.clear_quick_filters()
-            for _st in self._file_tabs.values():
-                _st.proxy.clear_quick_filters()
-        # Drop the column-filter bookkeeping too.  _on_col_filter_applied
-        # rebuilds the WHOLE quick-filter list from _col_filters, so leaving a
+        """Remove the quick filters of the tab in front.
+
+        Quick filters belong to the tab they were set in, so clearing them is
+        per tab too; "Clear All Filters" (_clear_all_filters) resets every tab.
+        """
+        self._active_quick_target().clear_quick_filters()
+        # Drop the tab's column-filter bookkeeping too.  _on_col_filter_applied
+        # rebuilds the tab's WHOLE quick-filter list from it, so leaving a
         # cleared column in there means the next column the analyst filters
         # silently re-applies the one they just cleared -- they end up looking
         # at a narrower slice than they believe, with no indication.  The same
         # dict drives the header's filter marker, which otherwise keeps showing
         # a filter that is no longer applied.
-        self._col_filters.clear()
+        self._col_filters.pop(self._filter_tab_key(), None)
         self._update_header_indicators()
         self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
@@ -13940,14 +13893,10 @@ class MainWindow(QMainWindow):
     def _update_quick_filter_badge(self) -> None:
         """Show/hide the Quick Filter indicator bar."""
         if self._hw_model is not None:
-            # Check merged model first; also check the active per-file tab's model
-            # because Bug 4 fix allows quick filters to live on per-file models too.
-            active = self._hw_model.has_quick_filters()
-            if not active and self._active_file_tab:
-                state = self._file_tabs.get(self._active_file_tab)
-                if state:
-                    active = self._tab_filter_target(state).has_quick_filters()
-            self._quick_filter_widget.setVisible(active)
+            # The tab in front only: quick filters belong to the tab they were
+            # set in, and the badge's clear button clears just that tab.
+            self._quick_filter_widget.setVisible(
+                bool(self._active_quick_target().has_quick_filters()))
             return
         active = self._active_proxy.has_quick_filters()
         self._quick_filter_widget.setVisible(active)

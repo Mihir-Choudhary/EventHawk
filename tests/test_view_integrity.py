@@ -196,7 +196,7 @@ def main() -> int:
         ).most_common(1)[0][0]
         w._file_tabs[fps[0]].proxy.set_quick_filters(
             [{"key": "timestamp_date", "value": d, "include": True}])
-        w._col_filters[3] = ("include", [d])
+        w._col_filters[fps[0]] = {3: ("include", [d], "timestamp_date")}
         expA = sum(1 for e in per[fps[0]]
                    if apply_tz(e["timestamp"])[:10].lower() == d)
         check("filtering one tab filters that tab",
@@ -206,7 +206,8 @@ def main() -> int:
               w._file_tabs[fps[1]].proxy.rowCount() == len(per[fps[1]]),
               f"{w._file_tabs[fps[1]].proxy.rowCount()} vs {len(per[fps[1]])}")
         w._col_value_cache = {("normal", "timestamp_date", 1): {"x": 1}}
-        w._clear_quick_filters()
+        # Quick filters are per tab (spec R-4); Clear All resets every tab.
+        w._clear_all_filters()
         check("clearing restores every tab",
               all(w._file_tabs[f].proxy.rowCount() == len(per[f]) for f in fps))
         check("clearing empties every tab's quick filters",

@@ -286,8 +286,11 @@ def jm_chain_tab_actions(mw):
             err = exc
         check(f"JM chain tab: {name}", err is None, repr(err))
     w._clear_quick_filters()
-    check("JM chain tab: Clear Quick Filters clears the chain tab too",
-          not st.proxy.has_quick_filters() and not w._hw_model.has_quick_filters())
+    # Quick filters are per tab (spec R-4): clearing in the chain tab clears
+    # the chain tab and leaves All Events' own filter ("filter to this
+    # computer" set it there) alone.
+    check("JM chain tab: Clear Quick Filters clears the chain tab, not All Events",
+          not st.proxy.has_quick_filters() and w._hw_model.has_quick_filters())
     T.teardown(w, True, m)
 
 
