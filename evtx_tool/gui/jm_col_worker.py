@@ -302,8 +302,12 @@ class NormalColValueWorker(QThread):
         cascade_filters: list[dict] | None = None,
         search_term: str = "",
         parent=None,
+        cancel_check=None,
     ):
         super().__init__(parent)
+        # Polled every 2,048 events: a stale sweep must stop within a column,
+        # not only between columns (see NormalColValuePrewarmWorker).
+        self._cancel_check = cancel_check
         self._events  = events
         self._col_key = col_key
         # When set, only values whose (lower-cased) string contains this term
@@ -343,8 +347,10 @@ class NormalColValueWorker(QThread):
         if not raw_ts:
             return ""
         try:
-            from evtx_tool.gui.models import apply_tz as _apply_tz
-            return _apply_tz(raw_ts)[:10].lower()
+            # Shared, memoised conversion: the proxy's date filter fills it, so a
+            # popup sweep after a filter change converts nothing again.
+            from evtx_tool.gui.models import display_date as _display_date
+            return _display_date(raw_ts)
         except Exception:
             return str(raw_ts)[:10].lower()
 
@@ -356,7 +362,10 @@ class NormalColValueWorker(QThread):
             counts: dict[str, int] = {}
             has_excl = bool(self._cascade_excludes)
             has_incl = bool(self._cascade_includes)
-            for ev in self._events:
+            _cancel = self._cancel_check
+            for _i, ev in enumerate(self._events):
+                if _cancel is not None and not (_i & 2047) and _cancel():
+                    return
                 # ── Cascade filter (same AND logic as proxy filterAcceptsRow) ──
                 if has_excl:
                     skip = False
@@ -433,7 +442,7 @@ class NormalColValuePrewarmWorker(QThread):
                 # with itself depending on whether it came from the cache.
                 # run() is called directly, so it executes on THIS thread.
                 try:
-                    sub = NormalColValueWorker(events, col_key)
+                    sub = NormalColValueWorker(events, col_key, cancel_check=lambda: self._cancel)
                     box: dict = {}
                     sub.finished.connect(box.update)
                     sub.run()

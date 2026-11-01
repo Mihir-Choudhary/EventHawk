@@ -128,6 +128,8 @@ def set_tz_config(
     _tz_state["mode"] = mode
     _tz_state["specific"] = specific
     _tz_state["custom_offset_min"] = custom_offset_min
+    # Caches of display-zone values (the date quick filter's) key on this.
+    _tz_state["version"] = _tz_state.get("version", 0) + 1
 
 
 # ── Timestamp fractional-second precision ──────────────────────────────────────
@@ -206,6 +208,34 @@ def apply_tz(raw_ts: str) -> str:
             raw_ts.replace("T", " ").replace("Z", "")[:19]
             + _frac_suffix(_micros_from_raw(raw_ts), _ts_precision["digits"])
         )
+
+
+_display_date_memo: dict[str, str] = {}
+_display_date_memo_ver = [None]
+_DISPLAY_DATE_MEMO_MAX = 2_000_000
+
+
+def display_date(raw_ts: str) -> str:
+    """*raw_ts*'s date (YYYY-MM-DD, lower-cased) in the display time zone, memoised.
+
+    Every Normal-mode date quick filter and every column-popup sweep converted
+    every timestamp again: 2.4 s with the window frozen per date filter, and
+    3.5-4 s on every other Advanced Filter apply (the popup sweep), on 130k real
+    events (dynamic filter timing, 2026-11-01).  The memo is dropped whenever the
+    time zone changes; dict get/set are atomic, so the popup worker thread can
+    share it.
+    """
+    if not raw_ts:
+        return ""
+    ver = _tz_state.get("version", 0)
+    if _display_date_memo_ver[0] != ver or len(_display_date_memo) > _DISPLAY_DATE_MEMO_MAX:
+        _display_date_memo.clear()
+        _display_date_memo_ver[0] = ver
+    d = _display_date_memo.get(raw_ts)
+    if d is None:
+        d = apply_tz(raw_ts)[:10].lower()
+        _display_date_memo[raw_ts] = d
+    return d
 
 
 def apply_tz_exact(raw_ts: str) -> str:
@@ -890,6 +920,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         Depth-counted because setters legitimately nest, and a nested pass must
         not close the dialog the outer one opened.
         """
+        # Every filter change gets a new generation (keys the visible-slice memo
+        # in collect_source_events_for_popup).
+        self._filter_gen = getattr(self, "_filter_gen", 0) + 1
         self._filter_depth += 1
         if self._filter_depth == 1:
             try:
@@ -1493,6 +1526,15 @@ class EventFilterProxyModel(QSortFilterProxyModel):
 
     # ── Core filter logic ─────────────────────────────────────────────────
 
+    def _display_date(self, src_model, source_row: int, ev: dict) -> str:
+        """The event's date in the display time zone, converted once per row.
+
+        Converting every event's timestamp on every filter pass froze the window
+        a steady 2.4 s on 130k events for each date quick filter (dynamic filter
+        timing, 2026-11-01).  Uses the shared memo in display_date().
+        """
+        return display_date(ev.get("timestamp", ""))
+
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
         try:
             return self._filterAcceptsRow_impl(source_row, source_parent)
@@ -1577,7 +1619,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         if self._quick_excludes:
             for key, excl_set in self._quick_excludes.items():
                 if key == "timestamp_date":
-                    ev_val = apply_tz(ev.get("timestamp", ""))[:10].lower()
+                    ev_val = self._display_date(src_model, source_row, ev)
                 elif key == "log":
                     ev_val = str(ev.get("log") or ev.get("channel", "")).lower()
                 else:
@@ -1587,7 +1629,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         if self._quick_includes:
             for key, incl_set in self._quick_includes.items():
                 if key == "timestamp_date":
-                    ev_val = apply_tz(ev.get("timestamp", ""))[:10].lower()
+                    ev_val = self._display_date(src_model, source_row, ev)
                 elif key == "log":
                     ev_val = str(ev.get("log") or ev.get("channel", "")).lower()
                 else:
@@ -1996,6 +2038,29 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         src = self.sourceModel()
         if not isinstance(src, EventTableModel):
             return []
+
+        # A column without its own quick filter sees exactly the rows already
+        # visible: read them from the proxy's mapping instead of re-running the
+        # whole filter over every source event.  The popup sweep did that once
+        # per filterable column on the GUI thread after every filter change
+        # (~4.5 s on 130k events; dynamic filter timing, 2026-11-01).
+        # Computed once per filter state and shared by every column (the sweep
+        # asks for 15); with no filter at all it is simply every event.
+        if exclude_qf_key not in self._quick_excludes and exclude_qf_key not in self._quick_includes:
+            if not self._any_filter_active:
+                return list(getattr(src, "_events", []) or [])
+            evs = getattr(src, "_events", None)
+            key = (getattr(self, "_filter_gen", 0), id(src), id(evs), len(evs) if evs is not None else -1)
+            memo = getattr(self, "_visible_memo", None)
+            if memo is not None and memo[0] == key:
+                return list(memo[1])
+            events = []
+            for row in range(self.rowCount()):
+                ev = src.get_event(self.mapToSource(self.index(row, 0)).row())
+                if ev is not None:
+                    events.append(ev)
+            self._visible_memo = (key, events)
+            return list(events)
 
         # Temporarily suspend the target column's quick-filter sets so that
         # _filterAcceptsRow_impl treats those entries as absent.

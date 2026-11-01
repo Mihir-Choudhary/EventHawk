@@ -155,6 +155,12 @@ class _FilterThread(QThread):
         self._last_fkey:   tuple | None = None
         self._last_sort:   tuple | None = None
         self._last_result: object       = None
+        # The sorted, UNFILTERED table for the current sort: going back to "no
+        # filter" (Clear All, removing the last layer) re-ran an ORDER BY over
+        # every row and re-gathered every row each time -- about 0.9 s on 1.7M
+        # rows (dynamic filter timing, 2026-11-01).  Arrow tables are immutable,
+        # so the cached one can be handed out again; one sort key is kept.
+        self._unfiltered: dict = {}
 
     # ── Shard manifest loader (cached) ────────────────────────────────────────
     def _get_shard_paths(self) -> list:
@@ -527,7 +533,13 @@ class _FilterThread(QThread):
 
             sorted_in_sql = False
             try:
-                if not has_conditions and not has_full_text:
+                if where_sql == "1=1" and not params and not has_conditions and not has_full_text:
+                    result = self._unfiltered.get(skey)
+                    if result is None:
+                        result = self._metadata_filter(con, where_sql, params, sort_col, sort_asc)
+                        self._unfiltered = {skey: result}
+                    sorted_in_sql = True
+                elif not has_conditions and not has_full_text:
                     # Metadata-only (including the unfiltered "1=1" case).  This
                     # used to short-circuit to `result = self._full_table` when
                     # unfiltered, which then needed an Arrow sort that could not

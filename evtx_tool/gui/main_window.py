@@ -9655,6 +9655,16 @@ class MainWindow(QMainWindow):
         dialog is the one about to block; without it the dialog is created but
         never drawn.
         """
+        # A column-popup sweep still running from the last filter change is stale
+        # now, and competing with this filter for the interpreter lock made every
+        # other filter 3-4x slower (dynamic filter timing, 2026-11-01): stop it.
+        _t = getattr(self, "_norm_prewarm_timer", None)
+        if _t is not None:
+            _t.stop()
+        _sweep = getattr(self, "_norm_prewarm_worker", None)
+        if self._thread_running(_sweep):
+            _sweep.cancel()
+            _sweep.wait(2000)
         shown = False
         if rows is not None:
             _rows = rows
