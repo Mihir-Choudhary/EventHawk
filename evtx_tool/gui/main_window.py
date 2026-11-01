@@ -7776,6 +7776,23 @@ class _ExportScopeDialog(QDialog):
 
 # ── Main Window ───────────────────────────────────────────────────────────────
 
+class _CustomColumnWorker(QThread):
+    """Computes a custom column's values off the GUI thread."""
+    done = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self._fn())
+        except Exception as exc:          # surfaced to the user, never swallowed
+            logger.exception("custom column computation failed")
+            self.failed.emit(str(exc))
+
+
 class _DropOverlay(QWidget):
     """Drop-zone highlight shown over the window while files are dragged in."""
 
@@ -11579,24 +11596,135 @@ class MainWindow(QMainWindow):
         idx = m.custom_col_index(col_id) if hasattr(m, "custom_col_index") else None
         if idx is None:
             return
-        key = f"custom:{col_id}"
         # Its filter goes; later custom columns move one place left.
-        tab = self._tab_col_filters()
-        kept = {(ci - 1 if ci > idx else ci): entry for ci, entry in tab.items() if entry[2] != key}
-        tab.clear()
-        tab.update(kept)
+        self._drop_custom_filter(col_id, removed_index=idx)
         m.remove_custom_column(col_id)
-        target = self._active_quick_target()
-        qf = [q for q in target.get_quick_filters() if q.get("key") != key]
-        if self._hw_model is not None:
-            target.set_quick_filters(qf)
-        else:
-            with self._normal_filter_busy("Removing column…"):
-                target.set_quick_filters(qf)
         self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
         self._update_count_label()
         self._update_header_indicators()
+
+    def _drop_custom_filter(self, col_id: int, removed_index: "int | None" = None) -> None:
+        """Drop custom column *col_id*'s filter in the tab in front.  When the
+        column itself is being removed (*removed_index*), the bookkeeping of
+        custom columns to its right moves one place left."""
+        key = f"custom:{col_id}"
+        tab = self._tab_col_filters()
+        kept = {(ci - 1 if removed_index is not None and ci > removed_index else ci): entry
+                for ci, entry in tab.items() if entry[2] != key}
+        tab.clear()
+        tab.update(kept)
+        target = self._active_quick_target()
+        qf = [q for q in target.get_quick_filters() if q.get("key") != key]
+        if len(qf) != len(target.get_quick_filters()):
+            if self._hw_model is not None:
+                target.set_quick_filters(qf)
+            else:
+                with self._normal_filter_busy("Updating column\u2026"):
+                    target.set_quick_filters(qf)
+
+    # ── Custom columns: dialog and computation ────────────────────────────────
+
+    def _selected_event_for_picker(self) -> "dict | None":
+        """The event selected in the table in front (for the field picker)."""
+        tbl = self._active_table
+        sm = tbl.selectionModel()
+        rows = sm.selectedRows() if sm is not None else []
+        index = rows[0] if rows else tbl.currentIndex()
+        if not index.isValid():
+            return None
+        m = tbl.model()
+        try:
+            if hasattr(m, "get_source_event"):
+                return m.get_source_event(index.row())
+            if hasattr(m, "get_event"):
+                return m.get_event(index.row())
+        except Exception:
+            logger.warning("custom column: reading the selected event failed", exc_info=True)
+        return None
+
+    def _add_custom_column_dialog(self, spec=None, col_id: "int | None" = None) -> None:
+        """Add (or, with *col_id*, edit) a custom column of the tab in front."""
+        from evtx_tool.gui.custom_column_dialog import CustomColumnDialog
+        model = self._custom_cols_model()
+        if not hasattr(model, "add_custom_column"):
+            QMessageBox.information(self, "Custom column",
+                                    "This tab cannot hold custom columns.")
+            return
+        editing = col_id is not None
+        if not editing:
+            self._next_custom_col_id = getattr(self, "_next_custom_col_id", 0) + 1
+            col_id = self._next_custom_col_id
+        dlg = CustomColumnDialog(col_id, sample_event=self._selected_event_for_picker(),
+                                 spec=spec, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._compute_custom_column(model, dlg.compiled(), editing)
+
+    def _edit_custom_column(self, col_id: int) -> None:
+        model = self._custom_cols_model()
+        cc = next((c for c in getattr(model, "custom_columns", lambda: [])()
+                   if c.spec.col_id == col_id), None)
+        if cc is not None:
+            self._add_custom_column_dialog(spec=cc.spec, col_id=col_id)
+
+    def _compute_custom_column(self, model, compiled, editing: bool) -> None:
+        from evtx_tool.core.custom_columns import arrow_column_values
+        from evtx_tool.gui.models import compute_custom_values
+        if self._hw_model is not None and hasattr(model, "_full_table"):
+            table = model._full_table
+            shards = self._hw_model._get_shard_paths()
+            fn = lambda: arrow_column_values(compiled, table, shards)            # noqa: E731
+        else:
+            events = list(model._events)
+            fn = lambda: compute_custom_values(compiled, events)                 # noqa: E731
+        self._set_status(f"Computing column \u2018{compiled.spec.title}\u2019\u2026")
+        worker = _CustomColumnWorker(fn, parent=self)
+        self._custom_col_workers = [w for w in getattr(self, "_custom_col_workers", [])
+                                    if self._thread_running(w)] + [worker]
+        worker.done.connect(lambda values: self._on_custom_column_ready(model, compiled, values, editing))
+        worker.failed.connect(lambda msg: self._warn_blocking(
+            "Custom column", f"The column \u2018{compiled.spec.title}\u2019 could not be computed:\n{msg}",
+            icon=QMessageBox.Icon.Critical))
+        worker.start()
+
+    def _on_custom_column_ready(self, model, compiled, values, editing: bool) -> None:
+        cid = compiled.spec.col_id
+        try:
+            if editing:
+                if model is self._custom_cols_model():
+                    # Its old filter names values the edited column no longer has.
+                    self._drop_custom_filter(cid)
+                model.update_custom_column(cid, compiled, values)
+            else:
+                idx = model.add_custom_column(compiled, values)
+                for tbl in [self._table] + [st.table for st in self._file_tabs.values()]:
+                    if tbl.model() is model or getattr(tbl.model(), "sourceModel", lambda: None)() is model:
+                        tbl.setColumnHidden(idx, False)
+        except RuntimeError:
+            return                          # the tab was closed meanwhile
+        self._invalidate_col_value_cache()
+        self._update_header_indicators()
+        self._update_quick_filter_badge()
+        self._update_count_label()
+        self._set_status(f"Column \u2018{compiled.spec.title}\u2019 ready")
+        missing = [t for t in compiled.tokens if not compiled.hits.get(t)]
+        if missing:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Custom column")
+            names = ", ".join(t.strip("{}").split("[", 1)[-1].rstrip("]") if t.lower().startswith(
+                ("{data[", "{userdata[", "{eventdata[")) else t for t in missing)
+            box.setText(f"No event in this tab has a field named {names}"
+                        + (" (within the column's Event ID / Provider filter)"
+                           if compiled.eid_include or compiled.eid_exclude or compiled.providers else "")
+                        + f", so the column \u2018{compiled.spec.title}\u2019 is empty"
+                        + (" for that part." if len(missing) < len(compiled.tokens) else "."))
+            btn_edit = box.addButton("Edit", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Keep", QMessageBox.ButtonRole.RejectRole)
+            self._exec_on_top(box)      # shown when the computation ends: keep it in sight
+            if box.clickedButton() is btn_edit:
+                self._edit_custom_column(cid)
 
     def _filter_tab_key(self) -> str:
         """The tab in front, as the key of its column-filter state."""
@@ -16760,9 +16888,21 @@ class MainWindow(QMainWindow):
         )
 
         act_add_remove = menu.addAction("Add / Remove Columns\u2026")
+        act_add_custom = menu.addAction("Add Custom Column\u2026")
+        custom_id = table.model().col_id_at(visual_col) if hasattr(table.model(), "col_id_at") else (
+            table.model().sourceModel().col_id_at(visual_col)
+            if hasattr(table.model(), "sourceModel") and hasattr(table.model().sourceModel(), "col_id_at")
+            else None)
+        act_edit_custom = act_remove_custom = None
+        if custom_id is not None:
+            act_edit_custom = menu.addAction("Edit Custom Column\u2026")
+            act_remove_custom = menu.addAction("Remove Custom Column")
         menu.addSeparator()
-        act_sort = menu.addAction(f"Sort events by \u2018{COLUMNS[visual_col]}\u2019")
-        act_group = menu.addAction(f"Group events by \u2018{COLUMNS[visual_col]}\u2019")
+        _title = (COLUMNS[visual_col] if visual_col < len(COLUMNS) else
+                  getattr(self._custom_cols_model(), "column_title", lambda c: "")(visual_col))
+        act_sort = menu.addAction(f"Sort events by \u2018{_title}\u2019")
+        act_group = (menu.addAction(f"Group events by \u2018{_title}\u2019")
+                     if visual_col < len(COLUMNS) else None)
 
         # Record ID-only option
         act_missing = None
@@ -16771,11 +16911,19 @@ class MainWindow(QMainWindow):
             act_missing = menu.addAction("Identify Missing Record IDs\u2026")
 
         chosen = menu.exec(hdr.mapToGlobal(pos))
+        if chosen is None:
+            return
         if chosen == act_add_remove:
             self._on_add_remove_columns_dialog()
+        elif chosen == act_add_custom:
+            self._add_custom_column_dialog()
+        elif act_edit_custom is not None and chosen == act_edit_custom:
+            self._edit_custom_column(custom_id)
+        elif act_remove_custom is not None and chosen == act_remove_custom:
+            self._remove_custom_column(custom_id)
         elif chosen == act_sort:
             self._on_sort_by_column(visual_col, table)
-        elif chosen == act_group:
+        elif act_group is not None and chosen == act_group:
             self._on_group_by_column(visual_col)
         elif act_missing and chosen == act_missing:
             self._on_identify_missing_record_ids()
