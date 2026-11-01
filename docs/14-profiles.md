@@ -66,56 +66,41 @@ Custom profiles are JSON files. Place them anywhere and reference them by path.
 
 ### Profile Schema
 
-```json
-{
-  "name": "My Custom Profile",
-  "description": "Catches persistence mechanisms",
-  "version": "1.0",
-  "filters": {
-    "event_ids": [4698, 4699, 7045, 4697, 13],
-    "channels": ["Security", "System", "Microsoft-Windows-Sysmon/Operational"],
-    "providers": [],
-    "levels": ["Critical", "Error", "Warning", "Information"],
-    "keywords": []
-  }
-}
-```
-
-**Field reference:**
-
-| Field | Type | Description |
-|---|---|---|
-| `name` | string | Display name shown in the profile dropdown |
-| `description` | string | Tooltip shown when hovering the profile name |
-| `version` | string | Profile version (informational) |
-| `event_ids` | int array | List of Windows event IDs to include. Empty = all IDs. |
-| `channels` | string array | Log channels to include. Empty = all channels. |
-| `providers` | string array | Provider name substrings to match. Empty = all providers. |
-| `levels` | string array | Event levels to include. Empty = all levels. |
-| `keywords` | string array | Keyword substrings — any event containing these strings passes. |
-
-**All conditions combine with AND.** An event must satisfy every non-empty field.
-
-### Example — Persistence Profile
+Profile fields sit at the top level of the JSON (this is the format of the built-in profiles in
+`evtx_tool/profiles/defaults/`):
 
 ```json
 {
   "name": "Persistence Mechanisms",
   "description": "Scheduled tasks, services, registry run keys, and startup items",
   "version": "1.0",
-  "filters": {
-    "event_ids": [4698, 4699, 4700, 4701, 4702, 7045, 4697, 4657, 13],
-    "channels": [
-      "Security",
-      "System",
-      "Microsoft-Windows-Sysmon/Operational"
-    ],
-    "providers": [],
-    "levels": ["Critical", "Error", "Warning", "Information"],
-    "keywords": []
-  }
+  "event_ids": [4698, 4699, 4700, 4701, 4702, 7045, 4697, 4657, 13],
+  "sources": ["Security", "Service Control Manager", "Microsoft-Windows-Sysmon"],
+  "channels": ["Security", "System", "Microsoft-Windows-Sysmon/Operational"],
+  "keywords": ["schtasks", "sc create"]
 }
 ```
+
+**Fields that filter events:**
+
+| Field | Type | Description |
+|---|---|---|
+| `event_ids` | int array | Event IDs to include. Empty = all IDs. |
+| `sources` | string array | Provider / source names to include. Empty = all. |
+| `channels` | string array | Log channels to include. Empty = all channels. |
+| `computers`, `users`, `levels` | string arrays | Further restrictions, each applied only when non-empty. |
+| `conditions` | array | Field conditions in the Advanced Filter format. |
+
+Non-empty fields combine with AND. When several profiles are applied together, their event IDs and
+sources are combined (an event matching any of the profiles passes).
+
+**Fields that do not filter:**
+
+| Field | Description |
+|---|---|
+| `name`, `description`, `version`, `author`, `tags` | Shown in the profile list and editor. |
+| `keywords` | Words worth searching for in this kind of investigation. They are **not** used to filter events: a keyword list narrows the view to events whose text happens to contain one of the words, which on the test corpora hid most of the events each built-in profile selects (all of them for Lateral Movement). Use the search box or Advanced Filter text search to apply them. |
+| `target_logs`, `severity_overrides` | Hints for which logs to load and how to rate events. |
 
 ### Load a Custom Profile
 
@@ -144,8 +129,8 @@ A built-in profile editor is accessible from **File → Profile Editor**. It pro
 ## Limitations
 
 - In the GUI, every event is loaded whatever profile is ticked, so a profile no longer reduces parse time or memory; use the CLI `--profile` option when you want only the matching events parsed.
-- If `event_ids` is empty, all event IDs pass (no event ID filtering). This is intentional for channel-only or keyword-only profiles.
-- The `keywords` filter is a simple substring match on the raw event XML — it is slower than event ID filtering for large datasets.
+- If `event_ids` is empty, all event IDs pass (no event ID filtering). This is intentional for channel-only or source-only profiles.
+- `keywords` do not filter (see Profile Schema); search for them with the search box or the Advanced Filter.
 - Custom profiles must be valid JSON. Use `profiles validate` to check before using.
 - The GUI profile dropdown shows only profiles in the `evtx_tool/profiles/defaults/` folder and any profiles saved via the Profile Editor. Profiles loaded by path from CLI are not added to the dropdown permanently.
 

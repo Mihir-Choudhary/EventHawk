@@ -9176,6 +9176,10 @@ class MainWindow(QMainWindow):
             table=table,
         )
         self._file_tabs[filepath] = state
+        # A tab opened after Apply Profiles shows the same profiles as the rest
+        # (it used to open unfiltered: Codex audit-3 P1).
+        if getattr(self, "_applied_profiles", None):
+            proxy.set_advanced_filter(self._build_filter_config(base=None))
 
         # Bold the tree item
         self._update_tree_item_style(filepath, is_open=True)
@@ -10719,7 +10723,11 @@ class MainWindow(QMainWindow):
                     )
         else:
             # Normal mode — apply live to the view proxy (no re-parse).
-            _proxy = self._global_proxy if getattr(self, "_proxy_model", None) is not None else None
+            # All Events' own proxy, whichever tab is in front; the loop below
+            # covers the file tabs.  _global_proxy picked the active file tab's
+            # proxy in the separate view, so All Events stayed unfiltered
+            # (Codex audit-3 P1).
+            _proxy = getattr(self, "_proxy_model", None)
             if _proxy is None:
                 QMessageBox.information(
                     self, "No Events",
