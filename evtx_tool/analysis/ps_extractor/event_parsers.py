@@ -19,6 +19,7 @@ parsed from JSON) and return a normalized flat dict.
 from __future__ import annotations
 
 import base64
+import unicodedata
 import re
 
 
@@ -268,16 +269,42 @@ def _extract_encoded_command(host_app: str) -> str:
     b64 = m.group(1)
     pad = (4 - len(b64) % 4) % 4
     try:
-        text = base64.b64decode(b64 + "=" * pad, validate=True).decode("utf-16-le")
+        raw = base64.b64decode(b64 + "=" * pad, validate=True)
     except Exception:
         return f"[not decodable: {b64[:60]}]"
-    # Text that is not script (UTF-16 read from base64 that was never UTF-16
-    # tends to land in CJK, which isprintable() accepts) is reported, not shown
-    # as a command.
-    plain = sum(1 for c in text if c in "\r\n\t" or (c.isprintable() and ord(c) < 0x2000))
-    if not text or plain < 0.9 * len(text):
-        return f"[not decodable: {b64[:60]}]"
-    return text
+
+    def _as_utf8_text(data: bytes) -> str | None:
+        # PowerShell only runs UTF-16LE; base64 of UTF-8 text read as UTF-16LE
+        # comes out as printable CJK, so recognise it by its bytes instead.
+        try:
+            u8 = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        ok = sum(1 for c in u8 if c in "\r\n\t" or (c.isprintable() and ord(c) < 0x80))
+        return u8 if u8 and ok >= 0.9 * len(u8) else None
+
+    try:
+        text = raw.decode("utf-16-le")
+    except UnicodeDecodeError:
+        text = ""
+    # Junk shows up as control characters (other than tab/CR/LF), unassigned
+    # or private-use code points and lone surrogates -- in any script.  The
+    # older rule (90% below U+2000) also rejected real CJK commands (Codex
+    # release audit C6).
+    bad = sum(1 for c in text
+              if c not in "\r\n\t" and unicodedata.category(c) in ("Cc", "Cn", "Co", "Cs"))
+    if text and bad <= 0.1 * len(text):
+        latin = sum(1 for c in text if c in "\r\n\t" or ord(c) < 0x2000)
+        if latin >= 0.9 * len(text):
+            return text
+        u8 = _as_utf8_text(raw)
+        if u8 is not None:
+            return f"[not UTF-16LE, so PowerShell could not have run it; as UTF-8: {u8}]"
+        return text
+    u8 = _as_utf8_text(raw)
+    if u8 is not None:
+        return f"[not UTF-16LE, so PowerShell could not have run it; as UTF-8: {u8}]"
+    return f"[not decodable: {b64[:60]}]"
 
 
 # ── Per-event-ID parsers ──────────────────────────────────────────────────────
