@@ -259,8 +259,8 @@ def _extract_event_inline(data: dict, record_id: int, timestamp: str, source_fil
         "timestamp":      ts_str,
         "channel":        system.get("Channel", ""),
         "provider":       pname,
+        "event_source_name": event_source_name,   # same place as Juggernaut's export
         "provider_guid":  provider_guid,
-        "event_source_name": event_source_name,
         "computer":       system.get("Computer", ""),
         "level":          level,
         "level_name":     LEVEL_NAMES.get(level, str(level)),

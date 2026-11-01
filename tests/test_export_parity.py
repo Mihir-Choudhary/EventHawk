@@ -74,8 +74,8 @@ def compare(tag, n_csv, j_csv, n_json, j_json):
     diff = [(k, c, nd[k][c], jd[k].get(c)) for k in nd if k in jd
             for c in nh if c != "ATT&CK" and nd[k][c] != jd[k].get(c)]
     check(f"{tag}: every CSV field equal (except ATT&CK)", not diff, str(diff[:3]))
-    # JSON: same fields in the same order and values; JM may add
-    # event_source_name (Normal mode does not capture it).
+    # JSON: same fields in the same order and values, event_source_name
+    # included (Normal mode captures it since Codex release audit C4).
     nj = {(e["source_file"], e["record_id"]): e for e in n_json}
     jj = {(e["source_file"], e["record_id"]): e for e in j_json}
     check(f"{tag}: JSON holds the same records", set(nj) == set(jj), f"{len(nj)} vs {len(jj)}")
@@ -85,7 +85,7 @@ def compare(tag, n_csv, j_csv, n_json, j_json):
         if je is None:
             continue
         nkeys = [x for x in ne if x != "attack_tags"]
-        jkeys = [x for x in je if x != "event_source_name"]
+        jkeys = list(je)
         if nkeys != jkeys:
             bad.append((k, "keys", nkeys, jkeys))
         else:
