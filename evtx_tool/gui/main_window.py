@@ -7723,6 +7723,33 @@ class _ExportScopeDialog(QDialog):
 
 # ── Main Window ───────────────────────────────────────────────────────────────
 
+class _DropOverlay(QWidget):
+    """Drop-zone highlight shown over the window while files are dragged in."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.hide()
+
+    def show_over(self, widget: QWidget) -> None:
+        self.setGeometry(widget.rect())
+        self.raise_()
+        self.show()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        from PySide6.QtGui import QPen
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(122, 92, 30, 40))
+        pen = QPen(QColor(COLORS["accent"]), 3, Qt.PenStyle.DashLine)
+        p.setPen(pen)
+        p.drawRoundedRect(self.rect().adjusted(12, 12, -12, -12), 10, 10)
+        f = p.font(); f.setPointSize(16); f.setBold(True); p.setFont(f)
+        p.setPen(QColor(COLORS["accent"]))
+        p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Drop EVTX files or folders")
+        p.end()
+
+
 class MainWindow(QMainWindow):
     """
     Main application window.
@@ -7837,6 +7864,10 @@ class MainWindow(QMainWindow):
         self._setup_profile_watcher()
 
         # Pre-load any paths passed on launch
+        # Drag and drop of .evtx files and folders onto the window.
+        self.setAcceptDrops(True)
+        self._drop_overlay = _DropOverlay(self)
+
         if initial_paths:
             for p in initial_paths:
                 self._add_path(p)
@@ -9430,6 +9461,94 @@ class MainWindow(QMainWindow):
         item.setToolTip(path)
         self._file_list.addItem(item)
         self._act_ps_extract.setEnabled(True)
+
+    # ── Drag and drop ─────────────────────────────────────────────────────────
+
+    def _parse_running(self) -> bool:
+        return any(wk is not None and wk.isRunning()
+                   for wk in (getattr(self, "_worker", None), getattr(self, "_hw_worker", None)))
+
+    @staticmethod
+    def _drop_candidate(url) -> bool:
+        """Cheap check for drag-enter: a local folder or a local .evtx file."""
+        if not url.isLocalFile():
+            return False
+        p = url.toLocalFile()
+        return os.path.isdir(p) or p.lower().endswith(".evtx")
+
+    @staticmethod
+    def _paths_from_drop(urls) -> "tuple[list[str], list[tuple[str, str]]]":
+        """Split dropped URLs into paths to add and (path, reason) skipped.
+
+        A folder is added only when it holds at least one .evtx file somewhere
+        beneath it (the parse collects them recursively); anything not added
+        is returned with the reason so the caller can say so.
+        """
+        added: list[str] = []
+        skipped: list[tuple[str, str]] = []
+        for url in urls:
+            if not url.isLocalFile():
+                skipped.append((url.toString(), "not a local file"))
+                continue
+            p = os.path.normpath(url.toLocalFile())
+            if os.path.isdir(p):
+                has_evtx = any(f.lower().endswith(".evtx")
+                               for _d, _s, files in os.walk(p) for f in files)
+                if has_evtx:
+                    added.append(p)
+                else:
+                    skipped.append((p, "no .evtx files inside"))
+            elif not os.path.exists(p):
+                skipped.append((p, "not found"))
+            elif p.lower().endswith(".evtx"):
+                added.append(p)
+            else:
+                skipped.append((p, "not an .evtx file"))
+        return added, skipped
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if self._parse_running():
+            self._set_status("Parsing in progress — files can be added when it finishes")
+            event.ignore()
+            return
+        md = event.mimeData()
+        if md.hasUrls() and any(self._drop_candidate(u) for u in md.urls()):
+            event.acceptProposedAction()
+            self._drop_overlay.show_over(self)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drop_overlay.isVisible():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._drop_overlay.hide()
+        event.accept()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        self._drop_overlay.hide()
+        if self._parse_running():
+            self._set_status("Parsing in progress — files can be added when it finishes")
+            event.ignore()
+            return
+        added, skipped = self._paths_from_drop(event.mimeData().urls())
+        before = self._file_list.count()
+        for p in added:
+            self._add_path(p)
+        n_new = self._file_list.count() - before
+        msg = f"Added {n_new} item(s) by drag and drop"
+        if len(added) > n_new:
+            msg += f" ({len(added) - n_new} already in the list)"
+        if skipped:
+            msg += (f"; {len(skipped)} skipped — "
+                    + ", ".join(f"{os.path.basename(p) or p} ({why})" for p, why in skipped))
+            for p, why in skipped:
+                logger.warning("drag and drop: skipped %s (%s)", p, why)
+        self._set_status(msg)
+        event.acceptProposedAction()
 
     def _on_add_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
