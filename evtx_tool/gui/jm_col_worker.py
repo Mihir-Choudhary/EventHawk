@@ -383,6 +383,9 @@ class NormalColValueWorker(QThread):
         if key == "timestamp_hour":
             from evtx_tool.gui.models import display_hour
             return display_hour(ev.get("timestamp", ""))
+        if key.startswith("custom:"):
+            from evtx_tool.gui.models import custom_value
+            return custom_value(ev, int(key[7:])).lower()
         if key == "log":
             return str(ev.get("log") or ev.get("channel", "")).lower()
         return str(ev.get(key, "")).lower()
@@ -401,13 +404,16 @@ class NormalColValueWorker(QThread):
             return str(raw_ts)[:10].lower()
 
     def run(self) -> None:
-        if self._col_key not in self._ALLOWED_KEYS:
+        if self._col_key not in self._ALLOWED_KEYS and not self._col_key.startswith("custom:"):
             self.finished.emit({})
             return
         try:
             counts: dict[str, int] = {}
             has_excl = bool(self._cascade_excludes)
             has_incl = bool(self._cascade_includes)
+            custom_id = (int(self._col_key[7:]) if self._col_key.startswith("custom:") else None)
+            if custom_id is not None:
+                from evtx_tool.gui.models import custom_value as _custom_value
             _cancel = self._cancel_check
             for _i, ev in enumerate(self._events):
                 if _cancel is not None and not (_i & 2047) and _cancel():
@@ -435,6 +441,8 @@ class NormalColValueWorker(QThread):
                     s = self._display_date(ev.get("timestamp", ""))
                 elif self._col_key == "log":
                     s = str(ev.get("log") or ev.get("channel", ""))
+                elif custom_id is not None:
+                    s = _custom_value(ev, custom_id)
                 else:
                     raw = ev.get(self._col_key)
                     if raw is None:
@@ -445,7 +453,10 @@ class NormalColValueWorker(QThread):
                 # is applied to MATCHING values rather than all distinct values.
                 if self._search_term and self._search_term not in s.lower():
                     continue
-                if s:
+                # A custom column's empty value is information (the event lacks
+                # the field, or is outside the column's filter), so it is
+                # offered as "(empty)" to filter on.
+                if s or custom_id is not None:
                     counts[s] = counts.get(s, 0) + 1
             top = dict(sorted(counts.items(), key=lambda x: -x[1])[:1000])
             self.finished.emit(top)

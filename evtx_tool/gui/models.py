@@ -350,6 +350,33 @@ class EventRef:
         return f"<EventRef record_id={ev.get('record_id')!r} eid={ev.get('event_id')!r}>"
 
 
+# ── Custom columns (Normal mode) ─────────────────────────────────────────────
+# Values of every custom column, keyed by the column's id (unique across tabs)
+# and then by id(event): only events with a value are stored, so a column
+# filtered to a few event IDs costs little, and sorting needs no re-alignment.
+# The proxy's quick filter and the popup's value worker read it through
+# custom_value(); a model registers its columns and drops them when its data
+# changes or a column is removed.
+_CUSTOM_VALUES: dict[int, dict[int, str]] = {}
+
+
+def custom_value(ev: dict, col_id: int) -> str:
+    """The value of custom column *col_id* for event *ev* ("" when none)."""
+    vals = _CUSTOM_VALUES.get(col_id)
+    return vals.get(id(ev), "") if vals else ""
+
+
+def compute_custom_values(compiled, events) -> dict:
+    """{id(event): value} for the events that have a value in *compiled*."""
+    value = compiled.value
+    out: dict[int, str] = {}
+    for ev in events:
+        v = value(ev)
+        if v:
+            out[id(ev)] = v
+    return out
+
+
 class EventTableModel(QAbstractTableModel):
     """
     Virtual model — stores list[dict] events, never copies data into Qt items.
@@ -373,6 +400,9 @@ class EventTableModel(QAbstractTableModel):
         self._adv_partial: list[str] = []
         self._header_overrides: dict[int, str] = {}  # col_idx → custom header text
         self._bookmarked_keys: frozenset = frozenset()  # (source_file, record_id) pairs
+        # Custom columns of this tab, after the built-in COLUMNS: CompiledColumn
+        # objects (core.custom_columns); their values live in _CUSTOM_VALUES.
+        self._custom: list = []
 
     # ── Qt interface ──────────────────────────────────────────────────────────
 
@@ -380,12 +410,19 @@ class EventTableModel(QAbstractTableModel):
         return len(self._events)
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        return len(COLUMNS)
+        return len(COLUMNS) + len(self._custom)
+
+    def column_title(self, section: int) -> str:
+        """The header text of *section* without a filter marker."""
+        if section < len(COLUMNS):
+            return COLUMNS[section]
+        i = section - len(COLUMNS)
+        return self._custom[i].spec.title if i < len(self._custom) else ""
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal:
             if role == Qt.ItemDataRole.DisplayRole:
-                return self._header_overrides.get(section, COLUMNS[section])
+                return self._header_overrides.get(section, self.column_title(section))
             if role == Qt.ItemDataRole.FontRole:
                 f = QFont("Segoe UI", 8)
                 f.setBold(True)
@@ -440,6 +477,9 @@ class EventTableModel(QAbstractTableModel):
     # ── Cell helpers ──────────────────────────────────────────────────────────
 
     def _cell_text(self, ev: dict, row: int, col: int) -> str:
+        if col >= len(COLUMNS):
+            i = col - len(COLUMNS)
+            return custom_value(ev, self._custom[i].spec.col_id) if i < len(self._custom) else ""
         if col == COL_NUM:
             if self._bookmarked_keys:
                 rid = ev.get("record_id")
@@ -639,6 +679,15 @@ class EventTableModel(QAbstractTableModel):
             return
 
         key_fn = self._SORT_KEY_FUNCS.get(column)
+        if key_fn is None and len(COLUMNS) <= column < len(COLUMNS) + len(self._custom):
+            cc = self._custom[column - len(COLUMNS)]
+            vals = _CUSTOM_VALUES.get(cc.spec.col_id) or {}
+            if cc.spec.kind == "int":
+                from evtx_tool.core.custom_columns import int_sort_key
+                key_fn = lambda ev, _v=vals: int_sort_key(_v.get(id(ev), ""))      # noqa: E731
+            else:
+                # Text: as text, case-insensitive, empty values last.
+                key_fn = lambda ev, _v=vals: (lambda s: (not s, s.lower()))(_v.get(id(ev), ""))  # noqa: E731
         if key_fn is None:
             return
 
@@ -683,6 +732,10 @@ class EventTableModel(QAbstractTableModel):
                     ev[k] = _intern(v)
 
         self.beginResetModel()
+        # Custom columns belong to the data they were computed over.
+        for cc in self._custom:
+            _CUSTOM_VALUES.pop(cc.spec.col_id, None)
+        self._custom = []
         self._events = events
         if search_cache is not None and len(search_cache) == len(events):
             self._search_cache = search_cache
@@ -697,6 +750,49 @@ class EventTableModel(QAbstractTableModel):
         if 0 <= row < len(self._events):
             return self._events[row]
         return None
+
+    # ── Custom columns ────────────────────────────────────────────────────────
+
+    def custom_columns(self) -> list:
+        return list(self._custom)
+
+    def custom_col_index(self, col_id: int) -> "int | None":
+        for i, cc in enumerate(self._custom):
+            if cc.spec.col_id == col_id:
+                return len(COLUMNS) + i
+        return None
+
+    def col_id_at(self, column: int) -> "int | None":
+        i = column - len(COLUMNS)
+        return self._custom[i].spec.col_id if 0 <= i < len(self._custom) else None
+
+    def add_custom_column(self, compiled, values: dict) -> int:
+        """Append a custom column; *values* from compute_custom_values()."""
+        idx = len(COLUMNS) + len(self._custom)
+        self.beginInsertColumns(QModelIndex(), idx, idx)
+        _CUSTOM_VALUES[compiled.spec.col_id] = values
+        self._custom.append(compiled)
+        self.endInsertColumns()
+        return idx
+
+    def update_custom_column(self, col_id: int, compiled, values: dict) -> None:
+        idx = self.custom_col_index(col_id)
+        if idx is None:
+            return
+        _CUSTOM_VALUES[col_id] = values
+        self._custom[idx - len(COLUMNS)] = compiled
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, idx, idx)
+        if self._events:
+            self.dataChanged.emit(self.index(0, idx), self.index(len(self._events) - 1, idx))
+
+    def remove_custom_column(self, col_id: int) -> None:
+        idx = self.custom_col_index(col_id)
+        if idx is None:
+            return
+        self.beginRemoveColumns(QModelIndex(), idx, idx)
+        del self._custom[idx - len(COLUMNS)]
+        _CUSTOM_VALUES.pop(col_id, None)
+        self.endRemoveColumns()
 
     # Chunk size for background haystack building.  Small enough that a chunk
     # is a few milliseconds, large enough that per-chunk overhead is noise.
@@ -1645,6 +1741,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                     ev_val = self._display_date(src_model, source_row, ev)
                 elif key == "timestamp_hour":
                     ev_val = display_hour(ev.get("timestamp", ""))
+                elif key.startswith("custom:"):
+                    ev_val = custom_value(ev, int(key[7:])).lower()
                 elif key == "log":
                     ev_val = str(ev.get("log") or ev.get("channel", "")).lower()
                 else:
@@ -1657,6 +1755,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                     ev_val = self._display_date(src_model, source_row, ev)
                 elif key == "timestamp_hour":
                     ev_val = display_hour(ev.get("timestamp", ""))
+                elif key.startswith("custom:"):
+                    ev_val = custom_value(ev, int(key[7:])).lower()
                 elif key == "log":
                     ev_val = str(ev.get("log") or ev.get("channel", "")).lower()
                 else:

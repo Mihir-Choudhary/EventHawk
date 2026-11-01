@@ -11131,10 +11131,9 @@ class MainWindow(QMainWindow):
 
     def _on_col_header_clicked(self, logical_index: int) -> None:
         """Open a dropdown filter popup for the clicked column."""
-        if logical_index not in ColumnFilterPopup.FILTERABLE:
+        col_key = self._col_key_for(logical_index)
+        if not col_key:
             return
-
-        col_key = ColumnFilterPopup.FILTERABLE[logical_index]
 
         # Juggernaut Mode: run GROUP BY on a background thread to avoid
         # blocking the main thread for large datasets.  A JM chain tab is a
@@ -11397,7 +11396,7 @@ class MainWindow(QMainWindow):
         # Give the popup a full-dataset search hook so typing in its search box
         # can surface values outside the initial top-1000 (e.g. a rare
         # correlation_id) and let the user select them.
-        _popup_col_key0 = ColumnFilterPopup.FILTERABLE.get(logical_index, "")
+        _popup_col_key0 = self._col_key_for(logical_index)
         _search_provider = (
             self._make_col_search_provider(_popup_col_key0)
             if _popup_col_key0 else None
@@ -11417,7 +11416,7 @@ class MainWindow(QMainWindow):
         #   • INCLUDE filters → uncheck EVERYTHING except those values
         # The previous code only handled the exclude case, leaving include-mode
         # filters silently invisible after a re-open of the popup.
-        _popup_col_key = ColumnFilterPopup.FILTERABLE.get(logical_index, "")
+        _popup_col_key = self._col_key_for(logical_index)
         if _popup_col_key:
             _qf_src = self._jm_col_model() if self._hw_model is not None else None
             if _qf_src is not None:
@@ -11486,7 +11485,7 @@ class MainWindow(QMainWindow):
         the popup's top-1000 cap are handled correctly (see bug RCA in
         ColumnFilterPopup._apply).
         """
-        col_key = ColumnFilterPopup.FILTERABLE.get(col_index, "")
+        col_key = self._col_key_for(col_index)
         if not col_key:
             return
         from evtx_tool.gui.jm_col_worker import same_filter_column
@@ -11558,6 +11557,47 @@ class MainWindow(QMainWindow):
             return self._tab_filter_target(st) if st is not None else self._hw_model
         return self._active_proxy
 
+    def _custom_cols_model(self):
+        """The model whose columns the tab in front shows (its custom columns
+        live there): the Arrow model in Juggernaut, the event model otherwise."""
+        if self._hw_model is not None:
+            return self._jm_col_model() or self._active_model
+        return self._active_model
+
+    def _col_key_for(self, index: int) -> str:
+        """Quick-filter key of column *index* in the tab in front ("" = none)."""
+        key = ColumnFilterPopup.FILTERABLE.get(index, "")
+        if key:
+            return key
+        m = self._custom_cols_model()
+        cid = m.col_id_at(index) if hasattr(m, "col_id_at") else None
+        return f"custom:{cid}" if cid is not None else ""
+
+    def _remove_custom_column(self, col_id: int) -> None:
+        """Remove a custom column of the tab in front, with its filter."""
+        m = self._custom_cols_model()
+        idx = m.custom_col_index(col_id) if hasattr(m, "custom_col_index") else None
+        if idx is None:
+            return
+        key = f"custom:{col_id}"
+        # Its filter goes; later custom columns move one place left.
+        tab = self._tab_col_filters()
+        kept = {(ci - 1 if ci > idx else ci): entry for ci, entry in tab.items() if entry[2] != key}
+        tab.clear()
+        tab.update(kept)
+        m.remove_custom_column(col_id)
+        target = self._active_quick_target()
+        qf = [q for q in target.get_quick_filters() if q.get("key") != key]
+        if self._hw_model is not None:
+            target.set_quick_filters(qf)
+        else:
+            with self._normal_filter_busy("Removing column…"):
+                target.set_quick_filters(qf)
+        self._invalidate_col_value_cache()
+        self._update_quick_filter_badge()
+        self._update_count_label()
+        self._update_header_indicators()
+
     def _filter_tab_key(self) -> str:
         """The tab in front, as the key of its column-filter state."""
         return self._active_file_tab or "__all__"
@@ -11620,9 +11660,10 @@ class MainWindow(QMainWindow):
                 self._hw_model._header_overrides = {}
             tab_filters = self._col_filters.get(self._filter_tab_key(), {})
             jm_model = self._active_quick_target()
+            _title = getattr(jm_model, "column_title", lambda c: COLUMNS[c] if c < len(COLUMNS) else "")
             jm_model._header_overrides = {
-                col: f"▼ {COLUMNS[col]}" for col, entry in tab_filters.items()
-                if _is_active(entry) and col < len(COLUMNS)}
+                col: f"▼ {_title(col)}" for col, entry in tab_filters.items()
+                if _is_active(entry) and col < jm_model.columnCount()}
             jm_model.headerDataChanged.emit(
                 Qt.Orientation.Horizontal, 0, jm_model.columnCount() - 1
             )
@@ -11632,8 +11673,8 @@ class MainWindow(QMainWindow):
             return   # a Juggernaut tab still in front while Clear tears JM down
         model._header_overrides.clear()
         for col, entry in self._col_filters.get(self._filter_tab_key(), {}).items():
-            if _is_active(entry) and col < len(COLUMNS):
-                model._header_overrides[col] = f"▼ {COLUMNS[col]}"
+            if _is_active(entry) and col < model.columnCount():
+                model._header_overrides[col] = f"▼ {model.column_title(col)}"
         model.headerDataChanged.emit(
             Qt.Orientation.Horizontal, 0, model.columnCount() - 1
         )
