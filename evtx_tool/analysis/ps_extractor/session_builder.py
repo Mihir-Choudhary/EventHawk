@@ -139,11 +139,17 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
 
         sessions_by_host_id[host_id] = session
 
-    # PID → list of session host_ids for cross-log correlation
-    pid_to_host_ids: dict[str, list[str]] = defaultdict(list)
+    # (computer, PID) → session host_ids for cross-log correlation.  The PID
+    # alone put an event of PID 7 on one machine into the session of PID 7 on
+    # another when logs of several machines were loaded (Codex release audit
+    # C7); a PID only means something on its own computer.
+    def _pk(computer, pid) -> tuple[str, str]:
+        return (str(computer or "").strip().casefold(), str(pid or ""))
+
+    pid_to_host_ids: dict[tuple[str, str], list[str]] = defaultdict(list)
     for host_id, sess in sessions_by_host_id.items():
         if sess.pid:
-            pid_to_host_ids[sess.pid].append(host_id)
+            pid_to_host_ids[_pk(sess.computer, sess.pid)].append(host_id)
 
     # Attach EID 403 (engine stop) — match by HostId.  A stop whose start has
     # rolled out of the log (or a second stop) is still evidence: keep it.
@@ -175,7 +181,8 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
     # unsessioned, where it is easiest to see.
     for ev in buckets.get(53504, []):
         pid = ev.get("pid", "")
-        sess = _session_started_by(pid_to_host_ids.get(pid, []), sessions_by_host_id, ev.get("timestamp", ""))
+        sess = _session_started_by(pid_to_host_ids.get(_pk(ev.get("computer"), pid), []),
+                                   sessions_by_host_id, ev.get("timestamp", ""))
         if sess is not None:
             sess.session_events.append(ev)
         else:
@@ -196,8 +203,8 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
                 sess.user_name = ev4103.get("user", "")
             matched = True
 
-        if not matched and pid and pid in pid_to_host_ids:
-            candidates = pid_to_host_ids[pid]
+        if not matched and pid and _pk(ev4103.get("computer"), pid) in pid_to_host_ids:
+            candidates = pid_to_host_ids[_pk(ev4103.get("computer"), pid)]
             event_ts = ev4103.get("timestamp", "")
             best = _best_session_for_event(candidates, sessions_by_host_id, event_ts)
             best.session_events.append(ev4103)
@@ -217,8 +224,8 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
             sessions_by_host_id[host_id].session_events.append(ev800)
             matched = True
 
-        if not matched and pid and pid in pid_to_host_ids:
-            candidates = pid_to_host_ids[pid]
+        if not matched and pid and _pk(ev800.get("computer"), pid) in pid_to_host_ids:
+            candidates = pid_to_host_ids[_pk(ev800.get("computer"), pid)]
             event_ts = ev800.get("timestamp", "")
             best = _best_session_for_event(candidates, sessions_by_host_id, event_ts)
             best.session_events.append(ev800)
@@ -250,8 +257,8 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
         seen_4104_keys.add(dedup_key)
 
         matched = False
-        if pid and pid in pid_to_host_ids:
-            candidates = pid_to_host_ids[pid]
+        if pid and _pk(ev4104.get("computer"), pid) in pid_to_host_ids:
+            candidates = pid_to_host_ids[_pk(ev4104.get("computer"), pid)]
             event_ts = ev4104.get("timestamp", "")
             best = _best_session_for_event(candidates, sessions_by_host_id, event_ts)
             best.session_events.append(ev4104)
