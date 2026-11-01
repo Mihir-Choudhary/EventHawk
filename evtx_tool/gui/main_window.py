@@ -2108,11 +2108,14 @@ class _LogonSessionDialog(QDialog):
             ts = ts.rstrip("Z").replace("T", " ").split(".")[0]
             return ts[:19]
 
-        def _latest_session(computer: str, lid: str) -> dict | None:
+        def _latest_session(computer: str, lid: str, boot_epoch: int) -> dict | None:
             sessions = raw.get((computer, lid), [])
-            return sessions[-1] if sessions else None
+            for session in reversed(sessions):
+                if session.get("boot_epoch") == boot_epoch:
+                    return session
+            return None
 
-        def _new_session(computer: str, lid: str) -> dict:
+        def _new_session(computer: str, lid: str, boot_epoch: int) -> dict:
             sessions = raw.setdefault((computer, lid), [])
             sess = {
                 "session_key":    (computer, lid, len(sessions)),
@@ -2127,6 +2130,7 @@ class _LogonSessionDialog(QDialog):
                 "linked_lid_raw": "",   # TargetLinkedLogonId from 4624, resolved later
                 "linked_lid":     "",   # resolved sibling LogonId after post-pass
                 "linked_session_key": None,  # exact sibling session identity
+                "boot_epoch":     boot_epoch,
             }
             sessions.append(sess)
             return sess
@@ -2184,16 +2188,48 @@ class _LogonSessionDialog(QDialog):
                 _copies.setdefault(id(first), []).append(ev)
         events = _unique
 
+        # A LUID is unique only within a boot.  A loaded Security 4608 or
+        # Kernel-General 12 is therefore a hard pairing/linking boundary.
+        def _boot_ts(ev: dict):
+            try:
+                return datetime.fromisoformat(
+                    str(ev.get("timestamp", "") or "").strip().replace("Z", "+00:00")
+                ).timestamp()
+            except (TypeError, ValueError):
+                return float("inf")
+
+        def _is_boot(ev: dict) -> bool:
+            try:
+                eid = int(ev.get("event_id") or 0)
+            except (TypeError, ValueError):
+                return False
+            channel = str(ev.get("channel") or "").casefold()
+            return ((channel == "security" and eid == 4608)
+                    or (eid == 12 and ev.get("provider") == "Microsoft-Windows-Kernel-General"))
+
+        _boot_epoch: dict[int, int] = {}
+        _epoch_by_computer: dict[str, int] = {}
+        for _pos, _ev in sorted(enumerate(events), key=lambda item: (
+            str(item[1].get("computer") or "").casefold(), _boot_ts(item[1]), item[0]
+        )):
+            _computer = str(_ev.get("computer") or "")
+            _epoch = _epoch_by_computer.get(_computer, 0)
+            if _is_boot(_ev):
+                _epoch += 1
+                _epoch_by_computer[_computer] = _epoch
+            _boot_epoch[id(_ev)] = _epoch
+
         for ev in events:
             eid      = ev.get("event_id", 0)
             ed       = ev.get("event_data", {}) or {}
             computer = str(ev.get("computer", "") or "")
+            boot_epoch = _boot_epoch.get(id(ev), 0)
 
             if eid == 4624:
                 lid = str(ed.get("TargetLogonId", "")).strip()
                 if lid in self._SKIP_IDS:
                     continue
-                sess = _new_session(computer, lid)
+                sess = _new_session(computer, lid, boot_epoch)
                 sess["logon"] = ev
                 _touch_session(sess, ev)
                 linked_raw = str(ed.get("TargetLinkedLogonId", "")).strip()
@@ -2205,7 +2241,8 @@ class _LogonSessionDialog(QDialog):
                 lid = str(ed.get("SubjectLogonId", "")).strip()
                 if lid in self._SKIP_IDS:
                     continue
-                sess = _latest_session(computer, lid) or _new_session(computer, lid)
+                sess = (_latest_session(computer, lid, boot_epoch)
+                        or _new_session(computer, lid, boot_epoch))
                 sess["privs"].append(ev)
                 _touch_session(sess, ev)
                 continue
@@ -2214,7 +2251,8 @@ class _LogonSessionDialog(QDialog):
                 lid = str(ed.get("SubjectLogonId", "")).strip()
                 if lid in self._SKIP_IDS:
                     continue
-                sess = _latest_session(computer, lid) or _new_session(computer, lid)
+                sess = (_latest_session(computer, lid, boot_epoch)
+                        or _new_session(computer, lid, boot_epoch))
                 sess["procs"].append(ev)
                 _touch_session(sess, ev)
                 continue
@@ -2223,9 +2261,9 @@ class _LogonSessionDialog(QDialog):
                 lid = str(ed.get("TargetLogonId", "")).strip()
                 if lid in self._SKIP_IDS:
                     continue
-                sess = _latest_session(computer, lid)
+                sess = _latest_session(computer, lid, boot_epoch)
                 if sess is None or sess.get("logoff") is not None:
-                    sess = _new_session(computer, lid)
+                    sess = _new_session(computer, lid, boot_epoch)
                 sess["logoff"] = ev
                 _touch_session(sess, ev)
 
@@ -2239,7 +2277,8 @@ class _LogonSessionDialog(QDialog):
                 linked_raw = sess.get("linked_lid_raw", "")
                 if not linked_raw or sess.get("linked_lid"):
                     continue
-                sibling_list = raw.get((comp, linked_raw), [])
+                sibling_list = [s for s in raw.get((comp, linked_raw), [])
+                                if s.get("boot_epoch") == sess.get("boot_epoch")]
                 if not sibling_list:
                     continue
                 # Match the sibling whose start time is closest to this session.
@@ -2318,7 +2357,10 @@ class _LogonSessionDialog(QDialog):
                 # and a duration from it was a number the log never recorded
                 # (393 of 406 sessions on a public baseline, Codex audit-2 A2).
                 if logon_ev and explicit_end_norm and _norm_ts(start_ts):
-                    dur_str = self._calc_duration(_norm_ts(start_ts), explicit_end_norm)
+                    # Pairing uses the normalised values above, but elapsed time
+                    # must use the raw EVTX timestamps so fractional seconds are
+                    # not silently discarded.
+                    dur_str = self._calc_duration(start_ts, explicit_end_ts)
                     # RDP/RemoteInteractive sessions can have disconnect gaps where
                     # the session persists but is idle.  Without 4778/4779 events
                     # we can only report wall-clock time, so flag it clearly.
@@ -2416,14 +2458,9 @@ class _LogonSessionDialog(QDialog):
     @staticmethod
     def _calc_duration(start: str, end: str) -> str:
         try:
-            # Normalise both inputs to "YYYY-MM-DD HH:MM:SS" regardless of
-            # whether they arrived with a T separator, trailing Z, or microseconds.
-            def _norm(s: str) -> str:
-                return s.strip().rstrip("Z").replace("T", " ").split(".")[0][:19]
-            fmt     = "%Y-%m-%d %H:%M:%S"
-            s_clean = _norm(start)
-            e_clean = _norm(end)
-            td      = datetime.strptime(e_clean, fmt) - datetime.strptime(s_clean, fmt)
+            def _parse(s: str) -> datetime:
+                return datetime.fromisoformat(s.strip().replace("Z", "+00:00"))
+            td      = _parse(end) - _parse(start)
             secs    = td.total_seconds()
             # A negative span (logoff before logon) means clock skew or a reused
             # LogonId — surface it instead of hiding the sign with abs() and
@@ -2434,12 +2471,15 @@ class _LogonSessionDialog(QDialog):
             total   = int(secs)
             h, rem  = divmod(total, 3600)
             m, sec  = divmod(rem, 60)
+            frac = secs - total
+            sec_label = (str(sec) if frac == 0 else
+                         f"{sec + frac:.6f}".rstrip("0").rstrip("."))
             if h > 0:
-                return f"{h}h {m:02d}m {sec:02d}s"
+                return f"{h}h {m:02d}m {sec_label.zfill(2)}s"
             elif m > 0:
-                return f"{m}m {sec:02d}s"
+                return f"{m}m {sec_label}s"
             else:
-                return f"{sec}s"
+                return f"{sec_label}s"
         except Exception:
             return "?"
 
@@ -4338,8 +4378,12 @@ class _RemoteAssistanceDialog(QDialog):
         # For still-open buckets we keep a much wider window than closed buckets
         # so long-lived sessions with sparse telemetry do not split prematurely.
         _OPEN_KEY_CORR_SECS = 604800.0  # 7 days
-        # Only these classic RA event IDs carry the start/control/end semantics used below.
-        _RA_EIDS = frozenset({1, 2, 3})
+        # Provider metadata documents 16 as session begun, 18/19 as remote/local
+        # disconnect, and 21 as shared control. IDs 1/2 are tracing and 3 is an
+        # application error: retain them as observations, never boundaries.
+        _RA_START_EIDS = frozenset({16})
+        _RA_END_EIDS = frozenset({18, 19})
+        _RA_CONTROL_EIDS = frozenset({21})
         # SOURCE-SIDE / OUTBOUND RDP (SANS 508.2 "RDP Logs - Source System").
         # TerminalServices-RDPClient/Operational is recorded on the system that
         # INITIATED the connection and details everywhere it moved OUT to.
@@ -4455,8 +4499,8 @@ class _RemoteAssistanceDialog(QDialog):
                 eid = 0
             chan = str(ev.get("channel") or "").lower()
             if _RA_CHAN in chan:
-                if eid not in _RA_EIDS:
-                    return None
+                # Keep every provider record. Unrecognised/diagnostic events
+                # are evidence, but do not prove session boundaries.
                 # Use (LocalFQDNName | UserName) as explicit key when available
                 # so distinct concurrent Classic RA sessions on the same host get
                 # separate buckets rather than collapsing into one time cluster.
@@ -4631,7 +4675,7 @@ class _RemoteAssistanceDialog(QDialog):
             except (TypeError, ValueError):
                 eid = 0
             if _RA_CHAN in chan:
-                return eid in _RA_EIDS
+                return True
             if _RH_CHAN in chan:
                 return True
             if "rdpclient" in chan:
@@ -4736,19 +4780,17 @@ class _RemoteAssistanceDialog(QDialog):
         #     "1024 from one session paired with 1026 from another" false
         #     positive, which would otherwise invent an hours-long session.
         _OB_TYPE           = "RDP (Outbound)"
-        _OB_CONNECT_ANCHOR = frozenset({1024})
-        # 1026 ("disconnect", with a reason code) is the authoritative end of the
-        # RDP session.  1105 only says a MULTI-TRANSPORT (UDP side-channel)
-        # connection went away — normally emitted a fraction of a second before
-        # the 1026 of the same teardown, but it can also fire mid-session when
-        # the UDP transport drops and the session carries on over TCP.  Treating
-        # it as a hard end truncated such a session AND spawned a phantom
-        # disconnect-only row for the real 1026, so it is only a TENTATIVE end:
-        # a later 1026 with no intervening 1024 reclaims the session.
+        # 1025 means that the client connected.  1024 is only an attempt;
+        # 1102/1103/1105 are multi-transport telemetry, not session boundaries.
+        _OB_CONNECT_ANCHOR = frozenset({1025})
+        # 1026 ("disconnect", with a reason code) is the authoritative end of
+        # the client connection.  1105 says only that a multi-transport
+        # side-channel went away, so it remains observed evidence and cannot
+        # close a session row or contribute to a duration.
         _OB_END_DEFINITIVE = frozenset({1026})
-        _OB_END_TENTATIVE  = frozenset({1105})
+        _OB_END_TENTATIVE  = frozenset()
         _OB_END_EIDS       = _OB_END_DEFINITIVE | _OB_END_TENTATIVE
-        # Grace window for adopting a Security 4648 into the 1024 that follows it
+        # Grace window for adopting a Security 4648 or attempt into the 1025 that follows it
         # (see the connect branch).  Deliberately NOT used to pair disconnects —
         # that is decided by log semantics above, not by an arbitrary window.
         _OB_TRAIL_SECS     = 120.0
@@ -4802,11 +4844,9 @@ class _RemoteAssistanceDialog(QDialog):
             # Connect-side event (1024 / 1025 / 1029 / 1102 / 1103 / 4648).
             if eid in _OB_CONNECT_ANCHOR:
                 if cur is not None and not st["ended"]:
-                    # A Security 4648 for the same connection is normally written
-                    # a moment BEFORE the RDPClient 1024, so it opens the session
-                    # first.  If the open session has no anchor of its own yet and
-                    # this 1024 is right behind it, they are the same connection —
-                    # adopt it rather than splitting one login into two rows.
+                    # A Security 4648 or RDP attempt can precede 1025 and opens
+                    # an observation row. If it has no connected anchor yet,
+                    # adopt it rather than splitting one connection into two rows.
                     _last = cur["_end_dt"]
                     if (not cur.get("_ob_anchored") and dt is not None
                             and _last is not None
@@ -5071,11 +5111,11 @@ class _RemoteAssistanceDialog(QDialog):
                 bucket["_end_ev"] = ev
 
             if type_label == "Classic RA":
-                if eid == 1:
+                if eid in _RA_START_EIDS:
                     _mark_start()
-                elif eid == 2:
+                elif eid in _RA_CONTROL_EIDS:
                     bucket["_control"] = "Yes"   # explicit control grant
-                elif eid == 3:
+                elif eid in _RA_END_EIDS:
                     _mark_end()
             elif type_label == "RDP Session":
                 if eid in (21, 1149, 4624, 4778):
@@ -5085,9 +5125,9 @@ class _RemoteAssistanceDialog(QDialog):
                 # No control assignment — Windows logs carry no explicit RDP
                 # "control granted" event; value stays "Unknown" (set in _new_bucket).
             elif type_label == "RDP (Outbound)":
-                if eid in (1024, 1102, 4648):   # connection initiated / attempt
+                if eid == 1025:                 # documented connected state
                     _mark_start()
-                if eid in (1026, 1105):         # disconnected / transport closed
+                if eid == 1026:                 # documented disconnect state
                     _mark_end()
 
         # ── Build final session dicts ─────────────────────────────────────
@@ -5182,7 +5222,7 @@ class _RemoteAssistanceDialog(QDialog):
                 if bkt["_has_start"] and bkt["_has_end"]:
                     status = "Completed"
                 elif bkt["_has_start"]:
-                    status = "Active / Ongoing"
+                    status = "Start logged (no end)"
                 elif bkt["_has_end"]:
                     status = "Partial (no start)"
                 else:

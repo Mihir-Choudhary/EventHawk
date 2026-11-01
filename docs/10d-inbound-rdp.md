@@ -1,4 +1,4 @@
-# Inbound RDP intervals
+# Remote Assistance and RDP sessions
 
 Open **Tools > Remote Assistance Sessions** to inspect destination-side RDP
 evidence alongside the other remote-access artifacts. Inbound rows have type
@@ -45,3 +45,24 @@ intervals. The Evidence column identifies the namespace and boundary events.
 
 These rules concern inbound reconstruction. The other remote-access types have
 different telemetry and do not establish inbound RDP connection durations.
+
+## Classic Remote Assistance
+
+Rows of type **Classic RA** retain every loaded event from
+`Microsoft-Windows-RemoteAssistance/Operational`. A duration is shown only
+between the provider's documented session-begun event 16 and a documented
+remote or local disconnect (18 or 19). Event 21, not the provider's tracing
+events 1/2, is the evidence that shared control was granted. Event 3 is an
+application error, not a session end. Other provider records remain visible as
+observations but do not create a duration or a control claim by themselves.
+
+## Outbound RDP
+
+Rows of type **RDP (Outbound)** are client-side
+`TerminalServices-RDPClient/Operational` evidence. Event 1024 records an
+attempt to connect and 1102/1103/1105 are multi-transport activity; none proves
+that an RDP session connected or ended. EventHawk therefore reports a numeric
+duration only from 1025 (**connected**) to 1026 (**disconnected**) in the same
+unambiguous reconstructed row. Attempts, credential events and transport-only
+activity remain in their rows with **Unavailable** duration. These rows prove
+client telemetry, not the lifetime of a destination-side Windows logon.

@@ -29,20 +29,14 @@ from PySide6.QtWidgets import QApplication                       # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
-GOLDEN_COUNTS = {"Remote Help": 6, "RDP (Outbound)": 89, "Classic RA": 43,
+GOLDEN_COUNTS = {"Remote Help": 6, "RDP (Outbound)": 80, "Classic RA": 50,
                  "Quick Assist": 25}
-# Updated for "a duration needs a logged start AND end" (Codex audit-2 A2).
-# Diffed against the previous build on this same synthetic set: 230 sessions,
-# same types and fields; only "duration" (and duration_secs) changed, to
-# "Unavailable", on the 25 Quick Assist, 6 Remote Help and 33 Classic RA rows
-# without both a start and an end.  No completed session changed.
-# Previous value: 929f398c8f114032ba58453d9a21a8e7b3afe57f66c6bb2744a8ee05c0ca98c5
-# audit-3 A3 intentionally replaces inbound proximity buckets. Preserve the
-# baseline fingerprint for ALL unchanged types, excluding new UI row IDs and
-# normalizing synthetic bucket labels (removing inbound buckets renumbers them).
-# Computed from 4865cb2, not from the replacement. Inbound semantics are asserted
-# independently in test_inbound_rdp_sessions; noise invariance below covers all.
-GOLDEN_SHA = "3370fbc016c299521756fee4419fd316ee7bbb6e0a61213147c7a48c80da20f7"
+# Updated for audit-2's proved-duration rule, then S2/S3's documented Classic
+# RA and outbound RDP boundaries. The fingerprint covers every non-inbound
+# classifier branch; inbound reconstruction has its own boundary/GUI/CSV test.
+# Stable synthetic keys keep this regression test independent of Row/Continuity
+# display numbering. The noise-invariance check below protects the prefilter.
+GOLDEN_SHA = "e0f4fd08bec520c975787fda92b0b61e72ad98dde1a971ed2d000c8c4dd3e835"
 
 CHECKS = []
 
