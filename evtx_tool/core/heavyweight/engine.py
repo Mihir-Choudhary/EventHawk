@@ -43,7 +43,7 @@ from typing import Callable
 
 import orjson
 
-from evtx_tool.core.filters import flatten_searchable_values, flatten_fields
+from evtx_tool.core.filters import flatten_searchable_values, flatten_fields, event_description_text
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ _COL_NAMES = (
     "ed_subject_user", "ed_target_user", "ed_ip_address",
     "ed_logon_type", "ed_new_process", "event_data_json",
     "qualifiers", "ed_subject_sid", "ed_target_sid", "ed_values", "ed_flat_json",
-    "provider_guid", "version",
+    "provider_guid", "version", "description",
 )
 
 # ── Arrow schema (imported lazily to avoid hard dep at import time) ───────────
@@ -102,6 +102,10 @@ def _make_schema():
         # qualifiers.
         ("provider_guid",   pa.string()),
         ("version",         pa.int32()),
+        # The description shown in the event details plus the decoded labels
+        # (core.filters.event_description_text), so a text search finds the
+        # same events here as in Normal mode.  Parquet-only, like ed_flat_json.
+        ("description",     pa.string()),
     ])
 
 
@@ -440,6 +444,10 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | boo
             (orjson.dumps(flat_ed).decode() if flat_ed else None),
             provider_guid,
             _safe_int(system.get("Version")),   # normal mode: Version, default 0
+            event_description_text({
+                "event_id": eid, "provider": provider_name, "channel": channel,
+                "keywords": keywords, "event_data": _ed_clean,
+            }, owned=True) or None,
         )
     except Exception as exc:
         logger.debug("_extract_and_filter error: %s", exc)

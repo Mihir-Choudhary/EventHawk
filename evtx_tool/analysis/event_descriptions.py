@@ -1329,3 +1329,17 @@ def get_event_description(ev: dict) -> str | None:
 
     # ── Generic fallback from static table ───────────────────────────────
     return _GENERIC_DESC.get(eid)
+
+
+# Every event ID get_event_description() can describe: its tables plus the IDs
+# its code names.  core.filters.event_description_text skips the call for any
+# other ID (it runs once per event in Juggernaut's parse, and most events have
+# no description).  test_search_whole_event fails if the function names an ID
+# missing here.
+DESCRIBED_EVENT_IDS = frozenset().union(
+    _SYSMON_DESC, _PS_DESC, _TASKSCHED_DESC, _RDP_LOCAL_DESC, _RDP_REMOTE_DESC, _GENERIC_DESC,
+    {1, 3, 8, 10, 59, 400, 403, 1074, 1102, 1116, 1149, 2004, 4103, 4104, 4624, 4625,
+     4634, 4648, 4663, 4672, 4688, 4697, 4698, 4706, 4719, 4728, 4732, 4740, 4756,
+     4768, 4769, 4771, 4776, 5136, 5140, 5145, 5156, 5157, 6008, 7023, 7024, 7026,
+     7031, 7032, 7034, 7035, 7036, 7040, 7045},
+)

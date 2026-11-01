@@ -74,6 +74,20 @@ ED_FIELD_TO_DESC: dict[str, str] = {
 }
 
 
+# Every EventData field enrich() reads.  An event holding none of them can only
+# get the Keywords label, which lets core.filters.event_description_text skip
+# the full pass for most events (it runs once per event in Juggernaut's parse).
+# test_search_whole_event fails if enrich() starts reading a field missing here.
+ENRICH_FIELDS = frozenset({
+    "AccessMask", "AuthenticationPackageName", "DesiredAccess", "ElevatedToken",
+    "FailureCode", "FailureReason", "ImpersonationLevel", "LmPackageName",
+    "LogonType", "logontype", "MandatoryLabel", "NewUACValue", "ObjectType",
+    "OldUACValue", "PackageName", "PrivilegeList", "ResultCode", "ServiceType",
+    "StartType", "Status", "SubStatus", "TicketEncryptionType", "TicketOptions",
+    "TokenElevationType", "VirtualAccount",
+})
+
+
 class SemanticNormalizer:
     """
     Singleton semantic normalizer.

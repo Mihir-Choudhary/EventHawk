@@ -33,6 +33,8 @@ import logging
 import re as _re
 from typing import Any
 
+from evtx_tool.core.filters import SYSTEM_XML_NAMES
+
 logger = logging.getLogger(__name__)
 
 # ── Search-text expression ─────────────────────────────────────────────────────
@@ -118,7 +120,12 @@ _SEARCH_TEXT_RAW_FULL: str = (
     # container name was unsearchable.  event_data_json is the only field that
     # skips nothing, and "nothing is skipped" is the contract here.
     "COALESCE(ed_values,       '') || ' ' || "
-    "COALESCE(event_data_json, '')"
+    "COALESCE(event_data_json, '') || ' ' || "
+    # The description shown in the event details plus the decoded labels, and
+    # the System XML element names -- the same scope as Normal mode
+    # (core.filters.adv_search_haystack).
+    "COALESCE(description,     '') || ' ' || "
+    f"'{SYSTEM_XML_NAMES}'"
 )
 SEARCH_TEXT_EXPR_FULL: str = f"lower({_SEARCH_TEXT_RAW_FULL})"
 

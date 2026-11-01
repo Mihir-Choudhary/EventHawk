@@ -831,7 +831,20 @@ SYSTEM_XML_NAMES = (
 )
 
 
-def event_description_text(ev: dict) -> str:
+_DESC_TOOLS: list = []          # [get_event_description, normalizer, ENRICH_FIELDS, ids], loaded once
+_KW_LABELS: dict = {}           # raw Keywords value -> its label (few distinct values)
+
+
+def _desc_tools() -> list:
+    if not _DESC_TOOLS:
+        from evtx_tool.analysis.event_descriptions import get_event_description, DESCRIBED_EVENT_IDS
+        from evtx_tool.analysis.normalizer import SemanticNormalizer, ENRICH_FIELDS
+        _DESC_TOOLS.extend((get_event_description, SemanticNormalizer.get(), ENRICH_FIELDS,
+                            DESCRIBED_EVENT_IDS))
+    return _DESC_TOOLS
+
+
+def event_description_text(ev: dict, owned: bool = False) -> str:
     """The description shown in the details pane plus the semantic labels.
 
     The details pane's description sentence (analysis.event_descriptions) and
@@ -840,22 +853,49 @@ def event_description_text(ev: dict) -> str:
     for an event that does not (parse-time filtering, Juggernaut's parse) they
     are worked out here from the same code, so every mode searches the same
     words.  Only event_id, provider, channel, keywords and event_data are read.
+    *owned*: the caller's dict is a throwaway the labels may be written into.
+
+    Runs once per event in Juggernaut's parse, so the common case is cheap: an
+    event ID with no description is not looked up (DESCRIBED_EVENT_IDS), and an
+    event with none of the fields the normalizer decodes can only get the
+    Keywords label, which is memoised by its raw value.
     """
-    parts: list[str] = []
     try:
-        from evtx_tool.analysis.event_descriptions import get_event_description
-        d = get_event_description(ev)
-        if d:
-            parts.append(str(d))
+        get_desc, norm, fields, described = _desc_tools()
     except Exception:
-        pass
-    labels = [v for k, v in ev.items() if isinstance(k, str) and k.endswith("_desc") and v]
-    if not labels and not ev.get("_normalized"):
+        return ""
+    parts: list[str] = []
+    eid = ev.get("event_id")
+    if not isinstance(eid, int) or eid in described:
         try:
-            from evtx_tool.analysis.normalizer import SemanticNormalizer
-            tmp = dict(ev)
-            SemanticNormalizer.get().enrich(tmp)
-            labels = [v for k, v in tmp.items() if isinstance(k, str) and k.endswith("_desc") and v]
+            d = get_desc(ev)
+            if d:
+                parts.append(str(d))
+        except Exception:
+            pass
+    labels = ([] if owned else
+              [v for k, v in ev.items() if isinstance(k, str) and k.endswith("_desc") and v])
+    if not labels and not ev.get("_normalized"):
+        ed = ev.get("event_data")
+        try:
+            if isinstance(ed, dict) and not fields.isdisjoint(ed):
+                tgt = ev if owned else dict(ev)
+                norm.enrich(tgt)
+                labels = [v for k, v in tgt.items()
+                          if isinstance(k, str) and k.endswith("_desc") and v]
+            else:
+                kw = ev.get("keywords")
+                if kw is not None and str(kw).strip() != "":
+                    key = str(kw)
+                    lab = _KW_LABELS.get(key)
+                    if lab is None:
+                        tmp = {"keywords": kw, "event_data": {}}
+                        norm.enrich(tmp)
+                        lab = tmp.get("keywords_desc") or ""
+                        if len(_KW_LABELS) < 4096:
+                            _KW_LABELS[key] = lab
+                    if lab:
+                        labels = [lab]
         except Exception:
             labels = []
     parts.extend(str(v) for v in labels)

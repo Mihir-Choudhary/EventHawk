@@ -92,6 +92,32 @@ def main() -> int:
     check("every field the parser keeps is in the search scope", keys <= set(_ADV_SEARCH_FIELDS),
           str(sorted(keys - set(_ADV_SEARCH_FIELDS))))
 
+    # The fast path in event_description_text skips the normalizer for events
+    # holding none of ENRICH_FIELDS; a field enrich() reads must be listed.
+    import inspect
+    import re
+    from evtx_tool.analysis import normalizer as N
+    src = inspect.getsource(N.SemanticNormalizer.enrich)
+    read = set(re.findall(r'ed\.get\("([A-Za-z]+)"', src))
+    read |= set(re.findall(r'\("([A-Za-z]+)",\s*"[a-z_]+_desc"\)', src))
+    for grp in re.findall(r'for ed_key in \(([^)]*)\)', src):
+        read |= set(re.findall(r'"([A-Za-z]+)"', grp))
+    check("every EventData field the normalizer reads is in ENRICH_FIELDS",
+          read and read <= N.ENRICH_FIELDS, str(sorted(read - N.ENRICH_FIELDS)))
+
+    # The description is looked up only for DESCRIBED_EVENT_IDS; every ID the
+    # function names, and every ID in its tables, must be in it.
+    from evtx_tool.analysis import event_descriptions as D
+    dsrc = inspect.getsource(D.get_event_description)
+    named = {int(x) for x in re.findall(r"eid\s*==\s*(\d+)", dsrc)}
+    for grp in re.findall(r"eid\s+in\s+\(([\d,\s]+)\)", dsrc):
+        named |= {int(x) for x in re.findall(r"\d+", grp)}
+    for name, tab in vars(D).items():
+        if name.endswith("_DESC") and isinstance(tab, dict) and tab and all(isinstance(k, int) for k in tab):
+            named |= set(tab)
+    check("every event ID the description code can describe is in DESCRIBED_EVENT_IDS",
+          named and named <= D.DESCRIBED_EVENT_IDS, str(sorted(named - D.DESCRIBED_EVENT_IDS)))
+
     rc = jm_leg()
     ok = sum(1 for _n, c, _d in CHECKS if c)
     print(f"\n{'=' * 62}\n{ok}/{len(CHECKS)} checks passed")
@@ -116,6 +142,19 @@ def jm_leg() -> int:
     from evtx_tool.core.heavyweight.engine import HeavyweightEngine
     from evtx_tool.core.heavyweight.filter_sql import text_config_to_parquet_sql
     norm = [e for f in files for e in iter_events(f)]
+    # Juggernaut's parse computes the text on a bare event (fast path); Normal
+    # mode's events carry the labels the normalizer added.  Same text?
+    from evtx_tool.analysis.normalizer import SemanticNormalizer
+    from evtx_tool.core.filters import event_description_text
+    enriched = [dict(e) for e in norm]
+    SemanticNormalizer.get().enrich_events(enriched)
+    diff = sum(1 for e, n in zip(norm, enriched)
+               if event_description_text({"event_id": e["event_id"], "provider": e["provider"],
+                                          "channel": e["channel"], "keywords": e["keywords"],
+                                          "event_data": e["event_data"]}, owned=True)
+               != event_description_text(n))
+    check("the parse-time description text equals Normal mode's on every real event",
+          diff == 0, f"{diff:,} of {len(norm):,} differ")
     tmp = tempfile.mkdtemp(prefix="jm_search_")
     try:
         pq = HeavyweightEngine(parquet_dir=tmp).run(files)
