@@ -221,13 +221,14 @@ def display_date(raw_ts: str) -> str:
     Every Normal-mode date quick filter and every column-popup sweep converted
     every timestamp again: 2.4 s with the window frozen per date filter, and
     3.5-4 s on every other Advanced Filter apply (the popup sweep), on 130k real
-    events (dynamic filter timing, 2026-11-01).  The memo is dropped whenever the
-    time zone changes; dict get/set are atomic, so the popup worker thread can
+    events (dynamic filter timing, 2026-11-01).  The memo is keyed on the time-zone
+    settings themselves, so any change of zone -- through set_tz_config() or
+    not -- drops it; dict get/set are atomic, so the popup worker thread can
     share it.
     """
     if not raw_ts:
         return ""
-    ver = _tz_state.get("version", 0)
+    ver = (_tz_state.get("mode"), _tz_state.get("specific"), _tz_state.get("custom_offset_min"))
     if _display_date_memo_ver[0] != ver or len(_display_date_memo) > _DISPLAY_DATE_MEMO_MAX:
         _display_date_memo.clear()
         _display_date_memo_ver[0] = ver
