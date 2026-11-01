@@ -1156,6 +1156,9 @@ class ArrowTableModel(QAbstractTableModel):
         if key == "timestamp_date":
             from evtx_tool.gui.jm_col_worker import _timestamp_date_expr
             return (_timestamp_date_expr(), "str")
+        if key == "timestamp_hour":
+            from evtx_tool.gui.jm_col_worker import _timestamp_hour_expr
+            return (_timestamp_hour_expr(), "str")
         return self._QUICK_KEY_TO_COL.get(key)
 
     def add_quick_filter(self, key: str, value: str, include: bool) -> None:

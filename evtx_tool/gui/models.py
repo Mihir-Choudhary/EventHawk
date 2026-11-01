@@ -226,6 +226,16 @@ def display_date(raw_ts: str) -> str:
     not -- drops it; dict get/set are atomic, so the popup worker thread can
     share it.
     """
+    return display_hour(raw_ts)[:10]
+
+
+def display_hour(raw_ts: str) -> str:
+    """*raw_ts*'s date and hour (``YYYY-MM-DD HH``) in the display time zone.
+
+    The memo behind display_date: the date filter tree's hour level filters on
+    this value, and the date is its first ten characters, so both share one
+    conversion per timestamp.
+    """
     if not raw_ts:
         return ""
     ver = (_tz_state.get("mode"), _tz_state.get("specific"), _tz_state.get("custom_offset_min"))
@@ -234,7 +244,7 @@ def display_date(raw_ts: str) -> str:
         _display_date_memo_ver[0] = ver
     d = _display_date_memo.get(raw_ts)
     if d is None:
-        d = apply_tz(raw_ts)[:10].lower()
+        d = apply_tz(raw_ts)[:13].lower()
         _display_date_memo[raw_ts] = d
     return d
 
@@ -1620,12 +1630,16 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         # Virtual key semantics:
         #   "timestamp_date" → display-timezone YYYY-MM-DD (via apply_tz), so
         #       the filter matches the date the user actually sees in the table.
+        #   "timestamp_hour" → display-timezone "YYYY-MM-DD HH", the date tree's
+        #       hour level (a day with only some hours ticked).
         #   "log" → ev["log"] falling back to ev["channel"], matching COL_LOG
         #       display logic in EventTableModel.data().
         if self._quick_excludes:
             for key, excl_set in self._quick_excludes.items():
                 if key == "timestamp_date":
                     ev_val = self._display_date(src_model, source_row, ev)
+                elif key == "timestamp_hour":
+                    ev_val = display_hour(ev.get("timestamp", ""))
                 elif key == "log":
                     ev_val = str(ev.get("log") or ev.get("channel", "")).lower()
                 else:
@@ -1636,6 +1650,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             for key, incl_set in self._quick_includes.items():
                 if key == "timestamp_date":
                     ev_val = self._display_date(src_model, source_row, ev)
+                elif key == "timestamp_hour":
+                    ev_val = display_hour(ev.get("timestamp", ""))
                 elif key == "log":
                     ev_val = str(ev.get("log") or ev.get("channel", "")).lower()
                 else:
@@ -2058,7 +2074,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         # (~4.5 s on 130k events; dynamic filter timing, 2026-11-01).
         # Computed once per filter state and shared by every column (the sweep
         # asks for 15); with no filter at all it is simply every event.
-        if exclude_qf_key not in self._quick_excludes and exclude_qf_key not in self._quick_includes:
+        from evtx_tool.gui.jm_col_worker import same_filter_column
+        if not any(same_filter_column(k, exclude_qf_key)
+                   for k in (*self._quick_excludes, *self._quick_includes)):
             if not self._any_filter_active:
                 return list(getattr(src, "_events", []) or [])
             evs = getattr(src, "_events", None)
@@ -2079,9 +2097,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         saved_excl = self._quick_excludes
         saved_incl = self._quick_includes
         self._quick_excludes = {k: v for k, v in saved_excl.items()
-                                if k != exclude_qf_key}
+                                if not same_filter_column(k, exclude_qf_key)}
         self._quick_includes = {k: v for k, v in saved_incl.items()
-                                if k != exclude_qf_key}
+                                if not same_filter_column(k, exclude_qf_key)}
         events: list = []
         mi = QModelIndex()
         try:

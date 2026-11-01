@@ -275,6 +275,7 @@ class CheckableComboBox(QComboBox):
 # column.  Kept off Qt.DisplayRole so the visible label ("May  (1,203)") and
 # the value the filter actually emits ("2024-05-14") can never drift apart.
 _ROLE_FILTER_VALUE = Qt.ItemDataRole.UserRole + 1
+_ROLE_HOURS_LOADED = Qt.ItemDataRole.UserRole + 6
 _ROLE_SORT_KEY     = Qt.ItemDataRole.UserRole + 2
 # Counts are stored as STRINGS, not ints.  Pushing a Python int through
 # QTreeWidgetItem.setData goes via shiboken, which raises OverflowError for
@@ -398,7 +399,7 @@ class ColumnFilterPopup(QDialog):
     }
 
     def __init__(self, col_index: int, values: dict, parent=None,
-                 search_provider=None):
+                 search_provider=None, hour_provider=None):
         """
         Parameters
         ----------
@@ -413,8 +414,13 @@ class ColumnFilterPopup(QDialog):
             initially).  Matching values returned via ``callback`` are merged
             into the checkbox list so a rare value (e.g. a specific
             correlation_id outside the top-1000) can still be found & selected.
+        hour_provider : callable | None
+            Date tree only: ``hour_provider("YYYY-MM-DD") -> {"HH": count}`` for
+            the events this popup counts.  When given, every day gets an hour
+            level, loaded the first time the day is expanded.
         """
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self._hour_provider = hour_provider
         self._col = col_index
         self._all_values = values
         self._search_provider = search_provider
@@ -559,6 +565,7 @@ class ColumnFilterPopup(QDialog):
         self._refresh_group_labels()
         self._all_item.setExpanded(True)   # years visible; months stay collapsed
         self._tree.itemChanged.connect(self._on_tree_item_changed)
+        self._tree.itemExpanded.connect(self._load_day_hours)
         root.addWidget(self._tree)
 
     @staticmethod
@@ -661,6 +668,9 @@ class ColumnFilterPopup(QDialog):
         leaf.setData(0, _ROLE_SORT_KEY, leaf_text)
         leaf.setData(0, _ROLE_COUNT, str(int(count)))
         leaf.setData(0, _ROLE_SEARCH_KEY, search_key)
+        if parsed is not None and self._hour_provider is not None:
+            leaf.setChildIndicatorPolicy(
+                QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
         self._insert_sorted(parent, leaf, leaf_text, reverse=False)
 
         proxy = _DateLeafProxy(leaf, self)
@@ -694,10 +704,75 @@ class ColumnFilterPopup(QDialog):
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         self._tree_sync = True
         try:
-            item.setCheckState(0, state)
+            self._set_day_state(item, state)
         finally:
             self._tree_sync = False
         self._refresh_ancestors(item)
+
+    @staticmethod
+    def _set_day_state(item: QTreeWidgetItem, state) -> None:
+        """Set a day row and any hours loaded under it (caller holds _tree_sync)."""
+        item.setCheckState(0, state)
+        for i in range(item.childCount()):
+            item.child(i).setCheckState(0, state)
+
+    def _load_day_hours(self, item: QTreeWidgetItem) -> None:
+        """First expand of a day: add its hours, ticked like the day."""
+        if (self._hour_provider is None or item.childCount()
+                or item.data(0, _ROLE_HOURS_LOADED)):
+            return
+        day = item.data(0, _ROLE_FILTER_VALUE)
+        if not day or self._split_date(str(day)) is None:
+            return
+        item.setData(0, _ROLE_HOURS_LOADED, True)
+        try:
+            hours = self._hour_provider(str(day)) or {}
+        except Exception:
+            logger.warning("date tree: loading the hours of %s failed", day, exc_info=True)
+            hours = {}
+        state = (Qt.CheckState.Checked if item.checkState(0) == Qt.CheckState.Checked
+                 else Qt.CheckState.Unchecked)
+        self._tree_sync = True
+        try:
+            for hh in sorted(hours):
+                child = QTreeWidgetItem()
+                child.setText(0, f"{hh}:00–{hh}:59  ({int(hours[hh]):,})")
+                child.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                child.setCheckState(0, state)
+                child.setData(0, _ROLE_FILTER_VALUE, f"{day} {hh}")
+                child.setData(0, _ROLE_COUNT, str(int(hours[hh])))
+                item.addChild(child)
+            if not hours:
+                item.setChildIndicatorPolicy(
+                    QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator)
+        finally:
+            self._tree_sync = False
+
+    def preselect_hours(self, include: bool, values) -> None:
+        """Reflect an active hour-level filter (``"YYYY-MM-DD HH"`` values)."""
+        values = {str(v).lower() for v in values}
+        self._tree_sync = True
+        try:
+            for proxy in self._checkboxes:
+                item, day = proxy._item, str(proxy.property("filter_value") or "")
+                listed = {h for h in range(24) if f"{day} {h:02d}" in values}
+                keep = listed if include else set(range(24)) - listed
+                if len(keep) == 24 or not keep:
+                    self._set_day_state(item, Qt.CheckState.Checked if keep
+                                        else Qt.CheckState.Unchecked)
+                    continue
+                self._tree_sync = False
+                try:
+                    self._load_day_hours(item)
+                finally:
+                    self._tree_sync = True
+                for i in range(item.childCount()):
+                    hh = int(str(item.child(i).data(0, _ROLE_FILTER_VALUE))[-2:])
+                    item.child(i).setCheckState(
+                        0, Qt.CheckState.Checked if hh in keep else Qt.CheckState.Unchecked)
+        finally:
+            self._tree_sync = False
+        self._refresh_all_groups()
 
     def _refresh_ancestors(self, item: QTreeWidgetItem) -> None:
         """Walk up from *item*, setting each parent Checked/Unchecked/Partial."""
@@ -846,8 +921,8 @@ class ColumnFilterPopup(QDialog):
                 match = (not text_lower) or (text_lower in key)
                 item.setHidden(not match)
                 if text_lower:
-                    item.setCheckState(
-                        0,
+                    self._set_day_state(
+                        item,
                         Qt.CheckState.Checked if match else Qt.CheckState.Unchecked,
                     )
             # A month/year row is visible when any day under it is.
@@ -870,8 +945,8 @@ class ColumnFilterPopup(QDialog):
                     was = snap.get(proxy.property("filter_value"))
                     if was is None:
                         continue
-                    proxy._item.setCheckState(
-                        0,
+                    self._set_day_state(
+                        proxy._item,
                         Qt.CheckState.Checked if was else Qt.CheckState.Unchecked,
                     )
             finally:
@@ -1103,7 +1178,7 @@ class ColumnFilterPopup(QDialog):
                          else Qt.CheckState.Unchecked)
                 for proxy in self._checkboxes:
                     if not proxy._item.isHidden():
-                        proxy._item.setCheckState(0, state)
+                        self._set_day_state(proxy._item, state)
             finally:
                 self._tree_sync = False
             self._refresh_all_groups()
@@ -1150,11 +1225,24 @@ class ColumnFilterPopup(QDialog):
         """
         checked: list[str]   = []
         unchecked: list[str] = []
-        for chk in self._checkboxes:
-            val = chk.property("filter_value")
-            (checked if chk.isChecked() else unchecked).append(val)
+        keep_unknown = False
+        if self._is_date_tree and any(
+                p._item.checkState(0) == Qt.CheckState.PartiallyChecked
+                for p in self._checkboxes):
+            checked, unchecked, keep_unknown = self._hour_selection()
+        else:
+            for chk in self._checkboxes:
+                val = chk.property("filter_value")
+                (checked if chk.isChecked() else unchecked).append(val)
 
         total = len(checked) + len(unchecked)
+        if keep_unknown and checked and unchecked:
+            # A ticked row outside the hour grid (an unparsed date) cannot be
+            # named at hour level; exclude-on-unticked lets it through rather
+            # than silently hiding it.
+            self.filterApplied.emit(self._col, "exclude", unchecked)
+            self.accept()
+            return
         if total == 0 or not unchecked:
             # Empty popup, or every value still checked → no filter on this column
             self.filterApplied.emit(self._col, "clear", [])
@@ -1191,6 +1279,31 @@ class ColumnFilterPopup(QDialog):
             # the user explicitly saw and unchecked each of these values.
             self.filterApplied.emit(self._col, "exclude", unchecked)
         self.accept()
+
+    def _hour_selection(self) -> "tuple[list[str], list[str], bool]":
+        """(ticked, unticked, keep_unknown) at hour level: ``"YYYY-MM-DD HH"``.
+
+        Used when some day is only partly ticked.  A whole day stands for its
+        24 hours; a day whose hours are loaded contributes them one by one.
+        keep_unknown is True when a ticked row is not a real date.
+        """
+        checked: list[str] = []
+        unchecked: list[str] = []
+        keep_unknown = False
+        for proxy in self._checkboxes:
+            item, day = proxy._item, str(proxy.property("filter_value") or "")
+            if self._split_date(day) is None:
+                keep_unknown = keep_unknown or proxy.isChecked()
+                continue
+            if item.childCount():
+                for i in range(item.childCount()):
+                    h = item.child(i)
+                    (checked if h.checkState(0) == Qt.CheckState.Checked
+                     else unchecked).append(str(h.data(0, _ROLE_FILTER_VALUE)))
+            else:
+                (checked if proxy.isChecked() else unchecked).extend(
+                    f"{day} {h:02d}" for h in range(24))
+        return checked, unchecked, keep_unknown
 
     def _emit_sort(self, order: Qt.SortOrder) -> None:
         """Emit sortRequested and close the popup without changing filter state."""
@@ -7676,7 +7789,7 @@ class MainWindow(QMainWindow):
         # "include" means "keep only rows whose value is in values".
         # "exclude" means "drop rows whose value is in values".
         # An entry exists only while a non-trivial filter is active on the column.
-        self._col_filters: dict[int, tuple[str, list[str]]] = {}
+        self._col_filters: dict[int, tuple[str, list[str], str]] = {}
 
         # ── Per-file tab/tree state ───────────────────────────────────────────
         self._view_mode: str = "merged"                   # "merged" or "separate"
@@ -11067,6 +11180,31 @@ class MainWindow(QMainWindow):
         worker.start()
         self._track_col_worker(worker)
 
+    def _make_hour_provider(self):
+        """``day -> {"HH": count}`` for the date tree of the table in front.
+
+        Counts the same slice as the popup's day counts: the tab's events
+        through every active filter except the date column's own.
+        """
+        if self._hw_model is not None and self._jm_col_model() is not None:
+            from evtx_tool.gui.jm_col_worker import hour_counts
+            table = self._jm_col_table()
+            where_sql, where_params = self._build_col_cascade_where("timestamp_date")
+            return lambda day: hour_counts(table, day, where_sql, where_params)
+        from evtx_tool.gui.models import display_hour
+        cache: dict = {}
+
+        def provider(day: str) -> dict:
+            if not cache:
+                cache["by_day"] = by_day = {}
+                for ev in self._active_proxy.collect_source_events_for_popup("timestamp_date"):
+                    dh = display_hour(ev.get("timestamp", ""))
+                    if len(dh) == 13:
+                        hrs = by_day.setdefault(dh[:10], {})
+                        hrs[dh[11:13]] = hrs.get(dh[11:13], 0) + 1
+            return dict(cache["by_day"].get(day, {}))
+        return provider
+
     def _show_col_filter_popup(self, logical_index: int, values: dict) -> None:
         """Create and show the column filter popup with the given value counts."""
         if not values:
@@ -11086,7 +11224,9 @@ class MainWindow(QMainWindow):
             if _popup_col_key0 else None
         )
         popup = ColumnFilterPopup(
-            logical_index, values, parent=self, search_provider=_search_provider
+            logical_index, values, parent=self, search_provider=_search_provider,
+            hour_provider=(self._make_hour_provider()
+                           if _popup_col_key0 == "timestamp_date" else None),
         )
 
         # Bug 7 fix: derive pre-uncheck state from the active tab's actual quick filters
@@ -11107,6 +11247,10 @@ class MainWindow(QMainWindow):
                 _active_qf = self._active_proxy.get_quick_filters()
 
             _col_qfs = [qf for qf in _active_qf if qf.get("key") == _popup_col_key]
+            _hour_qfs = [qf for qf in _active_qf if qf.get("key") == "timestamp_hour"]
+            if _popup_col_key == "timestamp_date" and _hour_qfs:
+                popup.preselect_hours(bool(_hour_qfs[0].get("include", True)),
+                                      [qf["value"] for qf in _hour_qfs])
             _excluded_vals = {
                 qf["value"] for qf in _col_qfs if not qf.get("include", True)
             }
@@ -11166,6 +11310,9 @@ class MainWindow(QMainWindow):
         col_key = ColumnFilterPopup.FILTERABLE.get(col_index, "")
         if not col_key:
             return
+        from evtx_tool.gui.jm_col_worker import same_filter_column
+        if col_key == "timestamp_date" and values and len(str(values[0])) == 13:
+            col_key = "timestamp_hour"     # the date tree's hour level ("YYYY-MM-DD HH")
 
         # A pivot tab (chain / around) is its own scope, as for quick filters:
         # replace this column's entries in THAT tab's quick filters and leave
@@ -11174,7 +11321,8 @@ class MainWindow(QMainWindow):
         if _fp and _is_pivot_tab_key(_fp) and _fp in self._file_tabs:
             _st = self._file_tabs[_fp]
             _target = _st.model if isinstance(_st.proxy, _JMProxyShim) else _st.proxy
-            _qf = [q for q in _target.get_quick_filters() if q.get("key") != col_key]
+            _qf = [q for q in _target.get_quick_filters()
+                   if not same_filter_column(q.get("key", ""), col_key)]
             if not (mode == "clear" or (mode == "exclude" and not values)):
                 _qf += [{"key": col_key, "value": v, "include": mode == "include"}
                         for v in values]
@@ -11202,7 +11350,7 @@ class MainWindow(QMainWindow):
             # No filtering needed on this column
             self._col_filters.pop(col_index, None)
         else:
-            self._col_filters[col_index] = (mode, list(values))
+            self._col_filters[col_index] = (mode, list(values), col_key)
 
         # Build the full quick-filter list from all current column filters.
         # Each column contributes 0..N quick-filter entries, all sharing
@@ -11212,8 +11360,7 @@ class MainWindow(QMainWindow):
         # unchecked" case is emitted as ("exclude", all_visible_values) so we
         # never need a sentinel here.  See ColumnFilterPopup._apply.
         new_qf: list[dict] = []
-        for ci, (col_mode, col_values) in self._col_filters.items():
-            ck = ColumnFilterPopup.FILTERABLE.get(ci, "")
+        for ci, (col_mode, col_values, ck) in self._col_filters.items():
             if not ck:
                 continue
             include_flag = (col_mode == "include")
@@ -11300,14 +11447,13 @@ class MainWindow(QMainWindow):
 
     def _update_header_indicators(self) -> None:
         """Add ▼ indicator to column headers that have active filters."""
-        # _col_filters entries are (mode, values) tuples — the column is filtered
+        # _col_filters entries are (mode, values, key) tuples — the column is filtered
         # iff the values list is non-empty.  An "include" with empty values is
         # technically a "match nothing" filter and still counts as active.
         def _is_active(entry) -> bool:
             if not entry:
                 return False
-            mode, values = entry
-            return mode in ("include", "exclude")  # "clear" entries are popped above
+            return entry[0] in ("include", "exclude")  # "clear" entries are popped above
 
         if self._hw_model is not None:
             # Juggernaut mode: update HW model's _header_overrides dict

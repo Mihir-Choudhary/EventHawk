@@ -146,8 +146,9 @@ def _system_tz_name() -> "str | None":
     return None
 
 
-def _timestamp_date_expr() -> str:
-    """DuckDB expression for the YYYY-MM-DD label in the display timezone.
+def _timestamp_label_expr(fmt: str, n: int) -> str:
+    """DuckDB expression for a date (``%Y-%m-%d``, 10) or hour (``%Y-%m-%d %H``, 13)
+    label in the display timezone.
 
     Mode-specific strategy:
 
@@ -171,11 +172,11 @@ def _timestamp_date_expr() -> str:
     try:
         from evtx_tool.gui.models import _tz_state as _state
     except Exception:
-        return "LEFT(CAST(timestamp_utc AS VARCHAR), 10)"
+        return f"LEFT(CAST(timestamp_utc AS VARCHAR), {n})"
     mode = _state.get("mode", "utc")
 
     if mode == "utc":
-        return "LEFT(CAST(timestamp_utc AS VARCHAR), 10)"
+        return f"LEFT(CAST(timestamp_utc AS VARCHAR), {n})"
 
     if mode in ("specific", "local"):
         if mode == "local":
@@ -195,19 +196,59 @@ def _timestamp_date_expr() -> str:
                 "strftime("
                 "CAST(timestamp_utc AS TIMESTAMP) AT TIME ZONE 'UTC' "
                 f"AT TIME ZONE '{tz_name}', "
-                "'%Y-%m-%d')"
+                f"'{fmt}')"
             )
 
     # local / custom — offset-based fallback (no per-event DST awareness).
     off = _tz_offset_seconds()
     if off == 0:
-        return "LEFT(CAST(timestamp_utc AS VARCHAR), 10)"
+        return f"LEFT(CAST(timestamp_utc AS VARCHAR), {n})"
     sign = "+" if off > 0 else "-"
     return (
         "strftime("
         f"CAST(timestamp_utc AS TIMESTAMP) {sign} INTERVAL '{abs(off)} seconds', "
-        "'%Y-%m-%d')"
+        f"'{fmt}')"
     )
+
+
+def _timestamp_date_expr() -> str:
+    return _timestamp_label_expr("%Y-%m-%d", 10)
+
+
+def _timestamp_hour_expr() -> str:
+    """``YYYY-MM-DD HH`` in the display time zone: the date tree's hour level."""
+    return _timestamp_label_expr("%Y-%m-%d %H", 13)
+
+
+# The date tree filters on the date, or -- for a day with only some hours
+# ticked -- on the hour: both are that one column's own filter, so a popup for
+# it must suspend both, or reopening it would only offer the filtered hours.
+DATE_FILTER_KEYS = frozenset({"timestamp_date", "timestamp_hour"})
+
+
+def same_filter_column(a: str, b: str) -> bool:
+    """True when quick-filter keys *a* and *b* belong to the same column."""
+    return a == b or (a in DATE_FILTER_KEYS and b in DATE_FILTER_KEYS)
+
+
+def hour_counts(arrow_table, day: str, where_sql: "str | None" = None,
+                where_params: "list | None" = None) -> "dict[str, int]":
+    """``{"HH": count}`` for display day *day* (``YYYY-MM-DD``) in *arrow_table*,
+    within *where_sql*.  The date tree's hour level, loaded when a day is
+    first expanded: one grouped query over one day, cheap even on millions of
+    rows, so it runs on the GUI thread."""
+    import duckdb
+    con = duckdb.connect()
+    try:
+        con.register("events", arrow_table)
+        date_e, hour_e = _timestamp_date_expr(), _timestamp_hour_expr()
+        cond = f"{date_e} = ?" + (f" AND ({where_sql})" if where_sql else "")
+        rows = con.execute(
+            f"SELECT {hour_e}, COUNT(*) FROM events WHERE {cond} GROUP BY 1",
+            [day, *(where_params or [])]).fetchall()
+    finally:
+        con.close()
+    return {str(h)[11:13]: int(c) for h, c in rows if h and len(str(h)) >= 13}
 
 
 def resolve_col_expr(col_key: str) -> str | None:
@@ -219,6 +260,8 @@ def resolve_col_expr(col_key: str) -> str | None:
     """
     if col_key == "timestamp_date":
         return _timestamp_date_expr()
+    if col_key == "timestamp_hour":
+        return _timestamp_hour_expr()
     return _COL_MAP.get(col_key)
 
 
@@ -246,7 +289,7 @@ def build_cascade_where(
 
     for f in quick_filters:
         k = f.get("key", "")
-        if k == exclude_col_key:
+        if same_filter_column(k, exclude_col_key):
             continue                 # skip this column's own filter
         # Use resolve_col_expr so the dynamic timestamp_date expression
         # (display-TZ aware) is picked up here too.
@@ -293,7 +336,7 @@ class NormalColValueWorker(QThread):
     # timestamp_date is intentionally not in _COL_MAP (it's dynamic — see
     # _timestamp_date_expr).  Re-add it here so the NormalColValueWorker
     # gate still recognises it as a valid quick-filter key.
-    _ALLOWED_KEYS: frozenset = frozenset({*_COL_MAP.keys(), "timestamp_date"})
+    _ALLOWED_KEYS: frozenset = frozenset({*_COL_MAP.keys(), "timestamp_date", "timestamp_hour"})
 
     def __init__(
         self,
@@ -337,6 +380,9 @@ class NormalColValueWorker(QThread):
         """
         if key == "timestamp_date":
             return NormalColValueWorker._display_date(ev.get("timestamp", ""))
+        if key == "timestamp_hour":
+            from evtx_tool.gui.models import display_hour
+            return display_hour(ev.get("timestamp", ""))
         if key == "log":
             return str(ev.get("log") or ev.get("channel", "")).lower()
         return str(ev.get(key, "")).lower()
