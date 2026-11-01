@@ -137,6 +137,7 @@ python -m sentinel.cli analyze --evtx C:\Target   --baseline baseline/ --sigma C
 | [Hayabusa Integration](docs/10-hayabusa.md) | Download, configure, run Hayabusa — auto-detected paths, update-rules |
 | [PowerShell History Extraction](docs/10b-ps-extract.md) | PS session/command/script-block reconstruction — output files, ATT&CK detection, prerequisites |
 | [View Logon Sessions](docs/10c-logon-sessions.md) | Reconstruct Windows logon sessions, filter to a session, detect LUID reuse, linked UAC pairs |
+| [Inbound RDP intervals](docs/10d-inbound-rdp.md) | Separate reused SessionIDs, proved interval durations, and visible reconnect references |
 
 ### Output
 

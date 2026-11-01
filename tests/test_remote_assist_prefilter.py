@@ -29,15 +29,14 @@ from PySide6.QtWidgets import QApplication                       # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
 
-GOLDEN_COUNTS = {"Remote Help": 6, "RDP (Outbound)": 89, "Classic RA": 43,
-                 "RDP Session": 67, "Quick Assist": 25}
-# Updated for "a duration needs a logged start AND end" (Codex audit-2 A2).
-# Diffed against the previous build on this same synthetic set: 230 sessions,
-# same types and fields; only "duration" (and duration_secs) changed, to
-# "Unavailable", on the 25 Quick Assist, 6 Remote Help and 33 Classic RA rows
-# without both a start and an end.  No completed session changed.
-# Previous value: 929f398c8f114032ba58453d9a21a8e7b3afe57f66c6bb2744a8ee05c0ca98c5
-GOLDEN_SHA = "918ecf0e0c90362e31e1a7603ded84ed48d8f9884bd42537b6d854cc9301a933"
+GOLDEN_COUNTS = {"Remote Help": 6, "RDP (Outbound)": 80, "Classic RA": 50,
+                 "Quick Assist": 25}
+# Updated for audit-2's proved-duration rule, then S2/S3's documented Classic
+# RA and outbound RDP boundaries. The fingerprint covers every non-inbound
+# classifier branch; inbound reconstruction has its own boundary/GUI/CSV test.
+# Stable synthetic keys keep this regression test independent of Row/Continuity
+# display numbering. The noise-invariance check below protects the prefilter.
+GOLDEN_SHA = "e0f4fd08bec520c975787fda92b0b61e72ad98dde1a971ed2d000c8c4dd3e835"
 
 CHECKS = []
 
@@ -122,11 +121,16 @@ def main() -> int:
 
     print("=== 1. every _classify branch gives the pre-change result ===")
     s = build(synth(11))
-    counts = dict(Counter(x.get("type") for x in s))
+    unchanged = [{k:v for k,v in row.items() if k not in ("row_ref", "continuity")}
+                 for row in s if row["type"] != "RDP Session"]
+    for row in unchanged:
+        if row["session_key"].startswith("__syn_"):
+            row["session_key"] = "__synthetic_key__"
+    counts = dict(Counter(x.get("type") for x in unchanged))
     check("session counts per type match the pre-change build", counts == GOLDEN_COUNTS,
           str(counts))
     check("the sessions themselves are identical (fingerprint)",
-          fingerprint(s) == GOLDEN_SHA, fingerprint(s)[:16])
+          fingerprint(unchanged) == GOLDEN_SHA, fingerprint(unchanged)[:16])
 
     print("\n=== 2. irrelevant events change nothing, and cost little ===")
     base = synth(11)
@@ -134,7 +138,7 @@ def main() -> int:
     s2 = build(base + noise(100_000))
     el = time.monotonic() - t0
     check("100k events no rule can use leave the sessions unchanged",
-          fingerprint(s2) == GOLDEN_SHA)
+          fingerprint(s2) == fingerprint(s))
     print(f"  (info) 100k-event build took {el:.2f}s")
 
     ok = sum(1 for _n, c, _d in CHECKS if c)

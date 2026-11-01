@@ -20,7 +20,8 @@ EventHawk scans the full unfiltered event set and opens the session browser. The
 
 ## Events Used
 
-EventHawk builds sessions from six Security log event IDs:
+EventHawk builds sessions from Security log event IDs, with loaded startup
+markers used as a pairing boundary:
 
 | Event ID | What It Records |
 |----------|-----------------|
@@ -30,6 +31,8 @@ EventHawk builds sessions from six Security log event IDs:
 | 4648 | Explicit credentials used (RunAs / network pivot) |
 | 4672 | Special privileges assigned to new logon |
 | 4688 | Process creation (linked to session via SubjectLogonId) |
+| 4608 | Security auditing started; marks a new boot epoch for LUID pairing |
+| Kernel-General 12 | Operating system started; also marks a new boot epoch when loaded |
 
 > **Tip:** For best results, load Security log EVTX files (`Security.evtx`). Sessions can still be partially reconstructed from other logs containing 4688 or 4648 events.
 
@@ -113,6 +116,12 @@ Tick **Hide service sessions** to suppress logon-type-5 (Service) rows. On busy 
 
 ## Session Identity and LUID Reuse
 
+When loaded evidence includes Security 4608 or Kernel-General 12, EventHawk
+treats that startup event as a hard boot boundary. It will not pair a 4624 on
+one side with a 4634 on the other, or link split-token LUIDs across it. If the
+startup marker was not collected, EventHawk cannot prove that a reboot did not
+occur.
+
 Windows LogonIds (LUIDs) are locally unique per boot — they reset after a reboot and can be reused by a later session on the same host. EventHawk prevents false merges by:
 
 1. Scoping each session to the host that recorded it (`Computer` field)
@@ -126,6 +135,8 @@ This means multi-host and multi-reboot captures can be loaded together without s
 ## Duration Notes
 
 A duration is shown only when the log proves both ends of the session: its logon and its logoff. EventHawk never derives one from the last event seen or the next logon, because a session can stay open long after its last logged event. The **Last Activity** column shows the last event seen for the session, so the observed span is still visible, labelled as what it is.
+
+Duration arithmetic uses the recorded timestamp precision. Whole-second spans display as before (for example, `4s`); a fractional span remains visible (for example, `1.5s`) rather than being rounded down.
 
 
 - **Unavailable (no logoff in log)** — the logon is known but no logoff was recorded. The session may still be open, or the logoff event was not captured.
@@ -145,7 +156,7 @@ View Logon Sessions works in both **Normal Mode** and **Juggernaut Mode**. The s
 - Session reconstruction depends on the presence of EID 4624 in the loaded files. Sessions only seen via 4688 (process creates with no corresponding logon event) will appear as partial rows.
 - If the logoff is in an EVTX file that was not loaded, the duration reads Unavailable; load that file to get it.
 - Type-5 (Service) sessions represent Windows service accounts, not human users. Hide them with the checkbox to reduce noise.
-- LUID reuse across reboots on the same host is handled automatically (see Session Identity above), but if logoff events are missing, the time-window boundary is estimated from the last seen event, which may be slightly imprecise.
+- LUID reuse across a loaded startup marker is handled automatically (see Session Identity above). If no startup marker or logoff was collected, EventHawk does not infer a duration from last activity.
 - View Logon Sessions is GUI-only — not available from the CLI.
 
 ---

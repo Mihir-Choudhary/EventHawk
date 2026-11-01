@@ -37,9 +37,9 @@ def dataset():
                  BASE + timedelta(seconds=sec), eid, data=data)
         e["channel"] = e["provider"] = ch
         evs.append(e)
-    for eid, sec in [(1, 0), (2, 10), (3, 60)]:            # start, control, end
+    for eid, sec in [(16, 0), (21, 10), (18, 60)]:         # begun, shared control, disconnect
         add(RA, eid, sec, {"LocalFQDNName": "SYNTH-RA", "UserName": "SYNTH-USER"}, "SYNTH-RA")
-    for eid, sec in [(1, 120), (2, 130)]:                  # start, control, no end
+    for eid, sec in [(16, 120), (21, 130)]:                # begun, shared control, no end
         add(RA, eid, sec, {"LocalFQDNName": "SYNTH-RA", "UserName": "SYNTH-OTHER"}, "SYNTH-RA")
     add(RH, 1, 0, {"SessionId": "SYNTH-RH"}, "SYNTH-RH")
     add(RH, 2, 10, {"SessionId": "SYNTH-RH"}, "SYNTH-RH")
