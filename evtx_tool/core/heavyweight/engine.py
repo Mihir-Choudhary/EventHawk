@@ -385,13 +385,16 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | boo
                 except (ValueError, TypeError):
                     qualifiers = None
 
+        # A missing ProcessID/ThreadID stays missing (None, as in Normal mode).
+        # _safe_int's default of 0 recorded PID 0 / TID 0 -- the System Idle
+        # Process -- for records that carry no IDs (Codex release audit C5).
         exe = system.get("Execution") or {}
         if isinstance(exe, dict):
             attrs = exe.get("#attributes") or exe
-            pid   = _safe_int(attrs.get("ProcessID"))
-            tid   = _safe_int(attrs.get("ThreadID"))
+            pid   = _safe_int(attrs.get("ProcessID"), None)
+            tid   = _safe_int(attrs.get("ThreadID"), None)
         else:
-            pid, tid = 0, 0
+            pid, tid = None, None
 
         corr    = system.get("Correlation") or {}
         corr_id = ""
