@@ -346,6 +346,12 @@ class _DateLeafProxy:
         self._item.setHidden(not visible)
 
 
+def _chevron_path(name: str) -> str:
+    """Absolute path of a chevron image in evtx_tool/resources/images."""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "resources", "images", name)
+
+
 class ColumnFilterPopup(QDialog):
     """
     Excel-style dropdown that appears when clicking a filterable column header.
@@ -907,7 +913,27 @@ class ColumnFilterPopup(QDialog):
             QTreeWidget::indicator:checked { background: #7a5c1e; border-color: #9b7a2e; }
             QTreeWidget::indicator:indeterminate { background: #b8924a; border-color: #9b7a2e; }
             QTreeWidget::indicator:hover { border-color: #9a8878; }
-        """)
+            QTreeWidget::item:selected { background: #e4ddd3; color: #1e1a14; }
+        """ + self._branch_qss())
+
+    @staticmethod
+    def _branch_qss() -> str:
+        """Expand/collapse chevrons drawn from our own images.
+
+        Left to the native Windows style, the branch arrow follows the OS
+        dark/light setting while this popup's colours are fixed cream, so in OS
+        dark mode the arrow was drawn light on light: the years looked like
+        plain rows and only a double-click revealed the months.
+        """
+        def url(name: str) -> str:
+            return _chevron_path(name).replace("\\", "/")
+        return f"""
+            QTreeWidget::branch {{ background: transparent; }}
+            QTreeWidget::branch:closed:has-children {{ image: url("{url('chevron_closed.svg')}"); }}
+            QTreeWidget::branch:open:has-children {{ image: url("{url('chevron_open.svg')}"); }}
+            QTreeWidget::branch:closed:has-children:hover {{ image: url("{url('chevron_closed_hover.svg')}"); }}
+            QTreeWidget::branch:open:has-children:hover {{ image: url("{url('chevron_open_hover.svg')}"); }}
+        """
 
     def _filter_list(self, text: str) -> None:
         """Filter the checkbox list as the user types in the search box.
