@@ -7624,6 +7624,16 @@ class _ExportScopeDialog(QDialog):
         files_layout.setSpacing(3)
         files_layout.setContentsMargins(8, 8, 8, 8)
 
+        # Filter by file name: with hundreds of collected logs, scrolling for
+        # one host's Security.evtx is not workable.  Hidden rows keep their tick.
+        self._inp_file_search = QLineEdit()
+        self._inp_file_search.setPlaceholderText("Filter files by name\u2026")
+        self._inp_file_search.setClearButtonEnabled(True)
+        self._inp_file_search.textChanged.connect(self._apply_file_filter)
+        files_layout.addWidget(self._inp_file_search)
+        self._lbl_file_count = QLabel()
+        files_layout.addWidget(self._lbl_file_count)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFixedHeight(min(180, 32 * max(1, len(all_file_paths))))
@@ -7638,6 +7648,7 @@ class _ExportScopeDialog(QDialog):
             chk = QCheckBox(os.path.basename(fp))
             chk.setChecked(True)
             chk.setToolTip(fp)
+            chk.toggled.connect(self._update_file_count)
             inner_layout.addWidget(chk)
             self._file_checks.append((chk, fp))
 
@@ -7654,8 +7665,28 @@ class _ExportScopeDialog(QDialog):
         btn_none_files.clicked.connect(lambda: [c.setChecked(False) for c, _ in self._file_checks])
         mini_row.addWidget(btn_all_files)
         mini_row.addWidget(btn_none_files)
+        self._btn_select_shown = QPushButton("Select shown")
+        self._btn_select_shown.clicked.connect(lambda: self._tick_shown(True))
+        self._btn_clear_shown = QPushButton("Clear shown")
+        self._btn_clear_shown.clicked.connect(lambda: self._tick_shown(False))
+        mini_row.addWidget(self._btn_select_shown)
+        mini_row.addWidget(self._btn_clear_shown)
         mini_row.addStretch()
         files_layout.addLayout(mini_row)
+
+        # How the selected files are written.
+        self._rb_specific_one = QRadioButton("Into one file")
+        self._rb_specific_each = QRadioButton("One file per EVTX")
+        self._specific_grp = QButtonGroup(self)
+        self._specific_grp.addButton(self._rb_specific_one)
+        self._specific_grp.addButton(self._rb_specific_each)
+        self._rb_specific_one.setChecked(True)
+        out_row = QHBoxLayout()
+        out_row.addWidget(self._rb_specific_one)
+        out_row.addWidget(self._rb_specific_each)
+        out_row.addStretch()
+        files_layout.addLayout(out_row)
+        self._update_file_count()
 
         self._files_box.setVisible(False)
         root.addWidget(self._files_box)
@@ -7719,6 +7750,28 @@ class _ExportScopeDialog(QDialog):
     def selected_files(self) -> set:
         """Returns set of full file paths selected (only meaningful for 'specific')."""
         return {fp for chk, fp in self._file_checks if chk.isChecked()}
+
+    def specific_separate(self) -> bool:
+        """'Specific files': True = one output per EVTX, False = one combined file."""
+        return self._rb_specific_each.isChecked()
+
+    def _apply_file_filter(self, text: str) -> None:
+        needle = text.strip().lower()
+        for chk, fp in self._file_checks:
+            chk.setHidden(bool(needle) and needle not in os.path.basename(fp).lower())
+        self._update_file_count()
+
+    def _tick_shown(self, checked: bool) -> None:
+        for chk, _fp in self._file_checks:
+            if not chk.isHidden():
+                chk.setChecked(checked)
+        self._update_file_count()
+
+    def _update_file_count(self, *_args) -> None:
+        shown = sum(1 for chk, _ in self._file_checks if not chk.isHidden())
+        self._lbl_file_count.setText(
+            f"{shown} of {len(self._file_checks)} shown, "
+            f"{len(self.selected_files())} selected")
 
 
 # ── Main Window ───────────────────────────────────────────────────────────────
@@ -15703,6 +15756,9 @@ class MainWindow(QMainWindow):
         if scope == "separate":
             self._export_separate(all_file_paths)
             return
+        if scope == "specific" and dlg.specific_separate():
+            self._export_separate(sorted(specific_files))
+            return
 
         # ── Resolve events for the other scopes ───────────────────────────
         if scope == "view":
@@ -15813,6 +15869,9 @@ class MainWindow(QMainWindow):
                 + ("\n\nNamed differently from their source (the same file name in two "
                    "folders, or a file already in the output folder): " + ", ".join(renamed)
                    if renamed else "")
+                + ("\n\nNo events, so no file written: "
+                   + ", ".join(fp for fp in file_paths if fp not in out_paths)
+                   if any(fp not in out_paths for fp in file_paths) else "")
             )
         except Exception as exc:
             logger.exception("Per-file export failed: %s", out_dir)
