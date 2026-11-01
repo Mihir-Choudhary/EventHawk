@@ -112,11 +112,16 @@ def main() -> int:
     for slot in ("_on_wifi_jm_events_ready", "_on_wifi_jm_fetch_error",
                  "_on_remote_assist_jm_ready", "_on_remote_assist_jm_error",
                  "_on_computer_norm_jm_ready", "_on_computer_norm_jm_error",
-                 "_export_juggernaut", "_on_ps_finished", "_on_ps_error"):
+                 "_export_juggernaut", "_export_juggernaut_separate", "_run_jm_export",
+                 "_on_ps_finished", "_on_ps_error"):
         body = _inspect.getsource(getattr(MainWindow, slot))
+        # Only the Juggernaut export's completion callbacks; the checks before
+        # the worker starts answer a click directly.
         if slot == "_export_juggernaut":
-            # Only its completion callbacks; the checks before the worker
-            # starts answer a click directly.
+            body = body[body.index("def _done"):body.index("self._run_jm_export(")]
+        elif slot == "_export_juggernaut_separate":
+            body = body[body.index("def _summary"):body.index("def _step")]
+        elif slot == "_run_jm_export":
             body = body[body.index("def _on_ok"):body.index("worker.progress.connect")]
         raw = [m for m in ("QMessageBox.information(", "QMessageBox.warning(",
                            "QMessageBox.critical(", ".exec()") if m in body]

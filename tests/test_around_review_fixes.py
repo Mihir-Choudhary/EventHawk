@@ -58,6 +58,15 @@ def jm_export(mw, tmpdir):
     out = os.path.join(tmpdir, "around_export.csv")
     orig = mw.QFileDialog.getSaveFileName
     mw.QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (out, "CSV (*.csv)"))
+    # The export asks for a scope (spec R-10); this checks the tab's own view.
+    orig_dlg = mw._ExportScopeDialog
+
+    class _ViewScope(orig_dlg):
+        def exec(self):
+            self._rb_view.setChecked(True)
+            self._on_ok()
+            return mw.QDialog.DialogCode.Accepted
+    mw._ExportScopeDialog = _ViewScope
     try:
         m = T.Mode(mw, True)
         w = mw.MainWindow()
@@ -84,6 +93,7 @@ def jm_export(mw, tmpdir):
         T.teardown(w, True, m)
     finally:
         mw.QFileDialog.getSaveFileName = orig
+        mw._ExportScopeDialog = orig_dlg
 
 
 def chain_tab(mw, jm):

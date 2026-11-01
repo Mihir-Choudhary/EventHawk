@@ -15878,32 +15878,69 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Export Failed", str(exc))
 
     def _export_juggernaut(self) -> None:
-        """Export events from the Arrow table when Juggernaut Mode is active."""
+        """Export from the Arrow table in Juggernaut Mode.
+
+        Same scope chooser as Normal mode: the current view, all files
+        combined, one file per source, or specific files as one file or one
+        file per EVTX.  It used to write only the active tab's view, so
+        "Specific files" existed in Normal mode only.
+        """
         if self._hw_model is None:
             QMessageBox.information(self, "Nothing to Export", "No Juggernaut data loaded.")
             return
-
-        # Use the active per-file model if a per-file tab is open, so export
-        # is scoped to that file's events (including its fixed source_file filter).
+        # Use the active per-file model if a per-file tab is open, so the view
+        # export is scoped to that file's events (including its fixed filter).
         _active_fp   = getattr(self, "_active_file_tab", None)
         _file_state  = self._file_tabs.get(_active_fp) if _active_fp else None
         _export_model = _file_state.model if _file_state else self._hw_model
-        from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
-        if not isinstance(_export_model, _ATM):
-            QMessageBox.information(
-                self, "Export",
-                "This tab holds events copied from a chain (a chain tab, or an "
-                "Around tab made from one), which Juggernaut export cannot read. "
-                "Export from the All Events tab, a file tab or another Around tab "
-                "instead.")
+        full = self._hw_model._full_table
+        import pyarrow.compute as _pc
+        counts = {str(r["values"]): int(r["counts"])
+                  for r in _pc.value_counts(full["source_file"]).to_pylist()
+                  if r["values"] is not None}
+        all_files = sorted(counts)
+        scope_dlg = _ExportScopeDialog(
+            all_file_paths=all_files, active_file=_active_fp,
+            view_mode=self._view_mode, total_events=len(full), parent=self,
+        )
+        if scope_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        scope = scope_dlg.selected_scope()
+        chosen = sorted(scope_dlg.selected_files())
+        if scope == "separate" or (scope == "specific" and scope_dlg.specific_separate()):
+            self._export_juggernaut_separate(all_files if scope == "separate" else chosen, counts)
             return
 
-        total = _export_model._total_rows   # current filtered count
+        from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
+        if scope == "view":
+            if not isinstance(_export_model, _ATM):
+                QMessageBox.information(
+                    self, "Export",
+                    "This tab holds events copied from a chain (a chain tab, or an "
+                    "Around tab made from one), which Juggernaut export cannot read. "
+                    "Export from the All Events tab, a file tab or another Around tab "
+                    "instead.")
+                return
+            # The tab's WHERE belongs to the tab's own table: an around tab made
+            # from a filtered snapshot holds a subset, and running its WHERE over
+            # the full table exported events the tab does not show.
+            table = _export_model._full_table
+            where_sql, params = _export_model._combined_where()
+            total = _export_model._total_rows   # current filtered count
+            order_model = _export_model
+        elif scope == "specific":
+            table = full
+            where_sql = f"source_file IN ({', '.join('?' for _ in chosen)})"
+            params = list(chosen)
+            total = sum(counts.get(f, 0) for f in chosen)
+            order_model = self._hw_model
+        else:  # combined
+            table, where_sql, params, total = full, "1=1", [], len(full)
+            order_model = self._hw_model
         if total == 0:
             QMessageBox.information(self, "Nothing to Export",
                                     "No events match the current filters.")
             return
-
         path, _ = QFileDialog.getSaveFileName(
             self,
             f"Export Events — ⚡ Juggernaut ({total:,} events)",
@@ -15912,63 +15949,87 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        row_limit = self._jm_export_row_limit(total, ext)
+        if row_limit is None:
+            return
 
-        where_sql, params = _export_model._combined_where()
-        sort_col  = _export_model._sort_col
-        direction = "ASC" if _export_model._sort_asc else "DESC"
+        def _done(result) -> None:
+            kind = result[0]
+            if kind == "ok":
+                self._warn_blocking("Exported", f"Exported {result[1]:,} events to:\n{result[2]}",
+                                    icon=QMessageBox.Icon.Information)
+            elif kind == "cancelled":
+                self._warn_blocking(
+                    "Export Cancelled",
+                    "Export was cancelled and the partial file was deleted.\n\n"
+                    "A truncated export is not written, so it can never be "
+                    "mistaken for the complete set.",
+                    icon=QMessageBox.Icon.Information,
+                )
+            else:
+                self._warn_blocking("Export Failed", result[1], icon=QMessageBox.Icon.Critical)
+        self._run_jm_export(table, where_sql, params, self._jm_export_order(order_model),
+                            path, ext, row_limit, total, _done)
+
+    @staticmethod
+    def _jm_export_order(model) -> str:
         # ALWAYS append a unique (source_file, record_id) tiebreaker:
         #  1. same-timestamp rows export in deterministic, reproducible order;
         #  2. the HTML/XML path paginates with LIMIT/OFFSET — without a
         #     total order, ties spanning a batch boundary can be DUPLICATED
         #     or SKIPPED between batches (rows silently lost from exports).
-        order_sql = (f"{sort_col} {direction}, "
-                     f"source_file {direction}, record_id {direction}")
+        direction = "ASC" if model._sort_asc else "DESC"
+        return (f"{model._sort_col} {direction}, "
+                f"source_file {direction}, record_id {direction}")
 
-        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    def _jm_export_row_limit(self, total: int, ext: str) -> "int | None":
+        """Rows to write, or None if the user declined the HTML/XML cap.
 
-        # Row-cap prompt must be answered before the worker starts — it is the
-        # last thing on this path that needs the user.
-        export_row_limit = total
-        if ext not in ("csv", "json"):
-            _HTML_XML_MAX = 100_000
-            if total > _HTML_XML_MAX:
-                reply = QMessageBox.question(
-                    self, "Large Export — Memory Safety Cap",
-                    f"<b>{total:,} events</b> matched the current filter.<br><br>"
-                    f"HTML/XML export is capped at <b>{_HTML_XML_MAX:,} rows</b> "
-                    f"to prevent out-of-memory crashes<br>"
-                    f"(browsers/editors cannot handle millions of rows either).<br><br>"
-                    f"Export the first <b>{_HTML_XML_MAX:,} rows</b>?<br>"
-                    f"<i>Use CSV or JSON for the full dataset — no row limit.</i>",
-                    QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-                )
-                if reply != QMessageBox.StandardButton.Ok:
-                    return
-                export_row_limit = _HTML_XML_MAX
+        The row-cap prompt must be answered before a worker starts — it is the
+        last thing on the export path that needs the user."""
+        if ext in ("csv", "json"):
+            return total
+        _HTML_XML_MAX = 100_000
+        if total <= _HTML_XML_MAX:
+            return total
+        reply = QMessageBox.question(
+            self, "Large Export — Memory Safety Cap",
+            f"<b>{total:,} events</b> matched the current filter.<br><br>"
+            f"HTML/XML export is capped at <b>{_HTML_XML_MAX:,} rows</b> "
+            f"to prevent out-of-memory crashes<br>"
+            f"(browsers/editors cannot handle millions of rows either).<br><br>"
+            f"Export the first <b>{_HTML_XML_MAX:,} rows</b>?<br>"
+            f"<i>Use CSV or JSON for the full dataset — no row limit.</i>",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Ok:
+            return None
+        return _HTML_XML_MAX
 
+    def _run_jm_export(self, table, where_sql, params, order_sql, path, ext,
+                       row_limit, total, on_done) -> None:
+        """Run one Juggernaut export on a worker with a cancellable progress
+        dialog; *on_done* gets ("ok", count, path), ("cancelled",) or
+        ("failed", message)."""
         try:
             _shard_paths = self._hw_model._get_shard_paths()
         except Exception:
             _shard_paths = []
-
         # Cancellable progress instead of a frozen window.  The export reads a
         # shared immutable Arrow table, so running it on a worker is safe.
         dlg = QProgressDialog(
             f"Exporting {total:,} events…", "Cancel", 0,
-            max(1, min(total, export_row_limit)), self,
+            max(1, min(total, row_limit)), self,
         )
         dlg.setWindowTitle("Exporting")
         dlg.setWindowModality(Qt.WindowModality.WindowModal)
         dlg.setMinimumDuration(400)   # don't flash for small exports
         dlg.setAutoClose(False)
         dlg.setAutoReset(False)
-
-        # The tab's WHERE belongs to the tab's own table: an around tab made
-        # from a filtered snapshot holds a subset, and running its WHERE over
-        # the full table exported events the tab does not show.
         worker = _JMExportWorker(
-            _export_model._full_table, _shard_paths, where_sql, params,
-            order_sql, path, ext, export_row_limit, parent=self,
+            table, _shard_paths, where_sql, params,
+            order_sql, path, ext, row_limit, parent=self,
         )
         self._jm_export_worker = worker   # keep a reference; QThread must outlive run()
 
@@ -15978,27 +16039,84 @@ class MainWindow(QMainWindow):
 
         def _on_ok(count: int, out_path: str) -> None:
             dlg.close()
-            self._warn_blocking("Exported", f"Exported {count:,} events to:\n{out_path}",
-                                icon=QMessageBox.Icon.Information)
+            on_done(("ok", count, out_path))
 
         def _on_failed(msg: str) -> None:
             dlg.close()
-            if msg == "__cancelled__":
-                self._warn_blocking(
-                    "Export Cancelled",
-                    "Export was cancelled and the partial file was deleted.\n\n"
-                    "A truncated export is not written, so it can never be "
-                    "mistaken for the complete set.",
-                    icon=QMessageBox.Icon.Information,
-                )
-            else:
-                self._warn_blocking("Export Failed", msg, icon=QMessageBox.Icon.Critical)
-
+            on_done(("cancelled",) if msg == "__cancelled__" else ("failed", msg))
         worker.progress.connect(_on_progress)
         worker.finished_ok.connect(_on_ok)
         worker.failed.connect(_on_failed)
         dlg.canceled.connect(worker.cancel)
         worker.start()
+
+    def _export_juggernaut_separate(self, files: list, counts: dict) -> None:
+        """One output per source file, written one after another.
+
+        Files with no events are named in the summary instead of being written
+        empty; if one export fails or is cancelled the rest are not started
+        and the summary says exactly which files were and were not written.
+        """
+        out_dir = QFileDialog.getExistingDirectory(
+            self, "Select Output Folder for Separate Exports"
+        )
+        if not out_dir:
+            return
+        from PySide6.QtWidgets import QInputDialog
+        fmt, ok = QInputDialog.getItem(
+            self, "Export Format", "Choose output format:",
+            ["CSV", "JSON", "HTML", "XML"], 0, False
+        )
+        if not ok:
+            return
+        ext = fmt.lower()
+        sources = [f for f in files if counts.get(f, 0) > 0]
+        empty = [f for f in files if counts.get(f, 0) == 0]
+        biggest = max((counts[f] for f in sources), default=0)
+        cap = self._jm_export_row_limit(biggest, ext)
+        if cap is None:
+            return
+        out_paths = _separate_export_paths(sources, out_dir, ext)
+        order_sql = self._jm_export_order(self._hw_model)
+        full = self._hw_model._full_table
+        written: list = []
+
+        def _summary(stop: "tuple | None") -> None:
+            renamed = [os.path.basename(p) for fp, p in out_paths.items()
+                       if os.path.splitext(os.path.basename(p))[0]
+                       != os.path.splitext(os.path.basename(fp))[0]]
+            total_events = sum(c for _f, c in written)
+            text = f"Exported {total_events:,} events across {len(written)} files to:\n{out_dir}"
+            if renamed:
+                text += ("\n\nNamed differently from their source (the same file name in two "
+                         "folders, or a file already in the output folder): " + ", ".join(renamed))
+            if empty:
+                text += "\n\nNo events, so no file written: " + ", ".join(empty)
+            if stop is not None:
+                done = {f for f, _c in written}
+                text += (f"\n\nStopped ({'cancelled' if stop[0] == 'cancelled' else stop[1]}). "
+                         "Not written: " + ", ".join(f for f in sources if f not in done))
+            self._warn_blocking("Exported" if stop is None else "Export Stopped", text,
+                                icon=(QMessageBox.Icon.Information if stop is None
+                                      else QMessageBox.Icon.Warning))
+
+        def _step(i: int) -> None:
+            if i == len(sources):
+                _summary(None)
+                return
+            fp = sources[i]
+
+            def _done(result, fp=fp) -> None:
+                if result[0] == "ok":
+                    written.append((fp, result[1]))
+                    logger.info("Separate export: %d event(s) from %s -> %s",
+                                result[1], fp, result[2])
+                    _step(i + 1)
+                else:
+                    _summary(result)
+            self._run_jm_export(full, "source_file = ?", [fp], order_sql, out_paths[fp],
+                                ext, min(cap, counts[fp]), counts[fp], _done)
+        _step(0)
 
     # =========================================================================
     # CLEAR
