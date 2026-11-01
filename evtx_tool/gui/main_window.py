@@ -6395,6 +6395,9 @@ class _JMExportWorker(QThread):
                 events.append({
                     "record_id":      d.get("record_id"),
                     "event_id":       d.get("event_id"),
+                    # Left out, so every Juggernaut XML <Level> was empty
+                    # (Codex release audit C3).  None stays None, 0 stays 0.
+                    "level":          d.get("level"),
                     "level_name":     d.get("level_name") or "",
                     "timestamp":      d.get("timestamp_utc") or "",
                     "computer":       d.get("computer") or "",

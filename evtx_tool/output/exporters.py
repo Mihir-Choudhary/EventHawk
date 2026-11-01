@@ -188,7 +188,10 @@ def _export_xml_lxml(events: list[dict], filepath: str) -> None:
                          ("Task","task"),("Keywords","keywords"),
                          ("UserID","user_id")]:
             el = etree.SubElement(sys_el, tag)
-            el.text = _xml_text(ev.get(key, "") or "")
+            # `or ""` turned a real 0 (level 0 / LogAlways, the level of most
+            # classic events) into an empty element (Codex release audit C3).
+            _v = ev.get(key)
+            el.text = _xml_text("" if _v is None else _v)
         src_el = etree.SubElement(sys_el, "SourceFile")
         src_el.text = _xml_text(os.path.basename(ev.get("source_file", "")))
         tags = ev.get("attack_tags") or []
@@ -230,7 +233,8 @@ def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
                               ("Provider","provider"),("Computer","computer"),
                               ("Level","level"),("LevelName","level_name"),
                               ("Task","task"),("Keywords","keywords"),("UserID","user_id")]:
-                f.write(f"      <{tag}>{_esc(ev.get(key,''))}</{tag}>\n")
+                _v = ev.get(key)   # 0 stays 0; a missing value is empty, never "None"
+                f.write(f"      <{tag}>{_esc('' if _v is None else _v)}</{tag}>\n")
             f.write(f"      <SourceFile>{_esc(os.path.basename(ev.get('source_file','')))}</SourceFile>\n")
             f.write("    </System>\n")
             # BUG 21 fix: write ATT&CK tags in stdlib path to match lxml output
