@@ -12515,7 +12515,7 @@ class MainWindow(QMainWindow):
         _EXCLUDE_LAYERS = [
             # Simple list/string layers — gated on the value field having content
             ("event_id_exclude",  "event_id_expr",  "Event ID(s)"),
-            ("text_exclude",      "text_search",    "Text in description"),
+            ("text_exclude",      "text_search",    "Text"),
             ("source_exclude",    "sources",        "Source"),
             ("category_exclude",  "categories",     "Category"),
             ("user_exclude",      "users",          "User"),

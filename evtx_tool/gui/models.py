@@ -210,6 +210,9 @@ def apply_tz(raw_ts: str) -> str:
         )
 
 
+from evtx_tool.core.filters import SYSTEM_XML_NAMES          # noqa: E402
+_SYSTEM_XML_NAMES_LC = SYSTEM_XML_NAMES.lower()
+
 _display_date_memo: dict[str, str] = {}
 _display_date_memo_ver = [None]
 _DISPLAY_DATE_MEMO_MAX = 2_000_000
@@ -529,7 +532,9 @@ class EventTableModel(QAbstractTableModel):
         # One definition shared with the parse-time filter (core.filters), so
         # the view, parse-time/CLI filtering and Juggernaut cannot drift apart.
         from evtx_tool.core.filters import adv_search_haystack
-        return adv_search_haystack(ev)
+        # Without the System XML names: they are the same for every event, so
+        # the filter checks them once per term (see _filterAcceptsRow_impl).
+        return adv_search_haystack(ev, xml_names=False)
 
     @staticmethod
     def _build_search_str(ev: dict) -> str:
@@ -1833,11 +1838,14 @@ class EventFilterProxyModel(QSortFilterProxyModel):
 
             # Every term, combined per search_mode — matches the Juggernaut
             # side, which ANDs/ORs the same list.
+            # The System XML names are in every event, so they are checked
+            # once per term rather than stored in every cached haystack.
+            names = SYSTEM_XML_NAMES if self._adv_case_sensitive else _SYSTEM_XML_NAMES_LC
             if self._adv_text_regexes:
-                hits = [bool(r.search(desc_text)) if r is not None else False
+                hits = [bool(r.search(desc_text) or r.search(names)) if r is not None else False
                         for r in self._adv_text_regexes]
             else:
-                hits = [t in desc_text for t in self._adv_text_terms]
+                hits = [t in desc_text or t in names for t in self._adv_text_terms]
             if not hits:
                 found = False
             elif self._adv_text_mode == "OR":

@@ -821,7 +821,48 @@ _ADV_SEARCH_FIELDS = (
 )
 
 
-def adv_search_haystack(ev: dict) -> str:
+# The System element and attribute names of the event XML.  EventHawk keeps the
+# values, not the XML text, so these make "the XML" searchable by name too.
+SYSTEM_XML_NAMES = (
+    "Event System Provider Name Guid EventSourceName EventID Qualifiers Version "
+    "Level Task Opcode Keywords TimeCreated SystemTime EventRecordID Correlation "
+    "ActivityID Execution ProcessID ThreadID Channel Computer Security UserID "
+    "EventData UserData Data"
+)
+
+
+def event_description_text(ev: dict) -> str:
+    """The description shown in the details pane plus the semantic labels.
+
+    The details pane's description sentence (analysis.event_descriptions) and
+    the *_desc labels the SemanticNormalizer adds (e.g. LogonType 3 ->
+    "Network (SMB / RPC)").  Normal mode's events already carry the labels;
+    for an event that does not (parse-time filtering, Juggernaut's parse) they
+    are worked out here from the same code, so every mode searches the same
+    words.  Only event_id, provider, channel, keywords and event_data are read.
+    """
+    parts: list[str] = []
+    try:
+        from evtx_tool.analysis.event_descriptions import get_event_description
+        d = get_event_description(ev)
+        if d:
+            parts.append(str(d))
+    except Exception:
+        pass
+    labels = [v for k, v in ev.items() if isinstance(k, str) and k.endswith("_desc") and v]
+    if not labels and not ev.get("_normalized"):
+        try:
+            from evtx_tool.analysis.normalizer import SemanticNormalizer
+            tmp = dict(ev)
+            SemanticNormalizer.get().enrich(tmp)
+            labels = [v for k, v in tmp.items() if isinstance(k, str) and k.endswith("_desc") and v]
+        except Exception:
+            labels = []
+    parts.extend(str(v) for v in labels)
+    return " ".join(parts)
+
+
+def adv_search_haystack(ev: dict, xml_names: bool = True) -> str:
     """The text an Advanced Filter / parse-time text search looks through.
 
     ONE definition for the GUI view (EventTableModel.build_adv_search_str)
@@ -836,7 +877,9 @@ def adv_search_haystack(ev: dict) -> str:
     (flatten_searchable_values, line-split backslashes collapsed as in JM's
     ed_values) PLUS the EventData JSON serialised exactly as Juggernaut's
     event_data_json (orjson: compact separators, raw UTF-8), which is what
-    makes field names searchable.
+    makes field names searchable.  Plus the description and semantic labels
+    (event_description_text) and the System XML names (SYSTEM_XML_NAMES), so
+    the search covers the whole event (user request, 2026-11-01).
     """
     import json as _json
     import re as _re
@@ -858,6 +901,14 @@ def adv_search_haystack(ev: dict) -> str:
                 ed, separators=(",", ":"), ensure_ascii=False, default=str))
         except Exception:
             parts.append(str(ed))
+    _desc = event_description_text(ev)
+    if _desc:
+        parts.append(_desc)
+    if xml_names:
+        # The Normal view's per-event cache passes xml_names=False and checks
+        # SYSTEM_XML_NAMES once per term instead: the same words in every
+        # event would cost ~250 bytes per cached event for no information.
+        parts.append(SYSTEM_XML_NAMES)
     return " ".join(parts)
 
 

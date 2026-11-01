@@ -385,12 +385,19 @@ class FilterDialog(QDialog):
 
         body.addWidget(_styled_line())
 
-        # ── Text in description ───────────────────────────────────────────
+        # ── Text anywhere in the event ────────────────────────────────────
         text_row = QHBoxLayout()
-        self._lbl_text = _lbl("Text in description:")
+        self._lbl_text = _lbl("Text (anywhere in the event):")
         text_row.addWidget(self._lbl_text)
         self._inp_text = QLineEdit()
-        self._inp_text.setPlaceholderText("Search in event data values")
+        self._inp_text.setPlaceholderText("IP, user, path, hash, any word…")
+        _scope = ("Searches the whole event: every System field (provider, event ID, "
+                  "computer, channel, user SID, keywords, process/thread IDs, record ID, "
+                  "timestamps, GUIDs), every EventData / UserData value and field name, "
+                  "the description shown in the event details, the decoded labels "
+                  "(logon type, keywords ...) and the System XML element names.")
+        self._lbl_text.setToolTip(_scope)
+        self._inp_text.setToolTip(_scope)
         text_row.addWidget(self._inp_text, stretch=1)
         self._chk_regex = QCheckBox("RegExp")
         self._chk_regex.setToolTip("Treat search text as a regular expression")
@@ -1101,7 +1108,7 @@ class FilterDialog(QDialog):
                 re.compile(text_expr)
             except re.error as exc:
                 errors.append(
-                    f"Text in description: invalid regular expression — {exc}.\n"
+                    f"Text: invalid regular expression — {exc}.\n"
                     f"Uncheck 'RegExp' for a literal substring match, "
                     f"or fix the pattern."
                 )
