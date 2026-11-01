@@ -113,7 +113,11 @@ Design:
 - **R-6: fields EventHawk does not keep are refused, not shown empty.** A token naming a System element or
   attribute the parser does not keep (e.g. `Correlation[RelatedActivityID]`) is rejected in the dialog with
   "EventHawk does not keep <name>" so an empty column can never be mistaken for "the log has no value". A
-  kept field that an event simply lacks gives an empty cell. Cost if wrong: extend the parser for that field.
+  kept field that an event simply lacks gives an empty cell. And when a token matches **no event in the tab**
+  (typically a typo such as `{Data[IpAdress]}`), the user is warned "No event in this tab has a field named
+  IpAdress" and can edit or keep the column, so an all-empty column is never silent. Cost if wrong: extend the
+  parser for that field. (User, 2026-11-01: R-5 left to Claude, kept 1-based; R-6 confirmed with this
+  clarification; R-1 to R-4 and R-7 to R-9 approved.)
 - **One evaluator for both modes**: a pure-Python module `evtx_tool/core/custom_columns.py` (parse template →
   compiled spec; evaluate on an event dict). Normal evaluates over the in-memory events; JM streams the needed
   columns plus `event_data_json` from the shards in batches on a worker thread and evaluates the same code, then
@@ -186,6 +190,12 @@ Design:
   existing per-source export path, which already guarantees distinct output names).
 - **R-9:** the export summary names exactly which files were written; if a selected file has no events in scope,
   it is listed as "no events" rather than an empty file being written silently. Cost if wrong: write empty files.
+
+- **R-10: Juggernaut gets the same export dialog.** Found while planning: JM export has no scope chooser at all;
+  it always exports the active tab's current view, so "Specific files" (and this item) existed only in Normal
+  mode. JM now opens the same `_ExportScopeDialog` (current view, all combined, all separate, specific files with
+  the search and the one-file / per-file choice), each scope run by the existing JM export worker. Cost if wrong:
+  JM keeps view-only export.
 
 Tests: dialog unit tests (filter, persistence of checks across filter changes, select/clear shown, counts);
 export runs for both choices in both modes with output files compared to an independent count per source file.
