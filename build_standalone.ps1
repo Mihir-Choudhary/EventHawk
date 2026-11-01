@@ -63,6 +63,9 @@ Invoke-WebRequest "https://bootstrap.pypa.io/get-pip.py" -OutFile "$WorkDir\get-
 # 3 ── app code + icon + launcher -------------------------------------------
 Write-Host "==> [3/6] App code + icon + launcher"
 Copy-Item "$repo\evtx_tool" "$dst\evtx_tool" -Recurse -Force
+# Sentinel (Tools > Baseline Analysis) is a separate root package; without it
+# the installed app reported "Sentinel Not Installed".
+Copy-Item "$repo\sentinel" "$dst\sentinel" -Recurse -Force
 Copy-Item "$repo\eventhawk_gui.py", "$repo\evtx_tool.py" $dst -Force
 Copy-Item "$repo\evtx_tool\resources\images\eventhawk_logo.ico" "$dst\EventHawk.ico" -Force
 "@echo off`r`nstart """" ""%~dp0pythonw.exe"" ""%~dp0eventhawk_gui.py"" %*" | Set-Content "$dst\EventHawk.cmd" -Encoding ascii
