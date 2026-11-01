@@ -1235,6 +1235,36 @@ class FileTabState:
     iocs: dict | None = None
 
 
+def _separate_export_paths(file_paths: list[str], out_dir: str, ext: str) -> dict[str, str]:
+    """One output path per source file, never shared and never an existing file.
+
+    Naming each output after its source's base name alone sent two
+    "Security.evtx" from two machines to the same Security.json: the second
+    replaced the first (Codex PR review, PR-R2), and a file already in the
+    folder was overwritten too.  Same-named sources get their parent folder
+    in the name; anything still taken gets " (2)", " (3)", ...
+    """
+    stems: dict[str, list[str]] = {}
+    for fp in file_paths:
+        stem = os.path.splitext(os.path.basename(fp))[0]
+        stems.setdefault(stem.casefold(), []).append(fp)
+    taken: set[str] = set()
+    out: dict[str, str] = {}
+    for fp in file_paths:
+        stem = os.path.splitext(os.path.basename(fp))[0]
+        if len(stems[stem.casefold()]) > 1:
+            parent = os.path.basename(os.path.dirname(fp)) or "source"
+            stem = f"{stem} ({parent})"
+        name, n = stem, 1
+        while (name.casefold() in taken
+               or os.path.exists(os.path.join(out_dir, f"{name}.{ext}"))):
+            n += 1
+            name = f"{stem} ({n})"
+        taken.add(name.casefold())
+        out[fp] = os.path.join(out_dir, f"{name}.{ext}")
+    return out
+
+
 def _log_folder() -> str:
     """Where the log files are (see evtx_tool.core.logsetup)."""
     from evtx_tool.core.logsetup import log_directory
@@ -15530,20 +15560,25 @@ class MainWindow(QMainWindow):
             from evtx_tool.output.exporters import export
             exported_files = 0
             total_events = 0
-            for fp in file_paths:
-                data = self._per_file_data.get(fp)
-                if not data or not data.get("events"):
-                    continue
-                evts = data["events"]
-                base = os.path.splitext(os.path.basename(fp))[0]
-                out_path = os.path.join(out_dir, f"{base}.{ext}")
-                count = export(evts, out_path, None)
+            sources = [fp for fp in file_paths
+                       if (self._per_file_data.get(fp) or {}).get("events")]
+            out_paths = _separate_export_paths(sources, out_dir, ext)
+            for fp in sources:
+                out_path = out_paths[fp]
+                count = export(self._per_file_data[fp]["events"], out_path, None)
                 total_events += count
                 exported_files += 1
+                logger.info("Separate export: %d event(s) from %s -> %s", count, fp, out_path)
 
+            renamed = [os.path.basename(p) for fp, p in out_paths.items()
+                       if os.path.splitext(os.path.basename(p))[0]
+                       != os.path.splitext(os.path.basename(fp))[0]]
             QMessageBox.information(
                 self, "Exported",
                 f"Exported {total_events:,} events across {exported_files} files to:\n{out_dir}"
+                + ("\n\nNamed differently from their source (the same file name in two "
+                   "folders, or a file already in the output folder): " + ", ".join(renamed)
+                   if renamed else "")
             )
         except Exception as exc:
             logger.exception("Per-file export failed: %s", out_dir)
