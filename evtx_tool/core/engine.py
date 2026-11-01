@@ -201,9 +201,14 @@ def _extract_event_inline(data: dict, record_id: int, timestamp: str, source_fil
     provider_attrs = system.get("Provider", {})
     pname = ""
     provider_guid = ""
+    event_source_name = ""
     if isinstance(provider_attrs, dict):
         pname         = provider_attrs.get("#attributes", {}).get("Name", "")
         provider_guid = provider_attrs.get("#attributes", {}).get("Guid", "")
+        # Classic providers' second name (Provider@EventSourceName), stored by
+        # core/parser.py and Juggernaut but not by this inline extractor -- the
+        # one the GUI and CLI run (Codex release audit C4).
+        event_source_name = provider_attrs.get("#attributes", {}).get("EventSourceName", "")
 
     tc = system.get("TimeCreated", {})
     ts_str = timestamp
@@ -255,6 +260,7 @@ def _extract_event_inline(data: dict, record_id: int, timestamp: str, source_fil
         "channel":        system.get("Channel", ""),
         "provider":       pname,
         "provider_guid":  provider_guid,
+        "event_source_name": event_source_name,
         "computer":       system.get("Computer", ""),
         "level":          level,
         "level_name":     LEVEL_NAMES.get(level, str(level)),
