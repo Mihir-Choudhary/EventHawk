@@ -412,11 +412,23 @@ class SemanticNormalizer:
                 ev["service_start_desc"] = desc
 
         # ── Top-level Keywords field ──────────────────────────────────────────
+        # Decoded bit by bit from the keyword bits Windows defines
+        # (winmeta.xml: Audit Failure 0x0010.., Audit Success 0x0020.., ...).
+        # The exact-value table this replaces had the audit outcome reversed:
+        # 0x8020000000000000, a successful logon, read "Audit Failure (SQM)".
+        # Bits Windows does not define get no label rather than a guessed one.
         kw = ev.get("keywords")
-        if kw is not None:
-            desc = self._lookup("Keywords", kw)
-            if desc:
-                ev["keywords_desc"] = desc
+        if kw is not None and str(kw).strip() != "":
+            try:
+                kw_int = int(self._norm_hex(kw), 16)
+            except (ValueError, TypeError):
+                kw_int = None
+            if kw_int == 0:
+                ev["keywords_desc"] = "No Keywords"
+            elif kw_int is not None:
+                desc = self._bitwise_decode("Keywords", kw)
+                if desc:
+                    ev["keywords_desc"] = desc
 
         # FINDING-2: mark as normalized so future calls to enrich() are no-ops.
         ev["_normalized"] = True
