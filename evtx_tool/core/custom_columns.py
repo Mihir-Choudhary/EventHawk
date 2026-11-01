@@ -166,6 +166,7 @@ class CompiledColumn:
         out: list[str] = []
         found = False
         items = None
+        flat = None          # the EventData itself when it is a plain {name: value} map
         for p in self.parts:
             if not p.token:
                 out.append(p.literal)
@@ -177,19 +178,28 @@ class CompiledColumn:
                     v = None
             else:
                 ed = ev.get("event_data")
-                if items is None:
-                    items = data_items(ed)
-                if p.data_index:
-                    if p.data_index <= len(items):
-                        v = items[p.data_index - 1][1]
+                if not p.data_index and flat is None:
+                    # Most EventData is already flat: then a name lookup is a
+                    # dict lookup (flattening it would give the same pairs).
+                    flat = (ed if isinstance(ed, dict) and "Data" not in ed and not any(
+                        isinstance(x, (dict, list)) or (isinstance(k, str) and k[:1] in "#@")
+                        for k, x in ed.items()) else False)
+                if not p.data_index and flat is not False:
+                    v = flat.get(p.data_name)
                 else:
-                    for nm, iv in items:
-                        if nm == p.data_name:
-                            v = iv
-                            break
+                    if items is None:
+                        items = data_items(ed)
+                    if p.data_index:
+                        if p.data_index <= len(items):
+                            v = items[p.data_index - 1][1]
                     else:
-                        if isinstance(ed, dict):
-                            v = flatten_fields(ed).get(p.data_name)
+                        for nm, iv in items:
+                            if nm == p.data_name:
+                                v = iv
+                                break
+                        else:
+                            if isinstance(ed, dict):
+                                v = flatten_fields(ed).get(p.data_name)
             if v is not None:
                 found = True
                 self.hits[p.token] += 1
@@ -288,3 +298,105 @@ def field_catalog(ev: dict) -> list:
         else:
             out.append(("{Data[" + str(i) + "]}", f"Data #{i}", _render(v)))
     return out
+
+
+# ── Juggernaut: the same evaluator over the Parquet shards ─────────────────────
+
+# Event-dict key -> Parquet column, for the keys a template can name.
+_PARQUET_COLS: dict[str, str] = {
+    "event_id": "event_id", "qualifiers": "qualifiers", "version": "version", "level": "level",
+    "task": "task", "opcode": "opcode", "keywords": "keywords", "timestamp": "timestamp_utc",
+    "record_id": "record_id", "correlation_id": "correlation_id", "process_id": "process_id",
+    "thread_id": "thread_id", "channel": "channel", "computer": "computer", "user_id": "user_id",
+    "provider": "provider", "provider_guid": "provider_guid", "event_source_name": "event_source_name",
+}
+
+
+def sort_key_text(value: str, kind: str) -> str:
+    """A string whose plain ordering is the column's order (int_sort_key for an
+    Integer column; case-insensitive text with empty values last otherwise), so
+    Juggernaut can sort a custom column with ORDER BY exactly as Normal does."""
+    if kind == "int":
+        k = int_sort_key(value)
+        if k[0] == 0:
+            return "0" + format(k[1] + 2 ** 64, "021d")
+        return "1" + k[1] if k[0] == 1 else "2"
+    return "0" + value.lower() if value else "1"
+
+
+def arrow_column_values(compiled: CompiledColumn, table, shard_paths: list,
+                        batch: int = 65536, cancel=None) -> "list[str] | None":
+    """The column's value for every row of the Arrow *table*, in row order.
+
+    Juggernaut keeps EventData only in the Parquet shards, so each row is
+    matched to its shard row by (source_file, record_id) and rebuilt as the
+    same event dict Normal mode evaluates (timestamp in Normal's ISO form,
+    event_data parsed from event_data_json), then evaluated by the same code.
+    Returns None if *cancel()* turns true.
+    """
+    import duckdb
+    import pyarrow as pa
+    try:
+        import orjson
+        _loads = orjson.loads
+    except ImportError:                                  # pragma: no cover
+        _loads = json.loads
+    n = len(table)
+    need = {p.key for p in compiled.parts if p.key}
+    want_ed = any(p.token and not p.key for p in compiled.parts)
+    if compiled.eid_include or compiled.eid_exclude:
+        need.add("event_id")
+    if compiled.providers:
+        need.add("provider")
+    keys = [k for k in _PARQUET_COLS if k in need]
+    con = duckdb.connect()
+    try:
+        con.register("t", pa.table({
+            "__row": pa.array(range(n), pa.int64()),
+            "source_file": table["source_file"], "record_id": table["record_id"]}))
+        have = {r[0] for r in con.execute(
+            "DESCRIBE SELECT * FROM read_parquet(?, union_by_name=true)", [shard_paths]).fetchall()}
+        inner = [f"{_PARQUET_COLS[k]}" if _PARQUET_COLS[k] in have else f"NULL AS {_PARQUET_COLS[k]}"
+                 for k in keys]
+        if want_ed:
+            inner.append("event_data_json")
+        sel = ", ".join(["t.__row"] + [f"s.{_PARQUET_COLS[k]}" for k in keys]
+                        + (["s.event_data_json"] if want_ed else []))
+        def _query(distinct: bool) -> str:
+            return (f"SELECT {sel} FROM t LEFT JOIN ("
+                    f"SELECT {'DISTINCT ON (source_file, record_id) ' if distinct else ''}"
+                    f"source_file, record_id{''.join(', ' + c for c in inner)} "
+                    f"FROM read_parquet(?, union_by_name=true)"
+                    f") s USING (source_file, record_id) ORDER BY t.__row")
+        # One shard row per (source_file, record_id) is the normal case; if a
+        # key repeats, the join would yield extra rows and misalign every value
+        # after it, so then the shard side is de-duplicated first.
+        dup = con.execute("SELECT count(*) - count(DISTINCT (source_file, record_id)) "
+                          "FROM read_parquet(?, union_by_name=true)", [shard_paths]).fetchone()[0]
+        cur = con.execute(_query(bool(dup)), [shard_paths])
+        out: list[str] = []
+        value = compiled.value
+        ts_i = keys.index("timestamp") + 1 if "timestamp" in keys else -1
+        while True:
+            if cancel is not None and cancel():
+                return None
+            rows = cur.fetchmany(batch)
+            if not rows:
+                break
+            for row in rows:
+                ev = {k: row[i + 1] for i, k in enumerate(keys)}
+                if ts_i > 0 and row[ts_i]:
+                    # Juggernaut stores "YYYY-MM-DD HH:MM:SS.ffffff"; Normal keeps
+                    # the raw "YYYY-MM-DDTHH:MM:SS.ffffffZ".
+                    ev["timestamp"] = str(row[ts_i]).replace(" ", "T") + "Z"
+                if want_ed:
+                    raw = row[-1]
+                    if raw and compiled.applies(ev):
+                        try:
+                            ev["event_data"] = _loads(raw)
+                        except Exception:
+                            ev["event_data"] = {}
+                out.append(value(ev))
+        return out
+    finally:
+        con.close()

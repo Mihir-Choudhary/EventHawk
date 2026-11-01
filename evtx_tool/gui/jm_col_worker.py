@@ -262,6 +262,8 @@ def resolve_col_expr(col_key: str) -> str | None:
         return _timestamp_date_expr()
     if col_key == "timestamp_hour":
         return _timestamp_hour_expr()
+    if col_key.startswith("custom:"):
+        return f"cc_{col_key[7:]}"          # a custom column's Arrow column
     return _COL_MAP.get(col_key)
 
 

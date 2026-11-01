@@ -184,7 +184,7 @@ class _FilterThread(QThread):
     @classmethod
     def _sort_keys(cls, sort_col: str, sort_asc: bool) -> list:
         """Arrow sort keys, with the forensic tiebreaker preserved."""
-        if sort_col not in cls._SORTABLE:
+        if sort_col not in cls._SORTABLE and not sort_col.startswith("cc_"):
             sort_col = "timestamp_utc"
         direction = "ascending" if sort_asc else "descending"
         if sort_col == "timestamp_utc":
@@ -197,7 +197,7 @@ class _FilterThread(QThread):
     @classmethod
     def _order_by_sql(cls, sort_col: str, sort_asc: bool) -> str:
         """The same ordering as _sort_keys(), expressed for DuckDB."""
-        if sort_col not in cls._SORTABLE:
+        if sort_col not in cls._SORTABLE and not sort_col.startswith("cc_"):
             sort_col = "timestamp_utc"
         direction = "ASC" if sort_asc else "DESC"
         if sort_col == "timestamp_utc":
@@ -488,6 +488,7 @@ class _FilterThread(QThread):
         # the only core that must stay free is the GUI's.
         con.execute(f"SET threads={max(2, min((os.cpu_count() or 4) - 1, 16))}")
         con.register("events", self._full_table)
+        registered = self._full_table
 
         while True:
             item = self._q.get()          # blocks until request arrives
@@ -505,6 +506,13 @@ class _FilterThread(QThread):
                 (gen, where_sql, params, conditions_cfg,
                  text_search_cfg, sort_col, sort_asc) = item
 
+            # A custom column swaps in a new table (ArrowTableModel._set_table);
+            # queries must see it, not the one registered at start.
+            if registered is not self._full_table:
+                con.unregister("events")
+                con.register("events", self._full_table)
+                registered = self._full_table
+
             has_conditions = bool(conditions_cfg.get("conditions"))
             _tc = (text_search_cfg if isinstance(text_search_cfg, (list, tuple))
                    else [text_search_cfg])
@@ -513,7 +521,9 @@ class _FilterThread(QThread):
             # A column-header click changes only (sort_col, sort_asc).  Re-running
             # the filter for that would be pure waste, so the previous result is
             # reused and merely re-ordered; an identical repeat is emitted as-is.
-            fkey = (where_sql, tuple(params),
+            # The table is part of the key: a result computed over the table
+            # before a custom column was added must never be handed out again.
+            fkey = (id(registered), where_sql, tuple(params),
                     repr(conditions_cfg), repr(text_search_cfg))
             skey = (sort_col, sort_asc)
             if fkey == self._last_fkey and self._last_result is not None:
@@ -534,10 +544,10 @@ class _FilterThread(QThread):
             sorted_in_sql = False
             try:
                 if where_sql == "1=1" and not params and not has_conditions and not has_full_text:
-                    result = self._unfiltered.get(skey)
+                    result = self._unfiltered.get((id(registered), skey))
                     if result is None:
                         result = self._metadata_filter(con, where_sql, params, sort_col, sort_asc)
-                        self._unfiltered = {skey: result}
+                        self._unfiltered = {(id(registered), skey): result}
                     sorted_in_sql = True
                 elif not has_conditions and not has_full_text:
                     # Metadata-only (including the unfiltered "1=1" case).  This
@@ -667,7 +677,10 @@ class ArrowTableModel(QAbstractTableModel):
         self._record_id_where_sql = ""
         self._record_id_params: list[Any] = []
         self._bookmarked_keys: frozenset = frozenset()  # (source_file, record_id) pairs
-
+        # Custom columns of this tab (core.custom_columns.CompiledColumn); their
+        # values are the Arrow columns cc_<id> (text) and cc_<id>_s (sort key)
+        # appended to this model's own copy of the table.
+        self._custom: list = []
         self._sort_col = "timestamp_utc"
         self._sort_asc = True
         self._generation = 0
@@ -703,7 +716,14 @@ class ArrowTableModel(QAbstractTableModel):
         return self._total_rows
 
     def columnCount(self, parent=QModelIndex()) -> int:
-        return len(COLUMNS)
+        return len(COLUMNS) + len(self._custom)
+
+    def column_title(self, section: int) -> str:
+        """The header text of *section* without a filter marker."""
+        if section < len(COLUMNS):
+            return COLUMNS[section]
+        i = section - len(COLUMNS)
+        return self._custom[i].spec.title if i < len(self._custom) else ""
 
     def headerData(self, section: int, orientation, role=Qt.ItemDataRole.DisplayRole):
         if orientation == Qt.Orientation.Horizontal:
@@ -711,7 +731,7 @@ class ArrowTableModel(QAbstractTableModel):
                 overrides = getattr(self, "_header_overrides", {})
                 if section in overrides:
                     return overrides[section]
-                return COLUMNS[section] if section < len(COLUMNS) else ""
+                return self.column_title(section)
             if role == Qt.ItemDataRole.FontRole:
                 if ArrowTableModel._header_font is None:
                     ArrowTableModel._header_font = QFont("Segoe UI", 8)
@@ -791,6 +811,9 @@ class ArrowTableModel(QAbstractTableModel):
         return "" if v is None else str(v)
 
     def _cell_text(self, local: int, abs_row: int, col: int) -> str:
+        if col >= len(COLUMNS):
+            i = col - len(COLUMNS)
+            return self._v(local, f"cc_{self._custom[i].spec.col_id}") if i < len(self._custom) else ""
         if col == COL_NUM:
             if self._bookmarked_keys:
                 sf  = self._v(local, "source_file")
@@ -1159,6 +1182,8 @@ class ArrowTableModel(QAbstractTableModel):
         if key == "timestamp_hour":
             from evtx_tool.gui.jm_col_worker import _timestamp_hour_expr
             return (_timestamp_hour_expr(), "str")
+        if key.startswith("custom:"):
+            return (f"cc_{key[7:]}", "str")
         return self._QUICK_KEY_TO_COL.get(key)
 
     def add_quick_filter(self, key: str, value: str, include: bool) -> None:
@@ -1324,6 +1349,8 @@ class ArrowTableModel(QAbstractTableModel):
 
     def sort(self, column: int, order=Qt.SortOrder.AscendingOrder) -> None:
         arrow_col = _SORT_COL_MAP.get(column)
+        if arrow_col is None and len(COLUMNS) <= column < len(COLUMNS) + len(self._custom):
+            arrow_col = f"cc_{self._custom[column - len(COLUMNS)].spec.col_id}_s"
         if arrow_col is None:
             return
         if arrow_col == self._sort_col and (order == Qt.SortOrder.AscendingOrder) == self._sort_asc:
@@ -1334,6 +1361,78 @@ class ArrowTableModel(QAbstractTableModel):
         # cached filter result and only re-orders, so this costs a sort, not a
         # re-filter — and it no longer freezes the window on large tables.
         self._invalidate()
+
+    # ── Custom columns ────────────────────────────────────────────────────────
+
+    def custom_columns(self) -> list:
+        return list(self._custom)
+
+    def custom_col_index(self, col_id: int) -> "int | None":
+        for i, cc in enumerate(self._custom):
+            if cc.spec.col_id == col_id:
+                return len(COLUMNS) + i
+        return None
+
+    def col_id_at(self, column: int) -> "int | None":
+        i = column - len(COLUMNS)
+        return self._custom[i].spec.col_id if 0 <= i < len(self._custom) else None
+
+    def _set_table(self, table) -> None:
+        """Swap in this model's table (with its custom columns) and re-run the
+        view: the filter thread's cached results lack the new columns."""
+        self._full_table = table
+        ft = self._filter_thread
+        ft._full_table = table
+        ft._last_fkey = ft._last_sort = ft._last_result = None
+        ft._unfiltered = {}
+        self._last_where_key = None
+        self._cache_dict, self._cache_start, self._cache_end = {}, 0, 0
+        self._invalidate()
+
+    def _with_values(self, table, compiled, values: list):
+        import pyarrow as pa
+        from evtx_tool.core.custom_columns import sort_key_text
+        cid, kind = compiled.spec.col_id, compiled.spec.kind
+        table = table.append_column(f"cc_{cid}", pa.array(values, pa.string()))
+        return table.append_column(f"cc_{cid}_s", pa.array([sort_key_text(v, kind) for v in values], pa.string()))
+
+    @staticmethod
+    def _without(table, col_id: int):
+        drop = [c for c in (f"cc_{col_id}", f"cc_{col_id}_s") if c in table.column_names]
+        return table.drop_columns(drop) if drop else table
+
+    def add_custom_column(self, compiled, values: list) -> int:
+        """Append a custom column; *values* from arrow_column_values() over
+        this model's table, one per row.  Other models sharing the original
+        table are not affected (Arrow tables are immutable)."""
+        idx = len(COLUMNS) + len(self._custom)
+        self.beginInsertColumns(QModelIndex(), idx, idx)
+        self._custom.append(compiled)
+        table = self._with_values(self._full_table, compiled, values)
+        self.endInsertColumns()
+        self._set_table(table)
+        return idx
+
+    def update_custom_column(self, col_id: int, compiled, values: list) -> None:
+        idx = self.custom_col_index(col_id)
+        if idx is None:
+            return
+        self._custom[idx - len(COLUMNS)] = compiled
+        if self._sort_col == f"cc_{col_id}_s":
+            self._sort_col, self._sort_asc = "timestamp_utc", True
+        self._set_table(self._with_values(self._without(self._full_table, col_id), compiled, values))
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, idx, idx)
+
+    def remove_custom_column(self, col_id: int) -> None:
+        idx = self.custom_col_index(col_id)
+        if idx is None:
+            return
+        self.beginRemoveColumns(QModelIndex(), idx, idx)
+        del self._custom[idx - len(COLUMNS)]
+        self.endRemoveColumns()
+        if self._sort_col == f"cc_{col_id}_s":
+            self._sort_col, self._sort_asc = "timestamp_utc", True
+        self._set_table(self._without(self._full_table, col_id))
 
     # ── Event count ───────────────────────────────────────────────────────────
 
