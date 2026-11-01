@@ -60,12 +60,21 @@ CSV_BASE_KEYS = ["RecordID", "EventID", "Timestamp", "Channel", "Provider",
 MAX_ED_CELLS = 50_000_000
 
 
-def csv_headers(ed_keys, rows: int) -> list[str]:
-    """Full CSV header for *rows* events whose EventData field names are *ed_keys*."""
+def custom_header(title: str) -> str:
+    """CSV header of a custom column: its title, unless that is a built-in
+    header name, then "<title> (custom)"."""
+    clash = title in CSV_BASE_KEYS or title == "EventData" or title.startswith("ED_")
+    return f"{title} (custom)" if clash else title
+
+
+def csv_headers(ed_keys, rows: int, custom_titles=()) -> list[str]:
+    """Full CSV header for *rows* events whose EventData field names are *ed_keys*;
+    custom columns (titles in order) follow the base columns."""
     names = set(ed_keys)
+    base = CSV_BASE_KEYS + [custom_header(t) for t in custom_titles]
     if len(names) * rows > MAX_ED_CELLS:
-        return CSV_BASE_KEYS + ["EventData"]
-    return CSV_BASE_KEYS + sorted(f"ED_{k}" for k in names)
+        return base + ["EventData"]
+    return base + sorted(f"ED_{k}" for k in names)
 
 
 def csv_row(event: dict, ed_pos: dict, width: int) -> list:
@@ -89,6 +98,8 @@ def csv_row(event: dict, ed_pos: dict, width: int) -> list:
         "; ".join(f"{t['tid']}:{t['name']}" for t in (event.get("attack_tags") or [])),
     ]
     row.extend([""] * (width - len(row)))
+    for title, v in (event.get("custom_columns") or {}).items():
+        row[ed_pos[custom_header(title)]] = v
     ed = event.get("event_data", {}) or {}
     if "EventData" in ed_pos:                    # compact layout (see MAX_ED_COLUMNS)
         # Always valid JSON, "{}" for an event without data, so the column can
@@ -108,7 +119,8 @@ def export_csv(events: list[dict], filepath: str, **_) -> int:
     # list+set overhead) with a tight set comprehension — same O(n) complexity
     # but avoids the extra function call, list.append() loop, and intermediate
     # list construction.
-    headers = csv_headers({k for ev in events for k in (ev.get("event_data") or {})}, len(events))
+    headers = csv_headers({k for ev in events for k in (ev.get("event_data") or {})}, len(events),
+                          list((events[0].get("custom_columns") or {}) if events else ()))
     pos, width = {h: i for i, h in enumerate(headers)}, len(headers)
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
@@ -204,6 +216,13 @@ def _export_xml_lxml(events: list[dict], filepath: str) -> None:
                 te.text = _xml_text(t.get("name",""))
         ed = ev.get("event_data", {}) or {}
         if ed:
+            _cc = ev.get("custom_columns")
+            if _cc:
+                cc_el = etree.SubElement(event_el, "CustomColumns")
+                for _t, _cv in _cc.items():
+                    c_el = etree.SubElement(cc_el, "Column")
+                    c_el.set("Name", _xml_text(_t))
+                    c_el.text = _xml_text(_cv)
             ed_el = etree.SubElement(event_el, "EventData")
             for k, v in ed.items():
                 data_el = etree.SubElement(ed_el, "Data")
@@ -237,6 +256,12 @@ def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
                 f.write(f"      <{tag}>{_esc('' if _v is None else _v)}</{tag}>\n")
             f.write(f"      <SourceFile>{_esc(os.path.basename(ev.get('source_file','')))}</SourceFile>\n")
             f.write("    </System>\n")
+            _cc = ev.get("custom_columns")
+            if _cc:
+                f.write("    <CustomColumns>\n")
+                for _t, _cv in _cc.items():
+                    f.write(f'      <Column Name="{_esc(_t)}">{_esc(_cv)}</Column>\n')
+                f.write("    </CustomColumns>\n")
             # BUG 21 fix: write ATT&CK tags in stdlib path to match lxml output
             tags = ev.get("attack_tags") or []
             if tags:
@@ -1108,9 +1133,11 @@ def export_html(
                 "<code>tid:T1059</code> &nbsp;— combine freely with free text</div>\n")
 
         f.write("<table>\n<thead><tr>")
+        _cc_titles = list((events[0].get("custom_columns") or {}) if events else ())
         col_headers = [
             ("#", False), ("Timestamp", True), ("EventID", True), ("Level", True),
             ("Channel", True), ("Computer", True), ("Source", True),
+            *[(_esc(t), True) for t in _cc_titles],
             ("ATT&amp;CK", True), ("&nbsp;", False),
         ]
         for ci, (col, sortable) in enumerate(col_headers):
@@ -1179,6 +1206,9 @@ def export_html(
             f.write(f"  <td style='font-size:0.82em'>{_esc((ev.get('computer','') or '')[:20])}</td>\n")
             f.write(f"  <td style='color:#8b949e;font-size:0.78em'>"
                     f"{_esc(os.path.basename(ev.get('source_file','') or '')[:22])}</td>\n")
+            _cc = ev.get("custom_columns") or {}
+            for _t in _cc_titles:
+                f.write(f"  <td>{_esc(_cc.get(_t, ''))}</td>\n")
             f.write(f"  <td>{atk_html}</td>\n")
             f.write(f"  <td><button class='expand-btn' title='Expand'>&#9654;</button></td>\n")
             f.write("</tr>\n")
@@ -1248,7 +1278,7 @@ def export_html(
                 atk_detail += "</div>"
 
             f.write(f"<tr id='detail-{i}' class='detail-row' style='display:none'>\n")
-            f.write(f"  <td colspan='9'>{detail_html}{atk_detail}</td>\n")
+            f.write(f"  <td colspan='{9 + len(_cc_titles)}'>{detail_html}{atk_detail}</td>\n")
             f.write("</tr>\n")
 
         f.write("</tbody></table>\n")

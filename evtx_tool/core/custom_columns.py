@@ -400,3 +400,35 @@ def arrow_column_values(compiled: CompiledColumn, table, shard_paths: list,
         return out
     finally:
         con.close()
+
+
+# ── Exports ─────────────────────────────────────────────────────────────────
+
+def export_titles(columns: list) -> list:
+    """The columns' titles for an export, made unique ("Logon", "Logon (2)")
+    so that two columns with one title cannot overwrite each other."""
+    out: list[str] = []
+    for c in columns:
+        t = c.spec.title or f"Column {c.spec.col_id}"
+        base, n = t, 2
+        while t in out:
+            t = f"{base} ({n})"
+            n += 1
+        out.append(t)
+    return out
+
+
+def with_custom_columns(events, columns: list) -> list:
+    """Shallow copies of *events* carrying ``custom_columns: {title: value}``
+    (the exporters write it as columns / fields); *events* are not changed.
+    A Juggernaut timestamp ("YYYY-MM-DD HH:MM:SS...") is read in Normal mode's
+    ISO form for the evaluation, so both modes export the same values."""
+    titles = export_titles(columns)
+    out = []
+    for ev in events:
+        src = ev
+        ts = ev.get("timestamp")
+        if isinstance(ts, str) and ts and "T" not in ts:
+            src = dict(ev, timestamp=ts.replace(" ", "T") + "Z")
+        out.append(dict(ev, custom_columns={t: c.value(src) for t, c in zip(titles, columns)}))
+    return out

@@ -6279,7 +6279,7 @@ class _JMExportWorker(QThread):
     _BATCH = 5_000
 
     def __init__(self, full_table, shard_paths, where_sql, params, order_sql,
-                 path, ext, row_limit, parent=None):
+                 path, ext, row_limit, parent=None, custom_columns=()):
         super().__init__(parent)
         self._full_table  = full_table
         self._shard_paths = shard_paths
@@ -6289,6 +6289,8 @@ class _JMExportWorker(QThread):
         self._path        = path
         self._ext         = ext
         self._row_limit   = row_limit
+        # Custom columns of the tab the export was started from (spec R-7).
+        self._custom      = list(custom_columns or ())
         self._cancel      = False
 
     def cancel(self) -> None:
@@ -6392,7 +6394,8 @@ class _JMExportWorker(QThread):
                 f"SELECT DISTINCT unnest(json_keys(p._ed)) {src}", self._params).fetchall()
                 if k is not None]
             n_rows = con.execute(f"SELECT count(*) {src}", self._params).fetchone()[0]
-            headers = csv_headers(keys, n_rows)
+            from evtx_tool.core.custom_columns import export_titles, with_custom_columns
+            headers = csv_headers(keys, n_rows, export_titles(self._custom))
             pos, width = {h: i for i, h in enumerate(headers)}, len(headers)
             cursor = con.execute(f"SELECT {cols} {src} ORDER BY {self._order_sql}", self._params)
             with open(self._path, "w", newline="", encoding="utf-8-sig") as fh:
@@ -6402,7 +6405,10 @@ class _JMExportWorker(QThread):
                     batch = cursor.fetchmany(self._BATCH)
                     if not batch:
                         break
-                    writer.writerows(csv_row(self._event_of(row), pos, width) for row in batch)
+                    evs = [self._event_of(row) for row in batch]
+                    if self._custom:
+                        evs = with_custom_columns(evs, self._custom)
+                    writer.writerows(csv_row(ev, pos, width) for ev in evs)
                     written += len(batch)
                     self.progress.emit(written)
         else:
@@ -6425,6 +6431,9 @@ class _JMExportWorker(QThread):
                             fh.write(",\n")
                         ev = self._event_of(row)
                         normalize(ev)
+                        if self._custom:
+                            from evtx_tool.core.custom_columns import with_custom_columns
+                            ev = with_custom_columns([ev], self._custom)[0]
                         fh.write(fast_dumps(ev, indent=2))
                         first = False
                     written += len(batch)
@@ -6511,6 +6520,9 @@ class _JMExportWorker(QThread):
                     "HTML/XML export: could not load event_data from Parquet: %s", exc)
         if self._cancel:
             return len(events)
+        if self._custom:
+            from evtx_tool.core.custom_columns import with_custom_columns
+            events = with_custom_columns(events, self._custom)
         return export(events, self._path, None,
                       attack_summary=None, iocs=None, chains=[])
 
@@ -15915,6 +15927,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Nothing to Export",
                                     "No events found for the selected scope.")
             return
+        _cc = self._export_custom_columns()
+        if _cc:
+            # The custom columns of the tab the export was started from, in
+            # every scope (spec R-7); events outside a column's filter get "".
+            from evtx_tool.core.custom_columns import with_custom_columns
+            export_events = with_custom_columns(export_events, _cc)
 
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -15971,9 +15989,12 @@ class MainWindow(QMainWindow):
             sources = [fp for fp in file_paths
                        if (self._per_file_data.get(fp) or {}).get("events")]
             out_paths = _separate_export_paths(sources, out_dir, ext)
+            _cc = self._export_custom_columns()
+            from evtx_tool.core.custom_columns import with_custom_columns
             for fp in sources:
                 out_path = out_paths[fp]
-                count = export(self._per_file_data[fp]["events"], out_path, None)
+                _evs = self._per_file_data[fp]["events"]
+                count = export(with_custom_columns(_evs, _cc) if _cc else _evs, out_path, None)
                 total_events += count
                 exported_files += 1
                 logger.info("Separate export: %d event(s) from %s -> %s", count, fp, out_path)
@@ -16101,6 +16122,10 @@ class MainWindow(QMainWindow):
         return (f"{model._sort_col} {direction}, "
                 f"source_file {direction}, record_id {direction}")
 
+    def _export_custom_columns(self) -> list:
+        """The custom columns of the tab in front, for an export started there."""
+        return list(getattr(self._custom_cols_model(), "custom_columns", lambda: [])())
+
     def _jm_export_row_limit(self, total: int, ext: str) -> "int | None":
         """Rows to write, or None if the user declined the HTML/XML cap.
 
@@ -16148,6 +16173,7 @@ class MainWindow(QMainWindow):
         worker = _JMExportWorker(
             table, _shard_paths, where_sql, params,
             order_sql, path, ext, row_limit, parent=self,
+            custom_columns=self._export_custom_columns(),
         )
         self._jm_export_worker = worker   # keep a reference; QThread must outlive run()
 
