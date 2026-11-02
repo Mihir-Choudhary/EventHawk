@@ -60,18 +60,28 @@ CSV_BASE_KEYS = ["RecordID", "EventID", "Timestamp", "Channel", "Provider",
 MAX_ED_CELLS = 50_000_000
 
 
-def custom_header(title: str) -> str:
-    """CSV header of a custom column: its title, unless that is a built-in
-    header name, then "<title> (custom)"."""
-    clash = title in CSV_BASE_KEYS or title == "EventData" or title.startswith("ED_")
-    return f"{title} (custom)" if clash else title
+def custom_headers(titles) -> list[str]:
+    """CSV headers of custom columns, in order: each title, made distinct from
+    the built-in headers ("EventID" -> "EventID (custom)"), from the EventData
+    columns ("ED_..." / "EventData") and from each other ("... (custom 2)"),
+    so a reader keyed by header never loses a value (Codex audit-5 E5-04)."""
+    taken = set(CSV_BASE_KEYS) | {"EventData"}
+    out: list[str] = []
+    for t in titles:
+        h, n = t, 1
+        while h in taken or (h == t and t.startswith("ED_")):
+            h = f"{t} (custom)" if n == 1 else f"{t} (custom {n})"
+            n += 1
+        taken.add(h)
+        out.append(h)
+    return out
 
 
 def csv_headers(ed_keys, rows: int, custom_titles=()) -> list[str]:
     """Full CSV header for *rows* events whose EventData field names are *ed_keys*;
     custom columns (titles in order) follow the base columns."""
     names = set(ed_keys)
-    base = CSV_BASE_KEYS + [custom_header(t) for t in custom_titles]
+    base = CSV_BASE_KEYS + custom_headers(custom_titles)
     if len(names) * rows > MAX_ED_CELLS:
         return base + ["EventData"]
     return base + sorted(f"ED_{k}" for k in names)
@@ -98,8 +108,10 @@ def csv_row(event: dict, ed_pos: dict, width: int) -> list:
         "; ".join(f"{t['tid']}:{t['name']}" for t in (event.get("attack_tags") or [])),
     ]
     row.extend([""] * (width - len(row)))
-    for title, v in (event.get("custom_columns") or {}).items():
-        row[ed_pos[custom_header(title)]] = v
+    # Custom columns sit right after the base columns, in title order (every
+    # event carries the same titles, from core.custom_columns.with_custom_columns).
+    for i, v in enumerate((event.get("custom_columns") or {}).values()):
+        row[len(CSV_BASE_KEYS) + i] = v
     ed = event.get("event_data", {}) or {}
     if "EventData" in ed_pos:                    # compact layout (see MAX_ED_COLUMNS)
         # Always valid JSON, "{}" for an event without data, so the column can
@@ -206,6 +218,16 @@ def _export_xml_lxml(events: list[dict], filepath: str) -> None:
             el.text = _xml_text("" if _v is None else _v)
         src_el = etree.SubElement(sys_el, "SourceFile")
         src_el.text = _xml_text(os.path.basename(ev.get("source_file", "")))
+        # Right after System, as the stdlib writer does, and for every event:
+        # nested under "if ed:" it was lost for events with empty EventData
+        # (Codex audit-5 E5-03).
+        _cc = ev.get("custom_columns")
+        if _cc:
+            cc_el = etree.SubElement(event_el, "CustomColumns")
+            for _t, _cv in _cc.items():
+                c_el = etree.SubElement(cc_el, "Column")
+                c_el.set("Name", _xml_text(_t))
+                c_el.text = _xml_text(_cv)
         tags = ev.get("attack_tags") or []
         if tags:
             atk_el = etree.SubElement(event_el, "ATTACKTags")
@@ -216,13 +238,6 @@ def _export_xml_lxml(events: list[dict], filepath: str) -> None:
                 te.text = _xml_text(t.get("name",""))
         ed = ev.get("event_data", {}) or {}
         if ed:
-            _cc = ev.get("custom_columns")
-            if _cc:
-                cc_el = etree.SubElement(event_el, "CustomColumns")
-                for _t, _cv in _cc.items():
-                    c_el = etree.SubElement(cc_el, "Column")
-                    c_el.set("Name", _xml_text(_t))
-                    c_el.text = _xml_text(_cv)
             ed_el = etree.SubElement(event_el, "EventData")
             for k, v in ed.items():
                 data_el = etree.SubElement(ed_el, "Data")

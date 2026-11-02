@@ -35,13 +35,14 @@ def check(name, cond, detail=""):
 
 def events():
     out = []
-    for i, (eid, lt) in enumerate([(4624, "3"), (4625, "3"), (4624, "10"), (4624, None)]):
+    for i, (eid, lt) in enumerate([(4624, "3"), (4625, "3"), (4624, "10"), (4624, None), (4624, "")]):
+        # the last event has EMPTY EventData (audit-5 E5-03: XML dropped its custom fields)
         out.append(T.ev(r"C:\c\Security.evtx", i + 1, f"HOST-{i}", T.T0 + timedelta(seconds=i), eid,
-                        data={"LogonType": lt} if lt else {"X": "y"}))
+                        data={"LogonType": lt} if lt else ({"X": "y"} if lt is None else {})))
     return out
 
 
-WANT_LT = ["3", "", "10", ""]          # 4625 is outside the column's Event ID filter
+WANT_LT = ["3", "", "10", "", ""]          # 4625 is outside the column's Event ID filter
 
 
 def columns():
@@ -68,7 +69,7 @@ def assert_outputs(tag, o):
     by_rid = lambda rows, key: [r for r in sorted(rows, key=lambda r: int(r[key]))]      # noqa: E731
     rows = by_rid(o["csv"], "RecordID")
     check(f"{tag} CSV: a column per custom column, values exact (empty outside the filter)",
-          [r.get("Logon Type") for r in rows] == WANT_LT and [r.get(ODD) for r in rows] == [f"HOST-{i}" for i in range(4)],
+          [r.get("Logon Type") for r in rows] == WANT_LT and [r.get(ODD) for r in rows] == [f"HOST-{i}" for i in range(5)],
           str([(r.get("Logon Type"), r.get(ODD)) for r in rows]))
     js = sorted(o["json"], key=lambda e: e["record_id"])
     check(f"{tag} JSON: custom_columns per event, named by title",
@@ -76,7 +77,7 @@ def assert_outputs(tag, o):
           and js[0].get("custom_columns", {}).get(ODD) == "HOST-0", str([e.get("custom_columns") for e in js][:2]))
     x = o["xml"]
     check(f"{tag} XML: a CustomColumns element with the title escaped",
-          x.count("<CustomColumns>") == 4 and "Odd, &quot;title&quot; &lt;x&gt;" in x
+          x.count("<CustomColumns>") == len(WANT_LT) and "Odd, &quot;title&quot; &lt;x&gt;" in x
           and re.search(r'Name="Logon Type">10<', x) is not None, x[x.find("<CustomColumns>"):][:200])
     h = o["html"]
     check(f"{tag} HTML: a header per custom column (escaped) and the values",
@@ -104,6 +105,32 @@ def main() -> int:
             header = next(csv.reader(fh))
         with open(os.path.join(tmp, "plain.json"), encoding="utf-8") as fh:
             plain = json.load(fh)
+        # Both XML writers (lxml and the stdlib fallback) write every event's
+        # custom columns, including an event with empty EventData.
+        from evtx_tool.core.custom_columns import with_custom_columns
+        cc_evs = with_custom_columns([dict(e) for e in evs], columns())
+        for name, fn in (("lxml", exporters._export_xml_lxml), ("stdlib", exporters._export_xml_stdlib)):
+            path = os.path.join(tmp, f"w_{name}.xml")
+            fn(cc_evs, path)
+            x = open(path, encoding="utf-8").read()
+            check(f"XML ({name}): every event has its CustomColumns, empty EventData included",
+                  x.count("<CustomColumns>") == len(evs), f"{x.count('<CustomColumns>')} of {len(evs)}")
+        # Titles that collide with a built-in header, or with each other once
+        # renamed, keep distinct CSV headers and every value (E5-04).
+        from evtx_tool.core.custom_columns import CustomColumnSpec, compile_spec
+        clash = [compile_spec(CustomColumnSpec(col_id=401, title="EventID", template="{Computer}")),
+                 compile_spec(CustomColumnSpec(col_id=402, title="EventID (custom)", template="{EventRecordID}")),
+                 compile_spec(CustomColumnSpec(col_id=403, title="ED_LogonType", template="{Data[LogonType]}"))]
+        path = os.path.join(tmp, "clash.csv")
+        exporters.export(with_custom_columns([dict(e) for e in evs], clash), path)
+        with open(path, encoding="utf-8-sig") as fh:
+            rows_c = list(csv.reader(fh))
+        hdr = rows_c[0]
+        base = len(exporters.CSV_BASE_KEYS)
+        vals = [r[base:base + 3] for r in rows_c[1:]]
+        check("clashing custom titles get distinct CSV headers", len(hdr) == len(set(hdr)), str(hdr[base:base + 4]))
+        check("...and every custom value is kept",
+              vals[0] == ["HOST-0", "1", "3"] and all(v[0] and v[1] for v in vals), str(vals[:2]))
         check("without custom columns the CSV header is the base columns plus EventData only",
               header == exporters.CSV_BASE_KEYS + ["ED_LogonType", "ED_X"], str(header[-4:]))
         check("...and no JSON event has a custom_columns field", not any("custom_columns" in e for e in plain))
