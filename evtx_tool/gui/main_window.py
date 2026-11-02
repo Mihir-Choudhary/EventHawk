@@ -9203,6 +9203,11 @@ class MainWindow(QMainWindow):
         _active_keys = getattr(self, "_active_jm_session_keys", frozenset())
         if _active_keys:
             file_model.apply_bookmark_filter(_active_keys)
+        # ...and the applied profiles, as a Normal-mode tab does (a profile
+        # ticked before Parse left later-opened JM tabs unfiltered: Codex
+        # audit-5 E5-08).
+        if getattr(self, "_applied_profiles", None):
+            file_model.apply_filter(self._build_filter_config(base=None))
 
         file_view = self._create_configured_table(file_model)
         file_view.horizontalHeader().setSortIndicatorShown(False)
