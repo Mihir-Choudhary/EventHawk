@@ -4328,7 +4328,12 @@ class _WifiJMFetchWorker(QThread):
                 # Low fix: fetch one extra row so we can detect truncation without
                 # false-positive warnings when the result count exactly equals the cap.
                 rows = con.execute(
-                    f"SELECT event_id, timestamp_utc, event_data_json "
+                    # computer + source_file: sessions are paired per host
+                    # (Normal mode has both).  Without them every host fell in
+                    # one ("", interface) bucket, and two hosts sharing an
+                    # interface GUID had their connects and disconnects paired
+                    # across hosts (Codex audit-5 E5-15).
+                    f"SELECT event_id, timestamp_utc, event_data_json, computer, source_file "
                     f"FROM parquet_scan({shard_list}) "
                     f"WHERE channel = ? "
                     f"  AND event_id IN ({eids_csv}) "
@@ -4348,7 +4353,7 @@ class _WifiJMFetchWorker(QThread):
             rows = rows[:200_000]
 
         events: list[dict] = []
-        for ev_id, ts_utc, ed_json in rows:
+        for ev_id, ts_utc, ed_json, computer, source_file in rows:
             try:
                 ed = _json.loads(ed_json) if ed_json else {}
             except Exception:
@@ -4358,6 +4363,8 @@ class _WifiJMFetchWorker(QThread):
                 "timestamp":  str(ts_utc or ""),
                 "event_data": ed,
                 "channel":    self._WLAN_CHANNEL,
+                "computer":   computer or "",
+                "source_file": source_file or "",
             })
         self.finished.emit(events, truncated)
 
