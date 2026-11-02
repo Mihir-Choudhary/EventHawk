@@ -325,14 +325,17 @@ def sort_key_text(value: str, kind: str) -> str:
 
 
 def arrow_column_values(compiled: CompiledColumn, table, shard_paths: list,
-                        batch: int = 65536, cancel=None) -> "list[str] | None":
+                        batch: int = 65536, cancel=None, mask=None) -> "list[str] | None":
     """The column's value for every row of the Arrow *table*, in row order.
 
     Juggernaut keeps EventData only in the Parquet shards, so each row is
     matched to its shard row by (source_file, record_id) and rebuilt as the
     same event dict Normal mode evaluates (timestamp in Normal's ISO form,
     event_data parsed from event_data_json), then evaluated by the same code.
-    Returns None if *cancel()* turns true.
+    *mask* (one bool per row) limits the evaluation to the rows a tab shows:
+    a per-file tab shares the whole table, and counting other files' rows made
+    the "no event in this tab has this field" warning miss (audit-5 E5-11).
+    Rows outside the mask get "".  Returns None if *cancel()* turns true.
     """
     import duckdb
     import pyarrow as pa
@@ -384,6 +387,9 @@ def arrow_column_values(compiled: CompiledColumn, table, shard_paths: list,
             if not rows:
                 break
             for row in rows:
+                if mask is not None and not mask[row[0]]:
+                    out.append("")
+                    continue
                 ev = {k: row[i + 1] for i, k in enumerate(keys)}
                 if ts_i > 0 and row[ts_i]:
                     # Juggernaut stores "YYYY-MM-DD HH:MM:SS.ffffff"; Normal keeps

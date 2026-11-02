@@ -11686,7 +11686,22 @@ class MainWindow(QMainWindow):
         if self._hw_model is not None and hasattr(model, "_full_table"):
             table = model._full_table
             shards = self._hw_model._get_shard_paths()
-            fn = lambda: arrow_column_values(compiled, table, shards)            # noqa: E731
+            fixed, fixed_params = getattr(model, "_fixed_where_sql", "1=1"), list(getattr(model, "_fixed_params", []))
+
+            def fn():
+                # A per-file tab shares the whole table: evaluate (and count
+                # hits for the zero-match warning) over its own rows only.
+                mask = None
+                if fixed and fixed != "1=1":
+                    import duckdb
+                    con = duckdb.connect()
+                    try:
+                        con.register("events", table)
+                        mask = [bool(r[0]) for r in con.execute(
+                            f"SELECT COALESCE(({fixed}), false) FROM events", fixed_params).fetchall()]
+                    finally:
+                        con.close()
+                return arrow_column_values(compiled, table, shards, mask=mask)
         else:
             events = list(model._events)
             fn = lambda: compute_custom_values(compiled, events)                 # noqa: E731

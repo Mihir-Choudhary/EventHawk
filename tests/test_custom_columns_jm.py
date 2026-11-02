@@ -94,6 +94,7 @@ def main() -> int:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+    tab_warning_leg()
     real_leg()
     ok = sum(1 for _n, c, _d in CHECKS if c)
     print(f"\n{'=' * 62}\n{ok}/{len(CHECKS)} checks passed")
@@ -101,6 +102,38 @@ def main() -> int:
         if not c:
             print(f"  FAILED: {n_}  {d}")
     return 0 if ok == len(CHECKS) else 1
+
+
+def tab_warning_leg() -> None:
+    """A file tab's column is computed over that file only (audit-5 E5-11): a
+    field only another file has must raise the 'no event in this tab' warning,
+    as it does in Normal mode, and the other file's rows get no value."""
+    import evtx_tool.gui.main_window as mw
+    from evtx_tool.core.custom_columns import CustomColumnSpec, compile_spec
+    A, B = r"C:\c\A.evtx", r"C:\c\B.evtx"
+    evs = [T.ev(A, i + 1, "H", T.T0 + timedelta(seconds=i), 4624, data={"X": "a"}) for i in range(3)]
+    evs += [T.ev(B, i + 10, "H", T.T0 + timedelta(seconds=10 + i), 4624, data={"OnlyInB": "b"}) for i in range(3)]
+    w = mw.MainWindow()
+    w._view_mode = "separate"
+    m = T.Mode(mw, True)
+    m.load(w, evs)
+    w._table.setModel(w._hw_model)
+    w._jm_pending = {f: w._hw_model._full_table for f in (A, B)}
+    w._open_jm_file_tab(A)
+    T.pump(300)
+    w._events_tab_widget.setCurrentIndex(w._events_tab_widget.indexOf(w._file_tabs[A].table))
+    T.pump(300)
+    warned = []
+    w._exec_on_top = lambda box: warned.append(box.text())
+    model = w._custom_cols_model()
+    w._compute_custom_column(model, compile_spec(CustomColumnSpec(col_id=501, title="B only",
+                                                                  template="{Data[OnlyInB]}")), False)
+    T.wait_for(lambda: model.columnCount() > 22 and warned, 30); T.pump(300)
+    check("JM file tab: a field only another file has raises the 'no event in this tab' warning",
+          warned and "OnlyInB" in warned[0], str(warned))
+    vals = [v for v in model._full_table["cc_501"].to_pylist() if v]
+    check("...and no row of the other file gets a value in this tab's column", vals == [], str(vals))
+    T.teardown(w, True, m)
 
 
 def _direct(files):
