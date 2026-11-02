@@ -324,6 +324,24 @@ def sort_key_text(value: str, kind: str) -> str:
     return "0" + value.lower() if value else "1"
 
 
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9_.:\- ]+$")
+
+
+def _ed_needles(compiled: CompiledColumn) -> list:
+    """The quoted names of the template's EventData fields: an event whose
+    JSON contains none of them has none of those fields.  [] when that is not
+    exact: a positional part (found without a name) or a name JSON might
+    escape.  System parts come from their own columns, not the JSON."""
+    names = []
+    for p in compiled.parts:
+        if not p.token or p.key:
+            continue
+        if p.data_index or not _SAFE_NAME.match(p.data_name or ""):
+            return []
+        names.append(f'"{p.data_name}"')
+    return names
+
+
 def arrow_column_values(compiled: CompiledColumn, table, shard_paths: list,
                         batch: int = 65536, cancel=None, mask=None) -> "list[str] | None":
     """The column's value for every row of the Arrow *table*, in row order.
@@ -362,7 +380,16 @@ def arrow_column_values(compiled: CompiledColumn, table, shard_paths: list,
         inner = [f"{_PARQUET_COLS[k]}" if _PARQUET_COLS[k] in have else f"NULL AS {_PARQUET_COLS[k]}"
                  for k in keys]
         if want_ed:
-            inner.append("event_data_json")
+            needles = _ed_needles(compiled)
+            if needles:
+                # Most events cannot hold the named fields: a field name that
+                # occurs nowhere in the event's JSON, quoted, is no key and no
+                # <Data Name=...> of it, so the value is "" without parsing.
+                # 1-7% of the corpus's events hold a typical field (E5-12).
+                hit = " OR ".join(f"contains(event_data_json, '{n}')" for n in needles)
+                inner.append(f"CASE WHEN {hit} THEN event_data_json END AS event_data_json")
+            else:
+                inner.append("event_data_json")
         sel = ", ".join(["t.__row"] + [f"s.{_PARQUET_COLS[k]}" for k in keys]
                         + (["s.event_data_json"] if want_ed else []))
         def _query(distinct: bool) -> str:

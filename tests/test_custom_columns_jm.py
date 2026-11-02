@@ -58,6 +58,42 @@ def main() -> int:
             normal = [c.value(by_key[(sf, rid)]) for sf, rid in
                       zip(table["source_file"].to_pylist(), table["record_id"].to_pylist())]
             check(f"JM = Normal for {template}", jm == normal, f"{jm[:3]} vs {normal[:3]}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # Juggernaut skips the JSON of events that cannot hold the named fields
+    # (E5-12): every EventData shape must give the same value as Normal mode,
+    # and the same field hit counts (the "no event has this field" warning).
+    shapes = [{"TargetUserName": "flat"},
+              {"Data": [{"#attributes": {"Name": "TargetUserName"}, "#text": "named-data"}]},
+              {"EventXML": {"Inner": {"TargetUserName": "nested-userdata"}}},
+              {"Other": "TargetUserName"},                          # the name only as a value
+              {"Other": "x"}, {}, {"LogonType": "3"},
+              {"Data": ["positional", "only"]}]
+    sevs = [T.ev(r"C:\c\Shapes.evtx", i + 1, "HOST", T.T0 + timedelta(seconds=i), 4624, data=ed)
+            for i, ed in enumerate(shapes)]
+    tmp = tempfile.mkdtemp(prefix="jm_cc_shapes_")
+    try:
+        table = T.write_jm(sevs, tmp)
+        shards = sorted(glob.glob(os.path.join(tmp, "*.parquet")))
+        by_key = {(e["source_file"], e["record_id"]): e for e in sevs}
+        keys = list(zip(table["source_file"].to_pylist(), table["record_id"].to_pylist()))
+        for template in ("{Data[TargetUserName]}", "user {Data[TargetUserName]} type {Data[LogonType]}",
+                         "pre {Data[Missing]} post", "{Data[1]}", "{EventID} {Data[TargetUserName]}"):
+            cj = compile_spec(CustomColumnSpec(col_id=1, title="x", template=template))
+            cn = compile_spec(CustomColumnSpec(col_id=1, title="x", template=template))
+            jm = arrow_column_values(cj, table, shards)
+            normal = [cn.value(by_key[k]) for k in keys]
+            check(f"every EventData shape: JM = Normal for {template}", jm == normal, f"{jm} vs {normal}")
+            check(f"every EventData shape: same field hit counts for {template}", cj.hits == cn.hits,
+                  f"{dict(cj.hits)} vs {dict(cn.hits)}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    tmp = tempfile.mkdtemp(prefix="jm_cc_")
+    try:
+        table = T.write_jm(evs, tmp)
+        shards = sorted(glob.glob(os.path.join(tmp, "*.parquet")))
 
         main_m = ArrowTableModel(table, parquet_dir=tmp)
         tab_m = ArrowTableModel(table, parquet_dir=tmp)
