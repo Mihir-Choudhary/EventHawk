@@ -173,8 +173,11 @@ def _to_entry(val: str, accum: _Accum) -> dict:
         "first_seen":    accum.first or None,
         "last_seen":     accum.last  or None,
         "event_ids":     sorted(accum.eids)[:20],
-        "record_ids":    sorted(accum.record_ids)[:50_000],
-        "record_keys":   [list(k) for k in sorted(accum.record_keys)[:50_000]],
+        # Every producer, no cap: the pivot is built from record_keys, and a
+        # cap (50,000) silently cut a busy IOC's pivot short -- 88,945
+        # producer events missing on the corpus (Codex audit-5 E5-14).
+        "record_ids":    sorted(accum.record_ids),
+        "record_keys":   [list(k) for k in sorted(accum.record_keys)],
         "users":         sorted(accum.users)[:10],
         "computers":     sorted(accum.computers)[:10],
         "sources":       sorted(accum.sources)[:5],
