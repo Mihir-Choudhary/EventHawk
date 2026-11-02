@@ -12683,8 +12683,15 @@ class MainWindow(QMainWindow):
             # window (fixed_where) and drops only their own filters.  Skipping
             # them left a quick filter set inside an Around tab in place
             # after Clear All (Codex review-1 F2).
+            # A chain tab keeps its events in memory even in Juggernaut mode
+            # (EventTableModel behind a real proxy): clear it through the
+            # proxy.  Calling the model raised AttributeError and aborted the
+            # rest of Clear All (Gemini audit-5 B8).
             for _fp, _st in self._file_tabs.items():
-                _st.model.clear_all_filters()
+                if isinstance(_st.proxy, _JMProxyShim):
+                    _st.model.clear_all_filters()
+                else:
+                    _st.proxy.clear_all_filters()
 
         else:
             # Batch: clear all filter layers in one invalidateFilter() call.
