@@ -118,6 +118,27 @@ def main() -> int:
         T.pump(300)
         check(f"{tag}: Clear All Filters resets every tab", rows(None) == 8 and rows(A) == 4 and rows(B) == 4,
               f"All {rows(None)}, A {rows(A)}, B {rows(B)}")
+        # A new parse starts clean: a reopened tab must not bring back the old
+        # tab's column filter with the next column filter (audit-5 E5-02).
+        go(A)
+        w._on_col_filter_applied(eid_col, "include", ["4624"])
+        w._clear_results()                                   # what a new parse does first
+        T.Mode(mw, jm).load(w, evs)
+        if jm:
+            w._table.setModel(w._hw_model)
+            w._jm_pending = {f: w._hw_model._full_table for f in (A, B)}
+            w._open_jm_file_tab(A)
+        else:
+            es = [e for e in evs if e["source_file"] == A]
+            w._per_file_data[A] = {"events": es, "search_cache": [EventTableModel._build_search_str(e) for e in es]}
+            w._create_file_tab(A)
+        T.pump(300)
+        go(A)
+        chan_col = next(i for i, k in ColumnFilterPopup.FILTERABLE.items() if k == "channel")
+        w._on_col_filter_applied(chan_col, "include", ["Security"])
+        check(f"{tag}: after a new parse the old tab's column filter does not come back",
+              rows(A) == 4 and not any(e[2] == "event_id" for e in w._col_filters.get(A, {}).values()),
+              f"{rows(A)} rows, filters {w._col_filters.get(A)}")
         w.close(); T.pump(100)
     mw._FilterTargetDialog = real_dlg
 

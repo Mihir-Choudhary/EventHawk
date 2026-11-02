@@ -16553,6 +16553,11 @@ class MainWindow(QMainWindow):
             state.proxy.setSourceModel(None)
             state.model.set_events([])
         self._file_tabs.clear()
+        # The tabs' column filters go with them.  Normal mode also cleared this
+        # when a parse finished, Juggernaut never did: a reopened file tab then
+        # brought the previous load's filter back with its next column filter
+        # (Codex audit-5 E5-02).
+        self._col_filters.clear()
         self._around_anchor_pending.clear()
         self._per_file_data.clear()
         self._active_file_tab = None
