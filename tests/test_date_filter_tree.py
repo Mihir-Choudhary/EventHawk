@@ -202,8 +202,10 @@ def main() -> int:
     p9 = ColumnFilterPopup(DATE_COL, dict(VALUES))
     p9._check_none()
     e9 = capture(p9)
-    check("nothing checked emits exclude-all (matches no rows)",
-          e9["mode"] == "exclude" and set(e9["values"]) == set(VALUES), e9["mode"])
+    # "none" (not "exclude the listed values"): a capped popup lists only
+    # part of the column, so excluding the listed values left the rest
+    # visible (Codex audit-5 E5-09).
+    check("nothing checked emits 'none' (matches no rows)", e9["mode"] == "none", e9["mode"])
     p10 = ColumnFilterPopup(DATE_COL, dict(VALUES))
     p10._check_none()
     p10._check_all()

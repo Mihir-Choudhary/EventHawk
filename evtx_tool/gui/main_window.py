@@ -1263,12 +1263,11 @@ class ColumnFilterPopup(QDialog):
             # Empty popup, or every value still checked → no filter on this column
             self.filterApplied.emit(self._col, "clear", [])
         elif not checked:
-            # Every value unchecked → emit as EXCLUDE on the unchecked list.
-            # This preserves the old "match nothing" semantic when the popup is
-            # not truncated, while never emitting an empty include list (which
-            # would need a fragile sentinel to behave like "match nothing" in
-            # heavyweight_model's int-type quick-filter path).
-            self.filterApplied.emit(self._col, "exclude", unchecked)
+            # Every value unchecked: no event at all.  "Exclude the listed
+            # values" let every value past the popup's 1,000-value cap through
+            # (Codex audit-5 E5-09).  The window turns "none" into an include
+            # of a value no event can hold.
+            self.filterApplied.emit(self._col, "none", [])
         elif len(checked) <= len(unchecked) or self._inp_search.text().strip():
             # Include list is smaller → emit include.  Also fixes the truncation
             # bug for the common "pick one value to keep" case: untruncated
@@ -11574,9 +11573,7 @@ class MainWindow(QMainWindow):
             _target = _st.model if isinstance(_st.proxy, _JMProxyShim) else _st.proxy
             _qf = [q for q in _target.get_quick_filters()
                    if not same_filter_column(q.get("key", ""), col_key)]
-            if not (mode == "clear" or (mode == "exclude" and not values)):
-                _qf += [{"key": col_key, "value": v, "include": mode == "include"}
-                        for v in values]
+            _qf += self._quick_entries(col_key, mode, values)
             _target.set_quick_filters(_qf)
             self._invalidate_col_value_cache()
             self._update_quick_filter_badge()
@@ -11593,9 +11590,8 @@ class MainWindow(QMainWindow):
         # "clear" with non-empty values is a programmer error from the popup,
         # but we treat it the same as clear for robustness.  The popup never
         # emits ("include", []) -- "everything unchecked" arrives as
-        # ("exclude", all_visible_values).  See ColumnFilterPopup._apply.
-        if not (mode == "clear" or (mode == "exclude" and not values)):
-            new_qf += [{"key": col_key, "value": v, "include": mode == "include"} for v in values]
+        # ("none", []).  See ColumnFilterPopup._apply.
+        new_qf += self._quick_entries(col_key, mode, values)
 
         if self._hw_model is not None:
             target.set_quick_filters(new_qf)
@@ -11783,6 +11779,18 @@ class MainWindow(QMainWindow):
             self._exec_on_top(box)      # shown when the computation ends: keep it in sight
             if box.clickedButton() is btn_edit:
                 self._edit_custom_column(cid)
+
+    # A value no event can hold (EVTX text cannot contain NUL): including only
+    # this value is how a column popup's "None" says "no event".
+    MATCH_NOTHING = "\x00"
+
+    def _quick_entries(self, col_key: str, mode: str, values) -> list:
+        """Quick-filter entries for one column's popup result."""
+        if mode == "none":
+            return [{"key": col_key, "value": self.MATCH_NOTHING, "include": True}]
+        if mode == "clear" or (mode == "exclude" and not values):
+            return []
+        return [{"key": col_key, "value": v, "include": mode == "include"} for v in values]
 
     def _col_index_for_key(self, key: str) -> "int | None":
         """The column (in the tab in front) a quick-filter key belongs to."""

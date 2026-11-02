@@ -1319,7 +1319,14 @@ class ArrowTableModel(QAbstractTableModel):
                     try:
                         int_vals.append(int(v))
                     except (ValueError, TypeError):
-                        int_vals.append(0)
+                        # Not a number: no row of an integer column holds it.
+                        # It used to become 0 and match the events whose
+                        # value is 0 (Codex audit-5 E5-09).
+                        pass
+                if not int_vals:
+                    if incl:
+                        parts.append("FALSE")       # include only impossible values: no row
+                    continue                        # exclude of impossible values: no clause
                 # EXCLUDE must keep rows where the column is NULL — SQL `col != x`
                 # is NULL (row dropped) for a NULL col, which would silently hide
                 # every event with no value in that column (e.g. NULL user_id).
