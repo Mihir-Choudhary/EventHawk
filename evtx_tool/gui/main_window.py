@@ -11583,36 +11583,26 @@ class MainWindow(QMainWindow):
             self._update_count_label()
             return
 
-        # Only the tab in front: each tab keeps its own column filters.
-        tab_filters = self._tab_col_filters()
-        # "clear" with non-empty values is a programmer error from the popup,
-        # but we treat it the same as clear for robustness.
-        if mode == "clear" or (mode == "exclude" and not values):
-            tab_filters.pop(col_index, None)
-        else:
-            tab_filters[col_index] = (mode, list(values), col_key)
-
-        # Build the tab's full quick-filter list from its column filters.
-        # Each column contributes 0..N quick-filter entries, all sharing
-        # the column's mode (include or exclude).
-        #
-        # Note: the popup never emits ("include", []) — the "everything
-        # unchecked" case is emitted as ("exclude", all_visible_values) so we
-        # never need a sentinel here.  See ColumnFilterPopup._apply.
-        new_qf: list[dict] = []
-        for ci, (col_mode, col_values, ck) in tab_filters.items():
-            if not ck:
-                continue
-            include_flag = (col_mode == "include")
-            for val in col_values:
-                new_qf.append({"key": ck, "value": val, "include": include_flag})
-
+        # Only the tab in front, and only this column's entries: the tab's
+        # other quick filters stay, whoever set them.  Rebuilding the list
+        # from the popup record dropped "filter by this value" filters from
+        # the context menu (Codex audit-5 E5-06).
         target = self._active_quick_target()
+        new_qf = [q for q in target.get_quick_filters()
+                  if not same_filter_column(q.get("key", ""), col_key)]
+        # "clear" with non-empty values is a programmer error from the popup,
+        # but we treat it the same as clear for robustness.  The popup never
+        # emits ("include", []) -- "everything unchecked" arrives as
+        # ("exclude", all_visible_values).  See ColumnFilterPopup._apply.
+        if not (mode == "clear" or (mode == "exclude" and not values)):
+            new_qf += [{"key": col_key, "value": v, "include": mode == "include"} for v in values]
+
         if self._hw_model is not None:
             target.set_quick_filters(new_qf)
         else:
             with self._normal_filter_busy("Applying quick filter…"):
                 target.set_quick_filters(new_qf)
+        self._sync_col_filters()
         self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
         self._update_count_label()
@@ -11655,6 +11645,7 @@ class MainWindow(QMainWindow):
         # Its filter goes; later custom columns move one place left.
         self._drop_custom_filter(col_id, removed_index=idx)
         m.remove_custom_column(col_id)
+        self._sync_col_filters()          # later custom columns moved one place left
         self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
         self._update_count_label()
@@ -11665,11 +11656,6 @@ class MainWindow(QMainWindow):
         column itself is being removed (*removed_index*), the bookkeeping of
         custom columns to its right moves one place left."""
         key = f"custom:{col_id}"
-        tab = self._tab_col_filters()
-        kept = {(ci - 1 if removed_index is not None and ci > removed_index else ci): entry
-                for ci, entry in tab.items() if entry[2] != key}
-        tab.clear()
-        tab.update(kept)
         target = self._active_quick_target()
         qf = [q for q in target.get_quick_filters() if q.get("key") != key]
         if len(qf) != len(target.get_quick_filters()):
@@ -11678,6 +11664,7 @@ class MainWindow(QMainWindow):
             else:
                 with self._normal_filter_busy("Updating column\u2026"):
                     target.set_quick_filters(qf)
+        self._sync_col_filters()
 
     # ── Custom columns: dialog and computation ────────────────────────────────
 
@@ -11797,13 +11784,38 @@ class MainWindow(QMainWindow):
             if box.clickedButton() is btn_edit:
                 self._edit_custom_column(cid)
 
+    def _col_index_for_key(self, key: str) -> "int | None":
+        """The column (in the tab in front) a quick-filter key belongs to."""
+        if key in ("timestamp_date", "timestamp_hour"):
+            key = "timestamp_date"
+        if key.startswith("custom:"):
+            m = self._custom_cols_model()
+            try:
+                return m.custom_col_index(int(key[7:])) if hasattr(m, "custom_col_index") else None
+            except ValueError:
+                return None
+        return next((i for i, k in ColumnFilterPopup.FILTERABLE.items() if k == key), None)
+
+    def _sync_col_filters(self) -> None:
+        """Rebuild the tab's column-filter record from its actual quick filters,
+        so header markers and later edits see every filter, whichever control
+        set it."""
+        tab: dict = {}
+        for q in self._active_quick_target().get_quick_filters():
+            key = q.get("key", "")
+            idx = self._col_index_for_key(key)
+            if idx is None:
+                continue
+            mode = "include" if q.get("include", True) else "exclude"
+            prev = tab.get(idx)
+            vals = (prev[1] if prev else []) + [q.get("value", "")]
+            tab[idx] = ("include" if mode == "include" or (prev and prev[0] == "include") else "exclude",
+                        vals, key)
+        self._col_filters[self._filter_tab_key()] = tab
+
     def _filter_tab_key(self) -> str:
         """The tab in front, as the key of its column-filter state."""
         return self._active_file_tab or "__all__"
-
-    def _tab_col_filters(self) -> dict:
-        """Column filters of the tab in front (created empty on first use)."""
-        return self._col_filters.setdefault(self._filter_tab_key(), {})
 
     def _build_column_values(self, col_key: str) -> dict:
         """Build {value: count} dict from the current events for a given key."""
@@ -12981,9 +12993,11 @@ class MainWindow(QMainWindow):
 
         # Only the tab in front: each tab keeps its own quick filters.
         self._active_quick_target().add_quick_filter(key, value, include)
+        self._sync_col_filters()
         self._invalidate_col_value_cache()
         self._update_quick_filter_badge()
         self._update_count_label()
+        self._update_header_indicators()
 
     @staticmethod
     def _tab_filter_target(st):
