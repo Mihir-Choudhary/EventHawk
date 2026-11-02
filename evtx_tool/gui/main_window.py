@@ -11599,6 +11599,10 @@ class MainWindow(QMainWindow):
                    if not same_filter_column(q.get("key", ""), col_key)]
             _qf += self._quick_entries(col_key, mode, values)
             _target.set_quick_filters(_qf)
+            # The header marker, as in any tab (it was missing in pivot tabs,
+            # which looked unfiltered: Codex audit-5 E5-13).
+            self._sync_col_filters()
+            self._update_header_indicators()
             self._invalidate_col_value_cache()
             self._update_quick_filter_badge()
             self._update_count_label()
@@ -11903,6 +11907,10 @@ class MainWindow(QMainWindow):
                 self._hw_model._header_overrides = {}
             tab_filters = self._col_filters.get(self._filter_tab_key(), {})
             jm_model = self._active_quick_target()
+            if hasattr(jm_model, "sourceModel"):
+                # A chain tab: a proxy over an in-memory event model, which
+                # is where the header text comes from.
+                jm_model = jm_model.sourceModel()
             _title = getattr(jm_model, "column_title", lambda c: COLUMNS[c] if c < len(COLUMNS) else "")
             jm_model._header_overrides = {
                 col: f"▼ {_title(col)}" for col, entry in tab_filters.items()
@@ -13025,6 +13033,8 @@ class MainWindow(QMainWindow):
                 _st.model.add_quick_filter(key, value, include)
             else:
                 _st.proxy.add_quick_filter(key, value, include)
+            self._sync_col_filters()
+            self._update_header_indicators()
             self._invalidate_col_value_cache()
             self._update_quick_filter_badge()
             self._update_count_label()
