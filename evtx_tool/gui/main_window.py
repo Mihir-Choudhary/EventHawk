@@ -1102,11 +1102,14 @@ class ColumnFilterPopup(QDialog):
         term = self._pending_search_term
         if not term:
             return
+        import shiboken6
+
+        def _deliver(vals, t=term, popup=self):
+            # The search can finish after the popup closed and was deleted.
+            if shiboken6.isValid(popup):
+                popup._merge_search_results(t, vals)
         try:
-            self._search_provider(
-                term,
-                lambda vals, t=term: self._merge_search_results(t, vals),
-            )
+            self._search_provider(term, _deliver)
         except Exception:
             logger.exception("column-filter full-dataset search failed")
 
@@ -11485,6 +11488,20 @@ class MainWindow(QMainWindow):
             hour_provider=(self._make_hour_provider()
                            if _popup_col_key0 == "timestamp_date" else None),
         )
+        # Keep only the latest popup alive.  A child of the window that is
+        # only hidden lived for the whole session with its value list: 100
+        # open/close cycles kept 100 popups and grew memory 663 MiB Normal /
+        # 2.3 GiB JM (Codex audit-5 E5-10).  Not WA_DeleteOnClose: a busy
+        # dialog's nested event loop during OK closes the popup (it is a
+        # popup window) and would delete it while its own OK handler still
+        # runs -- accept() then raised on a deleted object.  The previous
+        # popup is closed by the time a new header is clicked.
+        import shiboken6
+        _prev = getattr(self, "_col_popup", None)
+        if _prev is not None and shiboken6.isValid(_prev):
+            _prev.hide()
+            _prev.deleteLater()
+        self._col_popup = popup
 
         # Bug 7 fix: derive pre-uncheck state from the active tab's actual quick filters
         # rather than the global _col_filters (which is shared across tabs).
