@@ -74,6 +74,23 @@ def main() -> int:
     check("a partial day emits hour-level values (smaller side: exclude the one hour)",
           emitted == [("exclude", want_unchecked)], str(emitted[:1])[:160])
 
+    # ── a search, then clearing it, keeps a partly ticked day (audit-5 E5-01) ──
+    p2 = ColumnFilterPopup(date_col, {"2024-05-14": 3, "2024-06-02": 6}, hour_provider=lambda d: {"10": 2, "11": 1})
+    d14 = next(c._item for c in p2._checkboxes if c.property("filter_value") == "2024-05-14")
+    d14.setExpanded(True)
+    d14.child(0).setCheckState(0, Qt.CheckState.Unchecked)          # 2024-05-14 10 off
+    p2._inp_search.setText("june")                                  # hides May, ticks June only
+    p2._inp_search.setText("")                                      # back to the full tree
+    check("after a search and clearing it, the partly ticked day is still partly ticked",
+          d14.checkState(0) == Qt.CheckState.PartiallyChecked
+          and d14.child(0).checkState(0) == Qt.CheckState.Unchecked
+          and d14.child(1).checkState(0) == Qt.CheckState.Checked,
+          f"day {d14.checkState(0)}, hours {[d14.child(i).checkState(0) for i in range(d14.childCount())]}")
+    got2 = []
+    p2.filterApplied.connect(lambda c, m, v: got2.append((m, sorted(v))))
+    p2._apply()
+    check("...and OK still filters out exactly that hour", got2 == [("exclude", ["2024-05-14 10"])], str(got2))
+
     # ── Normal and Juggernaut filter exactly the chosen hours ─────────────────
     for jm in (False, True):
         mode = "JM" if jm else "Normal"

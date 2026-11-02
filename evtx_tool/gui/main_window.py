@@ -908,10 +908,17 @@ class ColumnFilterPopup(QDialog):
             # wholesale would be wrong: leaves hidden by the search are
             # currently unchecked, and would come back unchecked on clear even
             # though the user never touched them.
-            self._tree_pre_search = {
-                p.property("filter_value"): p.isChecked()
-                for p in self._checkboxes
-            }
+            self._tree_pre_search = {}
+            for p in self._checkboxes:
+                self._tree_pre_search[p.property("filter_value")] = p.isChecked()
+                # A day with some hours ticked is not "checked": its hours
+                # are kept one by one, or clearing the search would untick
+                # the whole day (Codex audit-5 E5-01).
+                it = p._item
+                for i in range(it.childCount()):
+                    h = it.child(i)
+                    self._tree_pre_search[h.data(0, _ROLE_FILTER_VALUE)] = (
+                        h.checkState(0) == Qt.CheckState.Checked)
 
         self._tree_sync = True
         try:
@@ -943,6 +950,15 @@ class ColumnFilterPopup(QDialog):
             try:
                 for proxy in self._checkboxes:
                     was = snap.get(proxy.property("filter_value"))
+                    it = proxy._item
+                    if it.childCount():
+                        for i in range(it.childCount()):
+                            h = it.child(i)
+                            h_was = snap.get(h.data(0, _ROLE_FILTER_VALUE), was)
+                            if h_was is not None:
+                                h.setCheckState(0, Qt.CheckState.Checked if h_was
+                                                else Qt.CheckState.Unchecked)
+                        continue
                     if was is None:
                         continue
                     self._set_day_state(
