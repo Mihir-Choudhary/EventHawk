@@ -9215,6 +9215,7 @@ class MainWindow(QMainWindow):
         file_view.selectionModel().selectionChanged.connect(self._on_hw_row_selected)
         file_model.busy_started.connect(self._on_hw_filter_busy_started)
         file_model.busy_finished.connect(self._on_hw_filter_busy_finished)
+        self._connect_jm_model_signals(file_model)
 
         tab_idx = self._events_tab_widget.addTab(file_view, display_name)
         self._events_tab_widget.setTabToolTip(tab_idx, filepath)
@@ -9573,6 +9574,27 @@ class MainWindow(QMainWindow):
         self._act_ps_extract.setEnabled(True)
 
     # ── Drag and drop ─────────────────────────────────────────────────────────
+
+    def _connect_jm_model_signals(self, model) -> None:
+        """Signals every Juggernaut model in a table needs beyond busy state."""
+        if hasattr(model, "filter_failed"):
+            model.filter_failed.connect(self._on_jm_filter_failed)
+
+    def _on_jm_filter_failed(self, message: str) -> None:
+        """A Juggernaut filter could not be run: the view shows MORE events than
+        the filter asks for (never fewer), so say so plainly instead of
+        letting it pass as filtered (Codex audit-5 E5-05)."""
+        now = time.monotonic()
+        last = getattr(self, "_last_filter_failure", None)
+        if last and last[0] == message and now - last[1] < 3:
+            return      # the same filter mirrored to several tabs fails once each
+        self._last_filter_failure = (message, now)
+        self._set_status("Filter could not be applied — the table is NOT filtered")
+        self._warn_blocking(
+            "Filter could not be applied",
+            f"{message}\n\nThe table is NOT filtered: it shows every event of this view, "
+            "as if no such filter were set. Change or clear the filter.",
+            icon=QMessageBox.Icon.Critical)
 
     def _parse_running(self) -> bool:
         return any(wk is not None and wk.isRunning()
@@ -10494,6 +10516,7 @@ class MainWindow(QMainWindow):
             tbl.selectionModel().selectionChanged.connect(self._on_hw_row_selected)
             mdl.busy_started.connect(self._on_hw_filter_busy_started)
             mdl.busy_finished.connect(self._on_hw_filter_busy_finished)
+            self._connect_jm_model_signals(mdl)
 
         # ── Set main "All Events" model ────────────────────────────────────────
         main_table = self._table   # always the merged "All Events" QTableView
@@ -15866,6 +15889,7 @@ class MainWindow(QMainWindow):
         view.selectionModel().selectionChanged.connect(self._on_hw_row_selected)
         model.busy_started.connect(self._on_hw_filter_busy_started)
         model.busy_finished.connect(self._on_hw_filter_busy_finished)
+        self._connect_jm_model_signals(model)
 
         tooltip = "\n".join(head + self._around_counts_lines(
             int(n_in), int(no_ts), filtered_from is not None))

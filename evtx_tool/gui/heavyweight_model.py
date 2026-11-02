@@ -142,6 +142,9 @@ class _FilterThread(QThread):
     """
 
     done = Signal(object, int)   # (pa.Table, generation)
+    # A filter that could not be run: the view falls back to showing more
+    # (never fewer) events, and the user must be told (Codex audit-5 E5-05).
+    failed = Signal(str)
 
     def __init__(self, full_table: "pa.Table", parquet_dir: str = "", parent=None):
         super().__init__(parent)
@@ -339,6 +342,7 @@ class _FilterThread(QThread):
                 "Condition post-filter FAILED (%s) — conditions NOT applied; "
                 "showing metadata-only (over-inclusive) result, UNRELIABLE", exc,
             )
+            self.failed.emit(f"The field conditions could not be applied: {exc}")
             return self._full_table.take(row_ids)
 
         # Phase 3 — the JOIN already returned the surviving row ids.
@@ -471,6 +475,7 @@ class _FilterThread(QThread):
                 "applied; showing metadata-only (over-inclusive) result, UNRELIABLE",
                 exc,
             )
+            self.failed.emit(f"The text search could not be applied: {exc}")
             return self._full_table.take(row_ids)
 
         # Phase 3 — the JOIN already returned the surviving row ids.
@@ -579,6 +584,7 @@ class _FilterThread(QThread):
                     "Filter thread FAILED (%s) — showing ALL rows unfiltered; "
                     "results are UNRELIABLE for where=%r", exc, where_sql,
                 )
+                self.failed.emit(f"The filter could not be applied: {exc}")
                 result = self._full_table   # on error, show all rows (see note)
                 sorted_in_sql = False
 
@@ -624,6 +630,7 @@ class ArrowTableModel(QAbstractTableModel):
 
     busy_started = Signal()
     busy_finished = Signal()
+    filter_failed = Signal(str)   # see _FilterThread.failed
 
     # Keep old class name accessible so any isinstance() checks still work.
     _header_font: "QFont | None" = None
@@ -705,6 +712,7 @@ class ArrowTableModel(QAbstractTableModel):
         # ── Start filter thread and dispatch initial sort ───────────────────
         self._filter_thread = _FilterThread(full_table, parquet_dir=self._parquet_dir, parent=self)
         self._filter_thread.done.connect(self._on_filter_done)
+        self._filter_thread.failed.connect(self.filter_failed)
         self._filter_thread.start()
 
         # Populate the initial display table (sorted by timestamp_utc asc).
