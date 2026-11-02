@@ -1350,7 +1350,10 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         # and converting to true UTC, so the comparison vs event timestamps
         # (stored as UTC) matches what the user actually sees in the table.
         if self._adv_date_from or self._adv_date_to:
-            from datetime import timezone as _tz, timedelta as _td
+            # _tz / _td are the module-level imports.  Re-importing them here
+            # made them local to this whole method, so a relative-time filter
+            # with no date range (this branch skipped) raised UnboundLocalError
+            # and the view kept every event (Codex audit-5 E5-07).
             mode = _tz_state["mode"]
             display_tz = None  # None means UTC — no shift needed
             use_system_local = False

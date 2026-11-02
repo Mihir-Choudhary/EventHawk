@@ -759,12 +759,15 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
     if rel_days > 0 or rel_hours > 0:
         total_hours = rel_days * 24 + rel_hours
         rel_exclude = fc.get("relative_exclude", False)
-        # DuckDB: use CURRENT_TIMESTAMP - INTERVAL
-        cutoff_expr = f"(CURRENT_TIMESTAMP - INTERVAL '{total_hours} hours')::VARCHAR"
-        if rel_exclude:
-            clauses.append(f"timestamp_utc < {cutoff_expr}")
-        else:
-            clauses.append(f"timestamp_utc >= {cutoff_expr}")
+        # The cutoff in UTC, the zone timestamp_utc is stored in, computed as
+        # Normal mode does.  DuckDB's CURRENT_TIMESTAMP is in the session's
+        # local zone, and as text it read as local wall time against UTC text:
+        # "last 3 hours" lost every event on a +05:30 machine (the window
+        # moved 5.5 h into the future; day-sized windows hid it).
+        from datetime import datetime as _dtm, timedelta as _tdm, timezone as _tzm
+        cutoff = (_dtm.now(_tzm.utc) - _tdm(hours=total_hours)).strftime("%Y-%m-%d %H:%M:%S.%f")
+        clauses.append(f"timestamp_utc {'<' if rel_exclude else '>='} ?")
+        params.append(cutoff)
 
     # ── computers ─────────────────────────────────────────────────────────
     if fc.get("computers"):
