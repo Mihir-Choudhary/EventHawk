@@ -7937,6 +7937,14 @@ class _CustomColumnWorker(QThread):
     def __init__(self, fn, parent=None):
         super().__init__(parent)
         self._fn = fn
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Ask the computation to stop (Exit, a new dataset); *fn* polls it."""
+        self._cancelled = True
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled
 
     def run(self) -> None:
         try:
@@ -11117,12 +11125,11 @@ class MainWindow(QMainWindow):
         # Remove the Parquet session directory (parquet_dir) and all its contents.
         # DuckDB session file + .parquet shards are all inside this directory.
         if self._hw_db_path:
-            try:
-                import shutil as _shutil
-                if _shutil.os.path.isdir(self._hw_db_path):
-                    _shutil.rmtree(self._hw_db_path, ignore_errors=True)
-            except Exception:
-                pass
+            # Not while a thread may still read it (a custom column, a column
+            # prewarm, an export): deleting it under a running worker made it
+            # fail mid-Exit and open an error box that held Exit open.
+            self._pending_parquet_dirs = getattr(self, "_pending_parquet_dirs", []) + [self._hw_db_path]
+            self._remove_pending_parquet_dirs()
             self._hw_db_path = None
         self._reset_host_identity()
 
@@ -11881,6 +11888,7 @@ class MainWindow(QMainWindow):
     def _compute_custom_column(self, model, compiled, editing: bool) -> None:
         from evtx_tool.core.custom_columns import arrow_column_values
         from evtx_tool.gui.models import compute_custom_values
+        _holder: list = []            # the worker, for fn's cancel check
         if self._hw_model is not None and hasattr(model, "_full_table"):
             table = model._full_table
             shards = self._hw_model._get_shard_paths()
@@ -11899,9 +11907,10 @@ class MainWindow(QMainWindow):
                             f"SELECT COALESCE(({fixed}), false) FROM events", fixed_params).fetchall()]
                     finally:
                         con.close()
-                values = arrow_column_values(compiled, table, shards, mask=mask)
+                values = arrow_column_values(compiled, table, shards, mask=mask,
+                                             cancel=lambda: bool(_holder) and _holder[0].is_cancelled())
                 if values is None:
-                    return None
+                    return None             # cancelled
                 # Arrays built here, in the worker: on the GUI thread this
                 # froze the window for 0.9 s on 1.84 M rows (Codex E5-12).
                 from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
@@ -11911,15 +11920,26 @@ class MainWindow(QMainWindow):
             fn = lambda: compute_custom_values(compiled, events)                 # noqa: E731
         self._set_status(f"Computing column \u2018{compiled.spec.title}\u2019\u2026")
         worker = _CustomColumnWorker(fn, parent=self)
+        _holder.append(worker)
         self._custom_col_workers = [w for w in getattr(self, "_custom_col_workers", [])
                                     if self._thread_running(w)] + [worker]
         worker.done.connect(lambda values: self._on_custom_column_ready(model, compiled, values, editing))
-        worker.failed.connect(lambda msg: self._warn_blocking(
-            "Custom column", f"The column \u2018{compiled.spec.title}\u2019 could not be computed:\n{msg}",
-            icon=QMessageBox.Icon.Critical))
+        worker.failed.connect(lambda msg: self._on_custom_column_failed(compiled, msg))
         worker.start()
 
+    def _on_custom_column_failed(self, compiled, msg: str) -> None:
+        if getattr(self, "_close_stop_requested", False):
+            # Closing: a box would hold Exit open.  The worker logged the error.
+            logger.warning("custom column %r not computed during Exit: %s", compiled.spec.title, msg)
+            return
+        self._warn_blocking(
+            "Custom column", f"The column ‘{compiled.spec.title}’ could not be computed:\n{msg}",
+            icon=QMessageBox.Icon.Critical)
+
     def _on_custom_column_ready(self, model, compiled, values, editing: bool) -> None:
+        if values is None:                   # cancelled (Exit or a new dataset)
+            self._set_status(f"Column ‘{compiled.spec.title}’ not computed (cancelled)")
+            return
         cid = compiled.spec.col_id
         try:
             if editing:
@@ -17536,7 +17556,32 @@ class MainWindow(QMainWindow):
                 self._close_wait_timer.timeout.connect(self._close_when_threads_done)
             self._close_wait_timer.start()
             return
+        self._remove_pending_parquet_dirs()          # every thread has ended
         event.accept()
+
+    def _remove_pending_parquet_dirs(self) -> None:
+        """Delete released Parquet folders once no thread of this window runs;
+        until then retry every 500 ms."""
+        pending = getattr(self, "_pending_parquet_dirs", [])
+        if not pending:
+            return
+        if any(self._thread_running(t) for t in self.findChildren(QThread)):
+            if getattr(self, "_parquet_rm_timer", None) is None:
+                self._parquet_rm_timer = QTimer(self)
+                self._parquet_rm_timer.setInterval(500)
+                self._parquet_rm_timer.timeout.connect(self._remove_pending_parquet_dirs)
+            self._parquet_rm_timer.start()
+            return
+        import shutil as _shutil
+        for _d in pending:
+            try:
+                if os.path.isdir(_d):
+                    _shutil.rmtree(_d, ignore_errors=True)
+            except Exception:
+                logger.warning("could not remove %s", _d, exc_info=True)
+        self._pending_parquet_dirs = []
+        if getattr(self, "_parquet_rm_timer", None) is not None:
+            self._parquet_rm_timer.stop()
 
     def _stop_running_threads(self) -> list:
         """Ask every running thread the window owns to stop; return them."""
