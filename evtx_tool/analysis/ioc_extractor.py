@@ -117,7 +117,9 @@ class _Accum:
         self.record_keys: set[tuple] = set(keys)
         self.first     = ts
         self.last      = ts
-        self.eids: set[int]       = {eid}       if eid       else set()
+        # "is not None": event ID 0 is a real ID (Codex audit-5b: 42 raw
+        # EventID-0 records were missing from their IOCs' context).
+        self.eids: set[int]       = {eid}       if eid is not None else set()
         self.record_ids: set[int] = {record_id} if record_id else set()
         self.users: set[str]      = {user}      if user      else set()
         self.computers: set[str]  = {computer}  if computer  else set()
@@ -141,7 +143,7 @@ class _Accum:
                 self.first = ts
             if not self.last or ts > self.last:
                 self.last = ts
-        if eid:
+        if eid is not None:
             self.eids.add(eid)
         if record_id:
             self.record_ids.add(record_id)
@@ -272,7 +274,7 @@ def extract_iocs(events: list[dict], progress_fn: object = None) -> dict:
                 progress_fn(pct)
                 last_pct = pct
 
-        eid       = ev.get("event_id", 0) or 0
+        eid       = ev.get("event_id")      # None when absent; 0 is a real ID
         record_id = int(ev.get("record_id", 0) or 0)
         ed        = ev.get("event_data", {}) or {}
         ts        = ev.get("timestamp", "") or ev.get("TimeCreated", "") or ""
