@@ -22,6 +22,10 @@ the session is still active. Loaded Security 4608 and
 Kernel-General 12 system-start events prevent pairing across a reboot. Missing
 telemetry cannot establish that a reboot or reuse did not occur.
 
+A measured session (RDP, outbound RDP, Classic Remote Assistance) that spans a
+restart or a sleep of its computer has that time subtracted or reads Unavailable,
+with the reason in **Notes**: see [Restarts and sleep during a session](10e-downtime-in-sessions.md).
+
 The **Row** column is a stable reference assigned when the browser opens.
 When a disconnect is followed by a reconnect with the same computer,
 SessionID and full user identity, with no intervening logon, logoff or loaded

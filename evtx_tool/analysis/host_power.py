@@ -7,6 +7,10 @@ Windows logs both ends of a clean restart:
             Security 1100 / 4609, User32 1074 (initiated)
   startup   Kernel-General 12 (with StartTime), Security 4608
   unexpected shutdown (logged at the next startup): EventLog 6008, Kernel-Power 41
+  sleep     Power-Troubleshooter 1 (exact SleepTime and WakeTime); otherwise
+            Kernel-Power 42 (going to sleep) to the next Kernel-Power 107 (resumed).
+            Modern Standby (Kernel-Power 506/507) is NOT counted: the network can
+            stay connected in it.
 
 A Kernel-General record's StartTime / StopTime can differ from the time the
 record was written (one StartTime on the corpus sat exactly an hour before its
@@ -25,6 +29,16 @@ assess() answers, for one session of one host from *start* to *end*:
                 marked, with the parts in the notes).
   "open"        the session has no end and a restart follows: it ended by the
                 shutdown at the latest
+
+Sleep (user, 2026-11-06: "sleep and resume should be counted ... like downtime"):
+a sleep wholly inside a session is subtracted like a restart's downtime, and the
+Notes list it.  A sleep reaching across the session's start or end by at most
+_TRANSITION_SECS is the sleep transition itself (Windows logs the disconnect as
+it goes to sleep) and changes nothing.  A disconnect logged later inside the
+sleep -- on the corpus always exactly at WakeTime: Windows notices the lost
+connection on waking -- means the connection ended by the sleep at the latest:
+the time asleep up to the logged disconnect is subtracted and the Notes say so.
+A connect logged deep inside a sleep contradicts itself: no duration.
 """
 from __future__ import annotations
 
@@ -34,13 +48,17 @@ from datetime import datetime, timezone
 _MAX_WINDOW_SECS = 60.0
 # Startup records this close together, with no shutdown between, are one startup.
 _MERGE_SECS = 300.0
+# A sleep overlapping a session's start or end by at most this is the logging of
+# the sleep / wake transition, not time spent asleep while connected.
+_TRANSITION_SECS = 60.0
 
-_POWER_EIDS = frozenset({12, 13, 41, 109, 1074, 1100, 4608, 4609, 6006, 6008})
+_POWER_EIDS = frozenset({1, 12, 13, 41, 42, 107, 109, 1074, 1100, 4608, 4609, 6006, 6008})
 
 # The Juggernaut WHERE that loads exactly the events classify() can use.
 POWER_SQL = (
     "((event_id IN (12, 13) AND provider = 'Microsoft-Windows-Kernel-General')"
-    " OR (event_id IN (41, 109) AND provider = 'Microsoft-Windows-Kernel-Power')"
+    " OR (event_id IN (41, 42, 107, 109) AND provider = 'Microsoft-Windows-Kernel-Power')"
+    " OR (event_id = 1 AND provider = 'Microsoft-Windows-Power-Troubleshooter')"
     " OR (event_id IN (6006, 6008) AND lower(provider) = 'eventlog')"
     " OR (event_id = 1074 AND lower(provider) = 'user32')"
     " OR (event_id IN (4608, 4609, 1100) AND lower(channel) = 'security'))"
@@ -51,6 +69,7 @@ _SHUTDOWN_RANK = {"Kernel-General 13": 5, "EventLog 6006": 4, "Security 1100": 3
 
 _KG = "microsoft-windows-kernel-general"
 _KP = "microsoft-windows-kernel-power"
+_PT = "microsoft-windows-power-troubleshooter"
 
 
 def _dt(value) -> "datetime | None":
@@ -122,6 +141,15 @@ def classify(ev) -> "tuple | None":
         return ("unexpected", t, t, "EventLog 6008")
     if eid == 41 and prov == _KP:
         return ("unexpected", t, t, "Kernel-Power 41")
+    if eid == 1 and prov == _PT:
+        a, b = _dt(_data(ev).get("SleepTime")), _dt(_data(ev).get("WakeTime"))
+        if a is not None and b is not None and a < b:
+            return ("sleep", a, b, "Power-Troubleshooter 1")
+        return None
+    if eid == 42 and prov == _KP:
+        return ("sleep_start", t, t, "Kernel-Power 42")
+    if eid == 107 and prov == _KP:
+        return ("sleep_end", t, t, "Kernel-Power 107")
     return None
 
 
@@ -149,6 +177,7 @@ class HostPower:
             if h:
                 marks.setdefault(h, []).append(c)
         self.restarts: dict[str, list[dict]] = {}
+        self.sleeps: dict[str, list[tuple]] = {}
         for h, ms in marks.items():
             downs = [m for m in ms if m[0] == "shutdown"]
             # One startup can be several records: copies of the same log, and
@@ -182,6 +211,19 @@ class HostPower:
                             "unexpected": ux[3] if ux else None})
                 prev_hi = b[2]
             self.restarts[h] = out
+            # Sleep periods: Power-Troubleshooter 1 (exact); for a sleep it does
+            # not cover, Kernel-Power 42 to the next 107.  Copies count once.
+            exact = sorted({(m[1], m[2]) for m in ms if m[0] == "sleep"})
+            periods = [(a, b, "Power-Troubleshooter 1") for a, b in exact]
+            starts = sorted({m[1] for m in ms if m[0] == "sleep_start"})
+            ends = sorted({m[1] for m in ms if m[0] == "sleep_end"})
+            for i, a in enumerate(starts):
+                nxt = starts[i + 1] if i + 1 < len(starts) else None
+                b = next((x for x in ends if x > a and (nxt is None or x <= nxt)), None)
+                if b is None or any(lo <= b and a <= hi for lo, hi in exact):
+                    continue
+                periods.append((a, b, "Kernel-Power 42 to 107"))
+            self.sleeps[h] = sorted(periods)
 
     def assess(self, host: str, start, end) -> "dict | None":
         s, e = _dt(start), _dt(end)
@@ -203,9 +245,9 @@ class HostPower:
                              f"({r['boot'][2]}); that reaches across this session's "
                              f"{'start' if r['boot'][0] <= s else 'end'}, so whether it restarted "
                              f"during the session is uncertain. No duration.")}
-        if not inside:
-            return None
         if e is None:
+            if not inside:
+                return None
             r = inside[0]
             sd = r["shutdown"]
             if sd and sd[0] > s and not r["unexpected"]:
@@ -217,7 +259,7 @@ class HostPower:
                            if r["unexpected"] else "its shutdown time is not logged."))
             return {"kind": "open", "note": note}
         # Every restart inside needs a measurable downtime.
-        periods = []
+        periods = []                     # (start, end, from, to, kind)
         for r in inside:
             sd, (blo, bhi, blabel) = r["shutdown"], r["boot"]
             why = None
@@ -235,24 +277,63 @@ class HostPower:
                 return {"kind": "restarted",
                         "note": f"Host restarted during the session (started {_ts(bhi)}), but {why}: "
                                 f"no duration."}
-            periods.append((sd[0], bhi, sd[2], blabel))
+            periods.append((sd[0], bhi, sd[2], blabel, "down"))
+        # Sleeps.
+        for lo, hi, lbl in self.sleeps.get(str(host or "").strip().lower(), ()):
+            if hi <= s or lo >= e:
+                continue
+            if lo > s and hi < e:
+                periods.append((lo, hi, lbl, lbl, "asleep"))
+                continue
+            over = (min(hi, e) - max(lo, s)).total_seconds()
+            if over <= _TRANSITION_SECS:
+                continue                 # the sleep / wake transition being logged
+            if lo > s:
+                # Disconnect logged while asleep / on waking: no connection
+                # while asleep, so it ended by the sleep at the latest.
+                periods.append((lo, e, lbl, lbl, "asleep_end"))
+                continue
+            return {"kind": "uncertain_sleep",
+                    "note": (f"Host asleep from {_ts(lo)} to {_ts(hi)} ({lbl}), which reaches across this "
+                             f"session's {'start' if lo <= s else 'end'} by {fmt_secs(over)}: no duration.")}
+        if not periods:
+            return None
+        periods.sort()
+        # Overlapping down periods (a sleep and a restart) are subtracted once.
+        merged = []
+        for p in periods:
+            if merged and p[0] <= merged[-1][1]:
+                q = merged[-1]
+                merged[-1] = (q[0], max(q[1], p[1]), q[2], p[3] if p[1] >= q[1] else q[3],
+                              q[4] if q[4] == p[4] else "down")
+            else:
+                merged.append(p)
         total = (e - s).total_seconds()
-        down = sum((b - a).total_seconds() for a, b, _x, _y in periods)
+        down = sum((b - a).total_seconds() for a, b, *_ in merged)
         connected = total - down
-        if connected < 0 or any(periods[i][1] > periods[i + 1][0] for i in range(len(periods) - 1)):
+        if connected <= 0:
             return {"kind": "restarted",
-                    "note": "Host restarted during the session, but its shutdown and startup times "
-                            "do not fit inside the session: no duration."}
-        parts = [f"{fmt_secs((periods[0][0] - s).total_seconds())} before the shutdown "
-                 f"(until the shutdown at the latest)"]
-        for i, (a, b, _sa, _sb) in enumerate(periods):
-            parts.append(f"{fmt_secs((b - a).total_seconds())} down (subtracted)")
-            if i + 1 < len(periods):
-                parts.append(f"{fmt_secs((periods[i + 1][0] - b).total_seconds())} between restarts "
+                    "note": "The host was down or asleep for the whole session: no duration."}
+        what = {"down": ("the shutdown", "the restart", "down"), "asleep": ("the sleep", "waking", "asleep"),
+                "asleep_end": ("the sleep", "waking", "asleep until the disconnect was logged")}
+        parts = [f"{fmt_secs((merged[0][0] - s).total_seconds())} before {what[merged[0][4]][0]} "
+                 f"(until then at the latest)"]
+        for i, (a, b, _sa, _sb, k) in enumerate(merged):
+            parts.append(f"{fmt_secs((b - a).total_seconds())} {what[k][2]} (subtracted)")
+            if i + 1 < len(merged):
+                parts.append(f"{fmt_secs((merged[i + 1][0] - b).total_seconds())} between them "
                              f"(not proven: no reconnect was logged)")
-        parts.append(f"{fmt_secs((e - periods[-1][1]).total_seconds())} after the restart "
-                     f"(not proven: no reconnect was logged after the restart)")
-        downs = "; ".join(f"{_ts(a)} ({sa}) to {_ts(b)} ({sb})" for a, b, sa, sb in periods)
+        last = merged[-1][4]
+        if last == "asleep_end":
+            parts[-1] += (f"; the disconnect was logged at {_ts(e)} while the host was asleep or waking, "
+                          f"so the connection ended by the sleep at the latest")
+        else:
+            parts.append(f"{fmt_secs((e - merged[-1][1]).total_seconds())} after {what[last][1]} "
+                         f"(not proven: no reconnect was logged after {what[last][1]})")
+        downs = "; ".join(f"{'down' if k == 'down' else 'asleep'} {_ts(a)} ({sa}) to {_ts(b)} ({sb})"
+                          for a, b, sa, sb, k in merged if k != "asleep_end")
+        downs += "".join(f"{'; ' if downs else ''}asleep from {_ts(a)} ({sa}) until the disconnect was logged"
+                         for a, b, sa, sb, k in merged if k == "asleep_end")
         return {"kind": "subtracted", "seconds": connected, "downtime": down,
-                "note": (f"{fmt_secs(down)} subtracted: host was down {downs}. "
+                "note": (f"{fmt_secs(down)} subtracted: host was {downs}. "
                          f"Span {fmt_secs(total)} = " + " + ".join(parts) + ".")}

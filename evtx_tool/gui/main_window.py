@@ -3668,7 +3668,10 @@ class _WifiHistoryDialog(QDialog):
                 sess["anomaly_flags"].append("downtime_subtracted")
                 return
             sess["duration_secs"] = -1.0
-            if kind == "uncertain":
+            if kind == "uncertain_sleep":
+                sess["duration"] = "Unavailable (host asleep across the session's start or end)"
+                sess["anomaly_flags"].append("sleep_uncertain")
+            elif kind == "uncertain":
                 sess["duration"] = ("Unavailable (host restarted near the session; restart time uncertain)"
                                     if end_full else
                                     "Unavailable (host restarted near the connect; restart time uncertain)")
@@ -5711,6 +5714,10 @@ class _RemoteAssistanceDialog(QDialog):
             elif res["kind"] == "restarted":
                 s["duration"], s["duration_secs"] = "Unavailable (host restarted in between)", -1.0
                 s["flags"].append("REBOOT_BETWEEN")
+            elif res["kind"] == "uncertain_sleep":
+                s["duration"], s["duration_secs"] = ("Unavailable (host asleep across the session's "
+                                                     "start or end)"), -1.0
+                s["flags"].append("SLEEP_UNCERTAIN")
             else:                            # "open": no end logged, a restart followed
                 s["flags"].append("REBOOT_AFTER_START")
         sessions.sort(key=lambda s: (s.get("_observed_order") or s.get("start_ts_full") or s["start_ts"] or ""))
