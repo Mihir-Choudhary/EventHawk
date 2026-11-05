@@ -1232,11 +1232,26 @@ class HeavyweightEngine:
 
         finally:
             stop_evt.set()              # release any worker still blocked
-            for _w in workers:
+            # Join with ONE shared deadline while draining out_queue.  A worker
+            # stopped mid-file is usually blocked in out_queue.put() on a full
+            # queue that nobody reads any more, so it never reaches its next
+            # stop check: joining each worker for 10 s in turn made Stop take
+            # 11 x 10 s = 111 s on the corpus (Codex audit-5b A5B-CANCEL).
+            # Draining frees them; the rows drained here are discarded because
+            # a stopped run is not loaded.  On a normal finish the queue is
+            # already empty and every worker has exited, so this costs nothing.
+            _deadline = time.monotonic() + 10.0
+            while time.monotonic() < _deadline and any(_w.is_alive() for _w in workers):
                 try:
-                    _w.join(timeout=10)
+                    while True:
+                        out_queue.get_nowait()
                 except Exception:
                     pass
+                for _w in workers:
+                    try:
+                        _w.join(timeout=0.05)
+                    except Exception:
+                        pass
             for _w in workers:
                 if use_processes and _w.is_alive():
                     logger.warning("Worker %s did not exit — terminating", _w.pid)

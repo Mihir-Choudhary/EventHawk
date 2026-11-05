@@ -10341,13 +10341,21 @@ class MainWindow(QMainWindow):
         # re-parse could), and the Tools menu saw only the profile's events.
         # The ticked profiles are applied to the VIEW once loading finishes.
         logger.info("Parse started: %d file(s), Juggernaut Mode", len(files))
+        # parent=self: the window owns the thread, so dropping the Python
+        # reference (cleanup, Stop, a new parse) can never destroy it while it
+        # runs -- that was a native abort on File > Exit mid-parse (Codex
+        # audit-5b A5B-PARSE-EXIT).  closeEvent waits for it to end.
+        self._retired_hw_workers = self._reap_finished_workers(
+            getattr(self, "_retired_hw_workers", []))
         self._hw_worker = HeavyweightParseWorker(
             files=files,
             filter_config=None,
+            parent=self,
         )
         self._hw_worker.progress.connect(self._on_hw_progress)
         self._hw_worker.finished.connect(self._on_hw_finished)
         self._hw_worker.error.connect(self._on_parse_error)
+        self._hw_worker.cancelled.connect(self._on_hw_cancelled)
         self._hw_worker.start()
 
         # Show the "Please Wait" overlay — disables the main window until
@@ -10939,8 +10947,24 @@ class MainWindow(QMainWindow):
         self._col_value_workers = []
 
         if self._hw_worker is not None:
-            self._hw_worker.request_stop()
+            _hw = self._hw_worker
             self._hw_worker = None
+            if self._thread_running(_hw):
+                # Its late results belong to the run being torn down: a
+                # finished parse arriving after this cleanup would load a
+                # dataset nobody asked for.  Keep a reference until it ends
+                # (it is the window's child; closeEvent waits for it).
+                import warnings as _warnings
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore", RuntimeWarning)
+                    for _sn in ("finished", "error", "cancelled", "progress"):
+                        try:
+                            getattr(_hw, _sn).disconnect()
+                        except (RuntimeError, TypeError, AttributeError):
+                            pass
+                _hw.request_stop()
+                self._retired_hw_workers = self._reap_finished_workers(
+                    getattr(self, "_retired_hw_workers", [])) + [_hw]
         # Close the model BEFORE closing the connection.
         # Pending QTimer.singleShot(50, ...) prefetch lambdas and the
         # _count_timer hold a reference to the model and will fire after
@@ -12483,6 +12507,19 @@ class MainWindow(QMainWindow):
             detail=msg,
         )
 
+
+    @Slot()
+    def _on_hw_cancelled(self) -> None:
+        """A Juggernaut parse ended because the analyst pressed Stop.
+
+        Nothing is loaded from a stopped run (its shards are partial).  The UI
+        goes back to ready: before, no slot ran at all, so Parse stayed
+        disabled and the wait dialog stayed up for good (Codex audit-5b
+        A5B-CANCEL)."""
+        self._btn_parse.setEnabled(True)
+        self._btn_stop.setEnabled(False)
+        self._cleanup_juggernaut()
+        self._set_status("Parse stopped — nothing was loaded")
 
     @Slot(str)
     def _on_parse_error(self, msg: str) -> None:
@@ -17283,13 +17320,63 @@ class MainWindow(QMainWindow):
             if _w is not None and _w.isRunning():
                 _w.cancel()
                 _w.wait(5000)
-        self._cleanup_juggernaut()
-        if self._worker and self._worker.isRunning():
-            self._worker.request_stop()
-            self._worker.wait(3000)
-        if self._analysis_runner is not None and self._analysis_runner.is_running():
-            self._analysis_runner.request_stop()
+        if not getattr(self, "_close_stop_requested", False):
+            self._close_stop_requested = True
+            self._cleanup_juggernaut()
+            if self._worker and self._worker.isRunning():
+                self._worker.request_stop()
+                self._worker.wait(3000)
+            if self._analysis_runner is not None and self._analysis_runner.is_running():
+                self._analysis_runner.request_stop()
+        # Never let the window be destroyed while one of its threads runs: Qt
+        # aborts the process ("QThread destroyed while running", 0xC0000409),
+        # which is what File > Exit did during a Juggernaut parse and after an
+        # IOC pivot's column prewarm (Codex audit-5b A5B-PARSE-EXIT /
+        # A5B-PREWARM-EXIT).  Ask every running thread to stop, wait a little,
+        # and if any is still busy keep the window open, say why, and close as
+        # soon as the last one ends.
+        running = self._stop_running_threads()
+        _deadline = time.monotonic() + 5.0
+        for _t in running:
+            _t.wait(max(0, int((_deadline - time.monotonic()) * 1000)))
+        running = [t for t in running if self._thread_running(t)]
+        if running:
+            event.ignore()
+            self._set_status(
+                f"Closing — waiting for {len(running)} background task(s) to stop…")
+            if getattr(self, "_close_wait_timer", None) is None:
+                self._close_wait_timer = QTimer(self)
+                self._close_wait_timer.setInterval(200)
+                self._close_wait_timer.timeout.connect(self._close_when_threads_done)
+            self._close_wait_timer.start()
+            return
         event.accept()
+
+    def _stop_running_threads(self) -> list:
+        """Ask every running thread the window owns to stop; return them."""
+        running = [t for t in self.findChildren(QThread) if self._thread_running(t)]
+        for _t in running:
+            for _name in ("request_stop", "cancel"):
+                _fn = getattr(_t, _name, None)
+                if callable(_fn):
+                    try:
+                        _fn()
+                    except Exception:
+                        pass
+                    break
+            else:
+                if callable(getattr(_t, "stop", None)):   # _FilterThread
+                    try:
+                        _t.stop()
+                    except Exception:
+                        pass
+        return running
+
+    def _close_when_threads_done(self) -> None:
+        if any(self._thread_running(t) for t in self.findChildren(QThread)):
+            return
+        self._close_wait_timer.stop()
+        self.close()
 
     # ── BOOKMARKS ─────────────────────────────────────────────────────────────
 

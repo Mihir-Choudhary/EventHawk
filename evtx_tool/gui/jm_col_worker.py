@@ -546,15 +546,31 @@ class ColValuePrewarmWorker(QThread):
         self._where_sql    = where_sql
         self._where_params = list(where_params or [])
         self._cancel       = False
+        self._con          = None
 
     def cancel(self) -> None:
+        """Stop the sweep, including a query already running inside DuckDB.
+
+        The flag alone is only read between queries, so a long GROUP BY ran to
+        its end after cancel() -- past the window's teardown, which then
+        destroyed a running thread (native abort on Exit, Codex audit-5b
+        A5B-PREWARM-EXIT).  interrupt() makes the running execute() raise."""
         self._cancel = True
+        con = self._con
+        if con is not None:
+            try:
+                con.interrupt()
+            except Exception:
+                pass
 
     def run(self) -> None:
         con = None
         try:
             import duckdb
             con = duckdb.connect()
+            self._con = con
+            if self._cancel:
+                return
             con.register("events", self._table)
             for col_key in self._col_keys:
                 if self._cancel:
@@ -575,6 +591,8 @@ class ColValuePrewarmWorker(QThread):
                         params,
                     ).fetchall()
                 except Exception as exc:
+                    if self._cancel:
+                        return              # interrupted by cancel(): not an error
                     # One bad column must not abandon the rest of the sweep.
                     logger.warning("prewarm: col_key=%r error: %s", col_key, exc)
                     continue
@@ -587,6 +605,7 @@ class ColValuePrewarmWorker(QThread):
         except Exception as exc:
             logger.warning("ColValuePrewarmWorker failed: %s", exc)
         finally:
+            self._con = None
             if con is not None:
                 try:
                     con.close()

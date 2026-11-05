@@ -25,6 +25,10 @@ class HeavyweightParseWorker(QThread):
     progress = Signal(int, int, int, float)   # done_files, total_files, done_events, eps
     finished = Signal(str)                     # parquet_dir path
     error    = Signal(str)
+    # Emitted instead of finished when the run was stopped.  Without it a
+    # stopped parse ended in silence: nothing re-enabled Parse or closed the
+    # wait dialog (Codex audit-5b A5B-CANCEL).
+    cancelled = Signal()
 
     def __init__(
         self,
@@ -85,7 +89,9 @@ class HeavyweightParseWorker(QThread):
                     "but parquet_manifest.json does not exist", result,
                 )
 
-            if not self._stop_event.is_set():
+            if self._stop_event.is_set():
+                self.cancelled.emit()
+            else:
                 self.finished.emit(result)
         except Exception as exc:
             if self._engine is not None:
