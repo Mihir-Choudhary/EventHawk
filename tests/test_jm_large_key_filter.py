@@ -90,11 +90,11 @@ def main() -> int:
         for fm in tabs:
             fm.apply_bookmark_filter(keys)
         dt = time.perf_counter() - t0
-        T.wait_for(lambda: all(fm._filter_thread._q.empty() for fm in tabs), 120)
-        T.pump(500)
-        T.wait_for(lambda: all(fm._filter_thread._q.empty() for fm in tabs), 120)
-        T.pump(300)
         want = [sum(1 for sf, _r in chosen if sf == FILES[i % 3]) for i in range(30)]
+        # An empty request queue does not mean the query has finished: wait for
+        # each tab's own result (30 filter threads share the CPU).
+        T.wait_for(lambda: all(fm.rowCount() == want[i] for i, fm in enumerate(tabs)), 180)
+        T.pump(300)
         bad = [i for i, fm in enumerate(tabs) if fm.rowCount() != want[i]]
         check("30 per-file tabs each show exactly their file's chosen events", not bad,
               f"{len(bad)} wrong, e.g. {[(tabs[i].rowCount(), want[i]) for i in bad[:3]]}")
