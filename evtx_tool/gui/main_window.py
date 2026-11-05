@@ -11847,7 +11847,13 @@ class MainWindow(QMainWindow):
                             f"SELECT COALESCE(({fixed}), false) FROM events", fixed_params).fetchall()]
                     finally:
                         con.close()
-                return arrow_column_values(compiled, table, shards, mask=mask)
+                values = arrow_column_values(compiled, table, shards, mask=mask)
+                if values is None:
+                    return None
+                # Arrays built here, in the worker: on the GUI thread this
+                # froze the window for 0.9 s on 1.84 M rows (Codex E5-12).
+                from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
+                return _ATM.prepare_custom_values(compiled, values)
         else:
             events = list(model._events)
             fn = lambda: compute_custom_values(compiled, events)                 # noqa: E731

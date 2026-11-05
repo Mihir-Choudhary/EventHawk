@@ -79,6 +79,14 @@ _BG_BOOKMARK = QColor("#e8c96e")   # amber highlight for bookmarked rows
 _MONO_FONT   = QFont("Consolas", 9)
 _COLOR_GRAY  = QColor("#9a8878")
 
+class _PreparedValues:
+    """A custom column's values and sort keys, already Arrow arrays."""
+    __slots__ = ("values", "sort_keys")
+
+    def __init__(self, values, sort_keys):
+        self.values, self.sort_keys = values, sort_keys
+
+
 # Boolean column marking the rows of a key filter (IOC pivot, bookmarks,
 # sessions); see ArrowTableModel.apply_bookmark_filter.
 _KEY_SEL_COL = "_key_sel"
@@ -1458,12 +1466,23 @@ class ArrowTableModel(QAbstractTableModel):
         self._cache_dict, self._cache_start, self._cache_end = {}, 0, 0
         self._invalidate()
 
-    def _with_values(self, table, compiled, values: list):
+    @staticmethod
+    def prepare_custom_values(compiled, values: list) -> "_PreparedValues":
+        """The column's values and sort keys as Arrow arrays.  Run it in the
+        worker that computed *values*: building them on the GUI thread froze
+        the window for 0.9 s on 1.84 M rows (Codex E5-12)."""
         import pyarrow as pa
         from evtx_tool.core.custom_columns import sort_key_text
-        cid, kind = compiled.spec.col_id, compiled.spec.kind
-        table = table.append_column(f"cc_{cid}", pa.array(values, pa.string()))
-        return table.append_column(f"cc_{cid}_s", pa.array([sort_key_text(v, kind) for v in values], pa.string()))
+        kind = compiled.spec.kind
+        return _PreparedValues(pa.array(values, pa.string()),
+                               pa.array([sort_key_text(v, kind) for v in values], pa.string()))
+
+    def _with_values(self, table, compiled, values):
+        cid = compiled.spec.col_id
+        if not isinstance(values, _PreparedValues):
+            values = self.prepare_custom_values(compiled, values)
+        table = table.append_column(f"cc_{cid}", values.values)
+        return table.append_column(f"cc_{cid}_s", values.sort_keys)
 
     @staticmethod
     def _without(table, col_id: int):
