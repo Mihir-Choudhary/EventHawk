@@ -95,11 +95,12 @@ def _render(v) -> str:
     return str(v)
 
 
-def data_items(event_data) -> list:
+def data_items(event_data, need: "int | None" = None) -> list:
     """The <Data> elements of *event_data* in document order, as (name, value).
 
     Unnamed <Data> elements have no name.  For UserData (nested elements, no
-    <Data>) these are its leaf fields, in order.
+    <Data>) these are its leaf fields, in order.  With *need*, the list may
+    stop once it holds the first *need* items (they are the same items).
     """
     if not isinstance(event_data, dict):
         return []
@@ -118,6 +119,23 @@ def data_items(event_data) -> list:
             return out
         if not isinstance(v, dict):
             return [(None, v)]
+    else:
+        # flatten_fields walks the keys in order and emits a plain name: value
+        # pair unchanged; it only reshapes nested containers, named-Data lists
+        # and #/@ metadata keys.  So the plain pairs before the first such key
+        # are its first items, exactly -- all of them for a plain map (most
+        # EventData), or as many as *need* asks.  Flattening every row made
+        # positional {Data[n]} columns several times slower (Codex E5-12).
+        out = []
+        for k, v in event_data.items():
+            if isinstance(v, (dict, list)) or not isinstance(k, str) or k[:1] in ("#", "@"):
+                break
+            if k != "Binary":
+                out.append((k, v))
+                if need is not None and len(out) >= need:
+                    return out
+        else:
+            return out
     return [(k, v) for k, v in flatten_fields(event_data).items() if k != "Binary"]
 
 
@@ -138,6 +156,17 @@ class CompiledColumn:
     eid_exclude: frozenset
     providers: frozenset
     hits: Counter = field(default_factory=Counter)
+
+    def _pos_need(self) -> "int | None":
+        """How many <Data> items the template reads, when it reads them only by
+        position (then data_items may stop there); None when a part names a
+        field (it may need every item)."""
+        n = self.__dict__.get("_need_cache", False)
+        if n is False:
+            idx = [p.data_index for p in self.parts if p.token and not p.key]
+            n = max(idx) if idx and all(idx) else None
+            self.__dict__["_need_cache"] = n
+        return n
 
     @property
     def tokens(self) -> list:
@@ -188,7 +217,7 @@ class CompiledColumn:
                     v = flat.get(p.data_name)
                 else:
                     if items is None:
-                        items = data_items(ed)
+                        items = data_items(ed, self._pos_need())
                     if p.data_index:
                         if p.data_index <= len(items):
                             v = items[p.data_index - 1][1]
