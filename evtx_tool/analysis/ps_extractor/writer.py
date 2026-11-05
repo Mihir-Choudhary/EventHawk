@@ -990,6 +990,10 @@ def write_csv_timeline(
             "Open Script Block" if row_data[9] else "",   # script_block_file (text; hyperlink set below)
             _sanitize(row_data[10], max_len=_DETAIL_MAX), # detail
         ])
+        # A value starting with '=' is text, not a formula (openpyxl would
+        # store it as one): exact value, no apostrophe needed in a workbook.
+        from evtx_tool.output.exporters import xlsx_text_cells
+        xlsx_text_cells(ws[row_num])
         if row_data[9]:  # sb_href present — attach real hyperlink
             cell = ws.cell(row=row_num, column=SB_FILE_COL)
             cell.hyperlink = row_data[9]

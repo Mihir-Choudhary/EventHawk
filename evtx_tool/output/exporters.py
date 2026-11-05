@@ -30,6 +30,69 @@ from evtx_tool.core._json_compat import fast_dumps
 
 logger = logging.getLogger(__name__)
 
+
+# ── Formula-safe CSV / XLSX (user, 2026-11-06) ───────────────────────────────
+# Event values are attacker-controlled.  A CSV cell starting with = + - @ TAB
+# or CR is run as a formula by Excel / LibreOffice when the file is opened
+# (=HYPERLINK, DDE calls).  Such a cell gets ONE leading apostrophe, the
+# standard text marker: the spreadsheet shows the value as text, and the
+# original is the cell without that first apostrophe.  Plain numbers ("-1",
+# "+44", "1e5") and the lone "-" Windows writes for "no value" cannot be
+# formulas and are written unchanged.  csv.writer quotes commas, quotes and
+# line breaks, so no value spills into another cell.  JSON / XML / HTML keep
+# the exact values.
+_PLAIN_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+_FORMULA_FIRST = frozenset("=+-@\t\r")
+
+
+def csv_cell(value):
+    """*value*, made safe to open in a spreadsheet (see above)."""
+    if (isinstance(value, str) and value and value[0] in _FORMULA_FIRST
+            and value != "-" and not _PLAIN_NUMBER.fullmatch(value)):
+        return "'" + value
+    return value
+
+
+class _SafeCsvWriter:
+    """csv.writer whose every cell goes through csv_cell()."""
+
+    def __init__(self, writer):
+        self._w = writer
+
+    def writerow(self, row):
+        return self._w.writerow([csv_cell(c) for c in row])
+
+    def writerows(self, rows):
+        for r in rows:
+            self.writerow(r)
+
+    def __getattr__(self, name):
+        return getattr(self._w, name)
+
+
+def safe_csv_writer(f, *args, **kwargs):
+    """Every CSV EventHawk writes goes through this (formula-safe cells)."""
+    return _SafeCsvWriter(csv.writer(f, *args, **kwargs))
+
+
+class SafeDictWriter(csv.DictWriter):
+    """csv.DictWriter whose every value goes through csv_cell()."""
+
+    def writerow(self, rowdict):
+        return super().writerow({k: csv_cell(v) for k, v in rowdict.items()})
+
+    def writerows(self, rowdicts):
+        for r in rowdicts:
+            self.writerow(r)
+
+
+def xlsx_text_cells(cells) -> None:
+    """Store text starting with '=' as text, not as a formula (openpyxl turns
+    such a string into a formula).  The value stays exactly as it is."""
+    for c in cells:
+        if isinstance(c.value, str) and c.value.startswith("="):
+            c.data_type = "s"
+
 # ── WASM search module location ────────────────────────────────────────────────
 # Built with: wasm-pack build --target no-modules --release --out-dir pkg
 # (run from evtx_search_wasm/).  If the pkg/ dir is absent, export_html() falls
@@ -143,7 +206,7 @@ def export_csv(events: list[dict], filepath: str, **_) -> int:
                           list((events[0].get("custom_columns") or {}) if events else ()))
     pos, width = {h: i for i, h in enumerate(headers)}, len(headers)
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
+        writer = safe_csv_writer(f)
         writer.writerow(headers)
         count = 0
         for ev in events:

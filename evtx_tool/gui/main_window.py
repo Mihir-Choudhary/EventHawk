@@ -21,6 +21,10 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Every CSV this window writes is formula-safe (see exporters.csv_cell).
+from evtx_tool.output.exporters import safe_csv_writer as _safe_csv_writer  # noqa: E402
+from evtx_tool.output.exporters import SafeDictWriter as _SafeDictWriter    # noqa: E402
+
 from PySide6.QtCore import (
     QEvent, QModelIndex, QPoint, QSortFilterProxyModel, Qt, QThread, QTimer, Signal, Slot,
     QPropertyAnimation, QEasingCurve, QSettings, QFileSystemWatcher,
@@ -4273,7 +4277,7 @@ class _WifiHistoryDialog(QDialog):
             return
         try:
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
+                writer = _safe_csv_writer(f)
                 # Provenance: note truncation in the file itself so the exported
                 # CSV is self-describing even when the dialog is long closed.
                 if self._truncated:
@@ -6029,7 +6033,7 @@ class _RemoteAssistanceDialog(QDialog):
                 ordered = list(self._shown_sessions)
 
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
+                writer = _safe_csv_writer(f)
                 if self._truncated:
                     writer.writerow([
                         "NOTE: Dataset was capped at 200,000 events — "
@@ -6539,7 +6543,7 @@ class _JMExportWorker(QThread):
             pos, width = {h: i for i, h in enumerate(headers)}, len(headers)
             cursor = con.execute(f"SELECT {cols} {src} ORDER BY {self._order_sql}", self._params)
             with open(self._path, "w", newline="", encoding="utf-8-sig") as fh:
-                writer = _csv.writer(fh)
+                writer = _safe_csv_writer(fh)
                 writer.writerow(headers)
                 while not self._cancel:
                     batch = cursor.fetchmany(self._BATCH)
@@ -7289,7 +7293,7 @@ class _ComputerNormalisationDialog(QDialog):
                 ordered = list(self._shown_rows)
 
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
+                writer = _safe_csv_writer(f)
                 writer.writerow([
                     "Normalised Name", "Variants", "Events",
                     "Source Files", "Forwarded?", "Variant Details",
@@ -15258,7 +15262,7 @@ class MainWindow(QMainWindow):
                 "Channel", "User", "ATT&CK", "Source File",
             ]
             with open(path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
+                writer = _safe_csv_writer(f)
                 writer.writerow(headers)
                 for ev in filtered:
                     tags = ev.get("attack_tags") or []
@@ -15404,7 +15408,7 @@ class MainWindow(QMainWindow):
                 ]
                 count = 0
                 with open(path, "w", encoding="utf-8", newline="") as fh:
-                    writer = _csv.writer(fh)
+                    writer = _safe_csv_writer(fh)
                     writer.writerow(["type", "value", "count", "first_seen",
                                      "last_seen", "score"])
                     for label, key in _ioc_keys:
@@ -17797,7 +17801,7 @@ class MainWindow(QMainWindow):
             fields = ["record_id", "event_id", "timestamp", "computer", "source_file"]
             if ext == "csv":
                 with open(path, "w", newline="", encoding="utf-8") as fh:
-                    writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+                    writer = _SafeDictWriter(fh, fieldnames=fields, extrasaction="ignore")
                     writer.writeheader()
                     writer.writerows(self._bookmarks)
             else:
