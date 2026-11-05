@@ -79,6 +79,12 @@ _BG_BOOKMARK = QColor("#e8c96e")   # amber highlight for bookmarked rows
 _MONO_FONT   = QFont("Consolas", 9)
 _COLOR_GRAY  = QColor("#9a8878")
 
+# Boolean column marking the rows of a key filter (IOC pivot, bookmarks,
+# sessions); see ArrowTableModel.apply_bookmark_filter.
+_KEY_SEL_COL = "_key_sel"
+# The last mask computed: (key set, data signature, mask).  One entry.
+_KEY_SEL_CACHE: dict = {}
+
 # ── Visible window cache size ──────────────────────────────────────────────────
 # Rows loaded from Arrow per slice — amortises Python/C++ boundary call overhead.
 _CACHE_WINDOW = 600
@@ -1126,22 +1132,58 @@ class ArrowTableModel(QAbstractTableModel):
                 return
             self.clear_record_id_filter()
             return
-        # ONE membership test on a combined key, with the keys inlined as
-        # escaped literals.  It used to be an OR chain of
-        # "(source_file = ? AND record_id = ?)", one per key: DuckDB overflows
-        # its stack on a few thousand of those and takes the whole process
-        # down (measured: 1,000 fine, 5,000 crashed), so a Remote Assistance
-        # session, bookmark set or IOC pivot of that size killed EventHawk.
-        # Grouping by file still crashed at ~1,600 files.  Bound parameters
-        # are no fix either: binding 50k of them took 14 s; inlined they take
-        # 0.3 s.  chr(31) cannot occur in a path; quotes are doubled.
-        sep = "\x1f"
-        lits = ",".join(
-            "'" + f"{sf}{sep}{int(rid)}".replace("'", "''") + "'" for sf, rid in keys)
-        self._record_id_where_sql = (
-            f"(source_file || chr(31) || CAST(record_id AS VARCHAR)) IN ({lits})")
+        # The chosen rows are marked once, in a boolean column of this tab's
+        # own table, and the WHERE tests that column.  Every consumer of the
+        # WHERE (the view, the column popups, the export) runs it over this
+        # table, so they all see the same rows.  History: an OR chain of
+        # "(source_file = ? AND record_id = ?)" overflowed DuckDB's stack past
+        # a few thousand keys and crashed EventHawk; bound parameters took 14 s
+        # for 50k; inlined literals took 2.4 s per query for 300k keys and
+        # 47-56 s for the largest IOC pivot (1.7 M keys, Codex E5-12), because
+        # DuckDB parsed the 100+ MB key list again for every query.
+        self._set_table(self._with_key_selection(self._full_table, keys))
+        self._record_id_where_sql = _KEY_SEL_COL
         self._record_id_params    = []
         self._invalidate()
+
+    @staticmethod
+    def _with_key_selection(table, keys):
+        """*table* with the boolean column _KEY_SEL_COL: True exactly on the
+        rows whose (source_file, record_id) is in *keys*.  Pure Arrow, row
+        order kept; a row without a record_id is never selected."""
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        def _buffers(col):
+            out = []
+            for ch in col.chunks:
+                out += [b.address if b is not None else 0 for b in ch.buffers()]
+                if pa.types.is_dictionary(ch.type):
+                    out += [b.address if b is not None else 0 for b in ch.dictionary.buffers()]
+            return tuple(out)
+
+        # The main tab and every per-file tab share the same columns and get
+        # the same key set in one go (a session or logon filter): the mask is
+        # computed once and reused.  Reuse needs the SAME key-set object and
+        # the same data buffers; anything else is computed afresh.
+        sig = (len(table), _buffers(table.column("source_file")), _buffers(table.column("record_id")))
+        hit = _KEY_SEL_CACHE.get("entry")
+        if hit is not None and hit[0] is keys and hit[1] == sig:
+            sel = hit[2]
+        else:
+            sep = "\x1f"             # cannot occur in a path
+            wanted = pa.array([f"{sf}{sep}{int(rid)}" for sf, rid in keys], pa.string())
+            sf = table.column("source_file")
+            if pa.types.is_dictionary(sf.type):
+                sf = sf.cast(pa.string())
+            rid = pc.cast(table.column("record_id"), pa.string())
+            row_key = pc.binary_join_element_wise(sf, rid, sep)
+            sel = pc.fill_null(pc.is_in(row_key, value_set=wanted), False)
+            # Holding keys keeps its id from being reused by another set.
+            _KEY_SEL_CACHE["entry"] = (keys, sig, sel)
+        if _KEY_SEL_COL in table.column_names:
+            return table.set_column(table.schema.get_field_index(_KEY_SEL_COL), _KEY_SEL_COL, sel)
+        return table.append_column(_KEY_SEL_COL, sel)
 
     def _get_shard_paths(self) -> list:
         """Delegate to the filter thread's shard manifest loader."""

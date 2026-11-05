@@ -52,16 +52,22 @@ JM_CHILD = textwrap.dedent(r"""
     n_files, n_keys = int(sys.argv[2]), int(sys.argv[3])
     class Stub:
         _invalidate = lambda self: None
+        _with_key_selection = staticmethod(ArrowTableModel._with_key_selection)
         def clear_record_id_filter(self): pass
+        def _set_table(self, t): self._full_table = t
     s = Stub()
     keys = frozenset((rf"C:\logs\it's f{i % n_files}.evtx", i) for i in range(n_keys))
-    ArrowTableModel.apply_bookmark_filter(s, keys)
     con = duckdb.connect()
-    con.execute(f"CREATE TABLE events AS SELECT range AS record_id, "
+    con.execute(f"CREATE TABLE ev AS SELECT range AS record_id, "
                 f"('C:\\logs\\it''s f' || (range % {n_files})::VARCHAR || '.evtx') AS source_file "
                 f"FROM range({n_keys * 3})")
     # decoys: same record ids in a file the keys do not name
-    con.execute(f"INSERT INTO events SELECT range, 'C:\\logs\\other.evtx' FROM range({n_keys})")
+    con.execute(f"INSERT INTO ev SELECT range, 'C:\\logs\\other.evtx' FROM range({n_keys})")
+    # The filter belongs to the tab's own table: every consumer (view, column
+    # popups, export) runs the WHERE over that table, as here.
+    s._full_table = con.execute("SELECT * FROM ev").to_arrow_table()
+    ArrowTableModel.apply_bookmark_filter(s, keys)
+    con.register("events", s._full_table)
     got = con.execute(f"SELECT count(*) FROM events WHERE {s._record_id_where_sql}",
                       s._record_id_params).fetchone()[0]
     print("ROWS", got)
