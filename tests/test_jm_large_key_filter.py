@@ -102,6 +102,21 @@ def main() -> int:
         for fm in tabs:
             fm.close()
 
+        # The integer-key mask (fast path) equals the text-key mask exactly.
+        import pyarrow as pa
+        import pyarrow.compute as pc
+        mi = ArrowTableModel._key_mask_int(table, keys)
+        sf = table.column("source_file")
+        sf = sf.cast(pa.string()) if pa.types.is_dictionary(sf.type) else sf
+        rk = pc.binary_join_element_wise(sf, pc.cast(table.column("record_id"), pa.string()), "\x1f")
+        mt = pc.fill_null(pc.is_in(rk, value_set=pa.array([f"{a}\x1f{b}" for a, b in keys], pa.string())), False)
+        check("integer-key mask equals the text-key mask on every row",
+              mi is not None and mi.to_pylist() == mt.to_pylist(), "fast path not taken" if mi is None else "")
+        big = table.slice(0, 3).set_column(table.schema.get_field_index("record_id"), "record_id",
+                                           pa.array([1, 2, 1 << 41], pa.int64()))
+        check("a record number past 2**40 falls back to the text keys",
+              ArrowTableModel._key_mask_int(big, keys) is None)
+
         m.apply_bookmark_filter(frozenset({(FILES[0], 1)}))
         T.wait_for(lambda: m.rowCount() == 1 and m._filter_thread._q.empty(), 60)
         T.pump(200)
