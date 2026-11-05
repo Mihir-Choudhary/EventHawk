@@ -68,7 +68,10 @@ def iso(dt):
 
 
 def ev(sf, rid, comp, when, eid=4624, provider="Microsoft-Windows-Security-Auditing", data=None):
+    # Both IDs, equal as in a log collected whole: record_id is the record
+    # header number, event_record_id the XML EventRecordID.
     return {"event_id": eid, "computer": comp, "source_file": sf, "record_id": rid,
+            "event_record_id": rid,
             "timestamp": iso(when) if isinstance(when, datetime) else when,
             "provider": provider, "channel": "Security", "level": 4,
             "level_name": "Information", "event_data": data or {}}
@@ -106,7 +109,8 @@ def write_jm(evs, tmp):
     rows = []
     for e in evs:
         t = e["timestamp"]
-        rows.append({"record_id": e["record_id"], "event_id": e["event_id"], "level": 4,
+        rows.append({"record_id": e["record_id"], "event_record_id": e.get("event_record_id"),
+                     "event_id": e["event_id"], "level": 4,
                      "level_name": "Information",
                      "timestamp_utc": t.replace("T", " ").replace("Z", "")[:26] if t else None,
                      "channel": e["channel"], "provider": e["provider"], "computer": e["computer"],

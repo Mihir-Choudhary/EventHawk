@@ -67,7 +67,7 @@ def read_outputs(folder, base):
 
 def assert_outputs(tag, o):
     by_rid = lambda rows, key: [r for r in sorted(rows, key=lambda r: int(r[key]))]      # noqa: E731
-    rows = by_rid(o["csv"], "RecordID")
+    rows = by_rid(o["csv"], "RecordNumber")
     check(f"{tag} CSV: a column per custom column, values exact (empty outside the filter)",
           [r.get("Logon Type") for r in rows] == WANT_LT and [r.get(ODD) for r in rows] == [f"HOST-{i}" for i in range(5)],
           str([(r.get("Logon Type"), r.get(ODD)) for r in rows]))

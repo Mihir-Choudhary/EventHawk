@@ -66,7 +66,7 @@ def compare(tag, n_csv, j_csv, n_json, j_json):
           f"normal {nh[:6]}… ({len(nh)}), jm {jh[:6]}… ({len(jh)}); "
           f"only normal {sorted(set(nh) - set(jh))[:5]} only jm {sorted(set(jh) - set(nh))[:5]}")
     check(f"{tag}: both CSVs start with a UTF-8 BOM", nb and jb, f"normal {nb}, jm {jb}")
-    key = lambda r: (r["SourceFile"], r["RecordID"])           # noqa: E731
+    key = lambda r: (r["SourceFile"], r["RecordNumber"])           # noqa: E731
     nd = {key(r): r for r in nrows}
     jd = {key(r): r for r in jrows}
     check(f"{tag}: CSV holds the same records", set(nd) == set(jd), f"{len(nd)} vs {len(jd)}")
@@ -111,8 +111,8 @@ def synthetic():
         bom, hdr, rows = read_csv(out)
         check("synthetic: no internal storage columns", not ({"row_id", "event_data_json", "timestamp_utc"} & set(hdr)), str(hdr[:8]))
         check("synthetic: the Normal base columns first",
-              hdr[:14] == ["RecordID", "EventID", "Timestamp", "Channel", "Provider", "Computer", "Level",
-                           "LevelName", "Task", "Keywords", "UserID", "ProcessID", "SourceFile", "ATT&CK"], str(hdr[:14]))
+              hdr[:15] == ["RecordNumber", "EventRecordID", "EventID", "Timestamp", "Channel", "Provider", "Computer", "Level",
+                           "LevelName", "Task", "Keywords", "UserID", "ProcessID", "SourceFile", "ATT&CK"], str(hdr[:15]))
         r6011 = next((r for r in rows if r.get("EventID") == "6011"), {})
         check("synthetic: timestamp in the Normal form", r6011.get("Timestamp") == "2022-02-07T10:54:25.366021Z",
               r6011.get("Timestamp"))
@@ -152,8 +152,8 @@ def wide():
         want = X.CSV_BASE_KEYS + ["EventData"]
         check("wide: Normal writes one EventData column", nh == want, str(nh[-3:]))
         check("wide: Juggernaut writes the same header", jh == want and not errs, f"{jh[-3:]} {errs}")
-        nd = {r["RecordID"]: r for r in nrows}
-        jd = {r["RecordID"]: r for r in jrows}
+        nd = {r["RecordNumber"]: r for r in nrows}
+        jd = {r["RecordNumber"]: r for r in jrows}
         check("wide: every row identical in both modes",
               set(nd) == set(jd) and all(nd[k] == jd[k] for k in nd))
         back = {k: json.loads(r["EventData"]) for k, r in nd.items()}

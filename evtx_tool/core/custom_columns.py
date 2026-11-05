@@ -55,7 +55,7 @@ SYSTEM_TOKENS: dict[str, str] = {
     "opcode": "opcode",
     "keywords": "keywords",
     "timecreated[systemtime]": "timestamp",
-    "eventrecordid": "record_id",
+    "eventrecordid": "event_record_id",
     "correlation[activityid]": "correlation_id",
     "execution[processid]": "process_id",
     "execution[threadid]": "thread_id",
@@ -306,7 +306,8 @@ def field_catalog(ev: dict) -> list:
 _PARQUET_COLS: dict[str, str] = {
     "event_id": "event_id", "qualifiers": "qualifiers", "version": "version", "level": "level",
     "task": "task", "opcode": "opcode", "keywords": "keywords", "timestamp": "timestamp_utc",
-    "record_id": "record_id", "correlation_id": "correlation_id", "process_id": "process_id",
+    "record_id": "record_id", "event_record_id": "event_record_id",
+    "correlation_id": "correlation_id", "process_id": "process_id",
     "thread_id": "thread_id", "channel": "channel", "computer": "computer", "user_id": "user_id",
     "provider": "provider", "provider_guid": "provider_guid", "event_source_name": "event_source_name",
 }

@@ -54,6 +54,7 @@ _SEARCH_TEXT_RAW: str = (
     # in the blob so either one finds the event.
     "replace(COALESCE(timestamp_utc, ''), ' ', 'T') || 'Z' || ' ' || "
     "CAST(record_id AS VARCHAR) || ' ' || "
+    "COALESCE(CAST(event_record_id AS VARCHAR), '') || ' ' || "
     "COALESCE(level_name,      '') || ' ' || "
     "COALESCE(channel,         '') || ' ' || "
     "COALESCE(provider,        '') || ' ' || "
@@ -91,6 +92,7 @@ _SEARCH_TEXT_RAW_FULL: str = (
     # in the blob so either one finds the event.
     "replace(COALESCE(timestamp_utc, ''), ' ', 'T') || 'Z' || ' ' || "
     "CAST(record_id AS VARCHAR) || ' ' || "
+    "COALESCE(CAST(event_record_id AS VARCHAR), '') || ' ' || "
     "COALESCE(level_name,      '') || ' ' || "
     "CAST(COALESCE(level, 0) AS VARCHAR) || ' ' || "
     "COALESCE(channel,         '') || ' ' || "
@@ -143,7 +145,7 @@ _TOP_LEVEL_COLS: frozenset[str] = frozenset({
     "event_id", "level", "level_name", "channel", "provider",
     "event_source_name",
     "computer", "user_id", "timestamp_utc", "source_file",
-    "record_id", "task",
+    "record_id", "event_record_id", "task",
     # System/Execution PID/TID — decimal integers stored as top-level columns.
     # Distinct from the event_data ProcessId/ThreadId fields (often hex strings).
     "process_id", "thread_id",
@@ -201,7 +203,7 @@ _FIELD_DUAL_SOURCE: dict[str, str] = {
 
 _HEX_DEC_FIELDS: frozenset[str] = frozenset({
     # ── Top-level columns (decimal int) ────────────────────────────────
-    "process_id", "thread_id", "record_id",
+    "process_id", "thread_id", "record_id", "event_record_id",
     # ── event_data — hex strings in the EVTX XML ─────────────────────────
     # Process / thread IDs
     "ProcessId", "NewProcessId", "ParentProcessId", "SubjectProcessId",

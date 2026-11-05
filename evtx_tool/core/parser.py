@@ -116,8 +116,20 @@ def _extract_from_json(data: dict, record_id: int, timestamp: str, source_file: 
     if isinstance(correlation, dict):
         correlation_id = correlation.get("#attributes", {}).get("ActivityID", "")
 
+    # The XML EventRecordID beside the record header number (record_id), as
+    # EvtxECmd shows RecordNumber and EventRecordId (user, 2026-11-05).  They
+    # differ in a file saved as part of a larger log.  None when absent.
+    _xml_rid = system.get("EventRecordID")
+    if isinstance(_xml_rid, dict):
+        _xml_rid = _xml_rid.get("#text")
+    try:
+        event_record_id = int(_xml_rid) if _xml_rid not in (None, "") else None
+    except (ValueError, TypeError):
+        event_record_id = None
+
     return {
         "record_id":      record_id,
+        "event_record_id": event_record_id,
         "event_id":       event_id,
         "qualifiers":     qualifiers,
         "timestamp":      ts_str,

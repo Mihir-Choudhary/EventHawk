@@ -57,6 +57,7 @@ _COL_NAMES = (
     "ed_logon_type", "ed_new_process", "event_data_json",
     "qualifiers", "ed_subject_sid", "ed_target_sid", "ed_values", "ed_flat_json",
     "provider_guid", "version", "description",
+    "event_record_id",
 )
 
 # ── Arrow schema (imported lazily to avoid hard dep at import time) ───────────
@@ -106,6 +107,9 @@ def _make_schema():
         # (core.filters.event_description_text), so a text search finds the
         # same events here as in Normal mode.  Parquet-only, like ed_flat_json.
         ("description",     pa.string()),
+        # XML <System><EventRecordID>; record_id is the record header number.
+        # NULL when the XML has none (never a made-up number).
+        ("event_record_id", pa.int64()),
     ])
 
 
@@ -278,7 +282,8 @@ def _split_evtx(filepath: str, n_parts: int, tmp_dir: str, tag: str = "0") -> li
 
 # ── Tier 4: Fused extract-filter-convert ─────────────────────────────────────
 
-def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | bool | None":
+def _extract_and_filter(parsed: dict, source_file: str, _passes,
+                        record_number: "int | None" = None) -> "tuple | bool | None":
     """
     Single-pass extract → filter → row-tuple conversion.
 
@@ -374,7 +379,16 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | boo
         # "Information" here gave 4,672 real Level-16 events a severity the
         # log never recorded, in the grid and every export (Codex audit-5b).
         level_name = _LEVEL_MAP.get(level, str(level))
-        record_id  = _safe_int(system.get("EventRecordID"))
+        # Two IDs, as EvtxECmd has them (user, 2026-11-05; Codex E5-16):
+        # record_id is the record HEADER number -- unique within the file, the
+        # one Normal mode uses, so (file, record_id) names exactly one event --
+        # and event_record_id is the XML EventRecordID, the number Windows gave
+        # the event (what Event Viewer shows).  They differ in a file saved as
+        # part of a larger log.  record_id was the XML number here, so a
+        # bookmark on an XML number that repeats in one file selected 2 events.
+        _xml_rid   = system.get("EventRecordID")
+        event_record_id = _safe_int(_xml_rid, None) if _xml_rid not in (None, "") else None
+        record_id  = record_number if record_number is not None else event_record_id
         keywords   = str(system.get("Keywords", "") or "")
         opcode_val = _safe_int(system.get("Opcode"))
 
@@ -451,6 +465,7 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | boo
                 "event_id": eid, "provider": provider_name, "channel": channel,
                 "keywords": keywords, "event_data": _ed_clean,
             }, owned=True) or None,
+            event_record_id,
         )
     except Exception as exc:
         logger.debug("_extract_and_filter error: %s", exc)
@@ -549,6 +564,7 @@ _ARROW_COLS = [
     # metadata + a few ed_* columns.  High cardinality (not dict-encoded); adds
     # memory, but guarantees no value is ever missed by any search path.
     "ed_values",
+    "event_record_id",
 ]
 
 
@@ -772,7 +788,7 @@ def _hw_worker_stream(
                 )
             return 0
 
-        row = _extract_and_filter(parsed, src, _passes)
+        row = _extract_and_filter(parsed, src, _passes, rid)
         if row is False:            # valid event, rejected by pre-filter
             n_filtered += 1
             return 0

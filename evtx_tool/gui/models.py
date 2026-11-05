@@ -52,8 +52,12 @@ COLUMNS = [
     "User Time",       # 17
     "Processor Time",  # 18
     "Correlation Id",  # 19
-    "Record ID",       # 20
+    # Two record IDs, as EvtxECmd shows RecordNumber and EventRecordId
+    # (user, 2026-11-05): the record header number, unique in its file, and
+    # the XML EventRecordID Windows assigned (what Event Viewer shows).
+    "Record Number",   # 20
     "Provider",        # 21
+    "Event Record ID", # 22
 ]
 
 COL_NUM       = 0
@@ -78,6 +82,7 @@ COL_PROC_TIME = 18
 COL_CORR_ID   = 19
 COL_RECORD_ID = 20
 COL_PROVIDER  = 21
+COL_EVENT_RECORD_ID = 22
 
 # Number of columns shown by default (first N in COLUMNS list)
 COL_DEFAULT_COUNT = 9
@@ -456,7 +461,7 @@ class EventTableModel(QAbstractTableModel):
             return _BG_ALT if row % 2 else _BG_NORMAL
 
         if role == Qt.ItemDataRole.TextAlignmentRole:
-            if col in (COL_NUM, COL_EID, COL_RECORD_ID):
+            if col in (COL_NUM, COL_EID, COL_RECORD_ID, COL_EVENT_RECORD_ID):
                 return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             if col == COL_LEVEL:
                 return Qt.AlignmentFlag.AlignCenter
@@ -533,6 +538,9 @@ class EventTableModel(QAbstractTableModel):
             return str(ev.get("correlation_id", ""))
         if col == COL_RECORD_ID:
             return str(ev.get("record_id", ""))
+        if col == COL_EVENT_RECORD_ID:
+            _x = ev.get("event_record_id")
+            return "" if _x is None else str(_x)
         if col == COL_PROVIDER:
             return ev.get("provider", "")
         return ""
@@ -651,7 +659,8 @@ class EventTableModel(QAbstractTableModel):
         6: lambda ev: ev.get("user_id", "") or "",
         7: lambda ev: (ev.get("attack_tags") or [{}])[0].get("tid", "") if ev.get("attack_tags") else "",
         8: lambda ev: _os.path.basename(ev.get("source_file", "")),
-        20: lambda ev: ev.get("record_id", 0),   # Record ID — numeric
+        20: lambda ev: ev.get("record_id", 0),   # Record Number — numeric
+        22: lambda ev: (ev.get("event_record_id") is None, ev.get("event_record_id") or 0),
         # ── Extended columns ──────────────────────────────────────────────
         9:  lambda ev: EventTableModel._sort_mixed(ev.get("keywords", "")),
         10: lambda ev: EventTableModel._sort_mixed(ev.get("opcode", "")),
@@ -1634,7 +1643,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
     def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:  # noqa: N802
         """Numeric sort for integer columns; string sort for everything else."""
         col = left.column()
-        if col in (COL_NUM, COL_EID, COL_PID, COL_TID, COL_PROC_ID, COL_SID, COL_RECORD_ID):
+        if col in (COL_NUM, COL_EID, COL_PID, COL_TID, COL_PROC_ID, COL_SID, COL_RECORD_ID,
+                   COL_EVENT_RECORD_ID):
             try:
                 # Strip bookmark star prefix ("★42" → "42") before int conversion
                 lv = int((left.data(Qt.ItemDataRole.DisplayRole) or "0").lstrip("★").strip() or "0")

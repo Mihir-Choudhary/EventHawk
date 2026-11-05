@@ -813,7 +813,7 @@ def passes_filter(event: dict, fc: dict) -> bool:
 
 
 _ADV_SEARCH_FIELDS = (
-    "event_id", "record_id", "level", "level_name", "channel",
+    "event_id", "record_id", "event_record_id", "level", "level_name", "channel",
     "provider", "event_source_name", "provider_guid",
     "computer", "user_id", "source_file", "timestamp",
     "keywords", "correlation_id", "task", "opcode",

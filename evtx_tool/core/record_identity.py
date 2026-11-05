@@ -16,7 +16,12 @@ from __future__ import annotations
 
 
 def record_identity(ev: dict) -> tuple | None:
-    rid = ev.get("record_id")
+    # The XML EventRecordID Windows assigned, which a saved excerpt keeps; the
+    # header number (record_id) restarts at 1 in an excerpt, so it would miss
+    # an excerpt overlapping its original.  Header number only when no XML ID.
+    rid = ev.get("event_record_id")
+    if rid is None or str(rid).strip() == "":
+        rid = ev.get("record_id")
     if rid is None or str(rid).strip() == "":
         return None
     return (str(ev.get("computer") or "").strip().lower(),

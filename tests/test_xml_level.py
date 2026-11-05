@@ -34,7 +34,7 @@ def levels(path):
     out = {}
     for e in root.iter("Event"):
         s = e.find("System")
-        out[s.findtext("RecordID")] = s.findtext("Level") or ""
+        out[s.findtext("RecordNumber")] = s.findtext("Level") or ""
     return out
 
 

@@ -52,6 +52,7 @@ from evtx_tool.gui.models import (
     COL_PROC_TIME,
     COL_PROVIDER,
     COL_RECORD_ID,
+    COL_EVENT_RECORD_ID,
     COL_SID,
     COL_SOURCE,
     COL_TID,
@@ -96,6 +97,7 @@ _SORT_COL_MAP: dict[int, str] = {
     COL_USER:      "user_id",
     COL_SOURCE:    "source_file",
     COL_RECORD_ID: "record_id",
+    COL_EVENT_RECORD_ID: "event_record_id",
     COL_PROVIDER:  "provider",
     # Extended columns.  A column absent from this map is silently unsortable
     # (sort() returns early), so every extended column that HAS an Arrow
@@ -788,7 +790,7 @@ class ArrowTableModel(QAbstractTableModel):
                     pass
             return _BG_ALT if row % 2 else _BG_NORMAL
         if role == Qt.ItemDataRole.TextAlignmentRole:
-            if col in (COL_NUM, COL_EID, COL_RECORD_ID):
+            if col in (COL_NUM, COL_EID, COL_RECORD_ID, COL_EVENT_RECORD_ID):
                 return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             if col == COL_LEVEL:
                 return Qt.AlignmentFlag.AlignCenter
@@ -866,6 +868,8 @@ class ArrowTableModel(QAbstractTableModel):
             return self._v(local, "correlation_id")
         if col == COL_RECORD_ID:
             return self._v(local, "record_id")
+        if col == COL_EVENT_RECORD_ID:
+            return self._v(local, "event_record_id")
         if col == COL_PROVIDER:
             return self._v(local, "provider")
         if col in (COL_PROC_ID, COL_SID, COL_KERN_TIME, COL_USER_TIME, COL_PROC_TIME):
@@ -1485,6 +1489,7 @@ class ArrowTableModel(QAbstractTableModel):
 
         return {
             "record_id":      record_id,
+            "event_record_id": _col("event_record_id"),
             "event_id":       _col("event_id"),
             "level":          _col("level"),
             "level_name":     _col("level_name") or "",

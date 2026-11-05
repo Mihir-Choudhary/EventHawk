@@ -22,7 +22,7 @@ def check(name, cond, detail=""):
     print(f"  {'PASS' if cond else 'FAIL'}  {name}" + (f"  -- {detail}" if detail else ""), flush=True)
 
 
-LOGON = {"record_id": 77, "event_id": 4624, "timestamp": "2024-05-14T10:11:12.345678Z", "channel": "Security",
+LOGON = {"record_id": 77, "event_record_id": 77, "event_id": 4624, "timestamp": "2024-05-14T10:11:12.345678Z", "channel": "Security",
          "provider": "Microsoft-Windows-Security-Auditing", "provider_guid": "{54849625-5478-4994-A5BA-3E3B0328C30D}",
          "event_source_name": "", "computer": "WS01", "level": 0, "task": 12544, "opcode": 0,
          "keywords": "0x8020000000000000", "version": 2, "process_id": 668, "thread_id": 1234,

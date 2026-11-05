@@ -44,7 +44,7 @@ from PySide6.QtCore import QDateTime
 
 from .models import (
     EventTableModel, EventFilterProxyModel, COLUMNS, COL_DEFAULT_COUNT,
-    COL_RECORD_ID, set_tz_config, apply_tz, set_ts_precision, get_ts_precision,
+    COL_RECORD_ID, COL_EVENT_RECORD_ID, set_tz_config, apply_tz, set_ts_precision, get_ts_precision,
     apply_tz_exact,
 )
 from .worker import ParseWorker, AnalysisWorker
@@ -3055,9 +3055,9 @@ class _MissingRecordIdDialog(QDialog):
     """Results dialog for the 'Identify Missing Record IDs' analysis."""
 
     def __init__(self, total_missing: int, file_count: int,
-                 sections: list[str], parent=None):
+                 sections: list[str], parent=None, id_label: str = "Record ID"):
         super().__init__(parent)
-        self.setWindowTitle("Missing Record ID Analysis")
+        self.setWindowTitle(f"Missing {id_label} Analysis")
         self.setModal(True)
         self.setMinimumSize(620, 440)
         self.resize(720, 520)
@@ -3073,13 +3073,13 @@ class _MissingRecordIdDialog(QDialog):
         if total_missing == 0:
             summary_text = (
                 f"<span style='color:#2e6820;font-size:10pt;font-weight:bold;'>"
-                f"No gaps found</span> &mdash; all Record ID sequences are complete "
+                f"No gaps found</span> &mdash; all {id_label} sequences are complete "
                 f"across {file_count} file(s)."
             )
         else:
             summary_text = (
                 f"<span style='color:#a01800;font-size:10pt;font-weight:bold;'>"
-                f"{total_missing:,} missing Record ID(s)</span> detected across "
+                f"{total_missing:,} missing {id_label}(s)</span> detected across "
                 f"{file_count} file(s). Gaps may indicate log tampering or clearing."
             )
 
@@ -4852,7 +4852,10 @@ class _RemoteAssistanceDialog(QDialog):
             collide: within one file the record id differs, and across hosts
             the computer differs.
             """
-            rid = str(e.get("record_id") or "").strip()
+            # Windows' XML EventRecordID (kept by a saved excerpt of the log);
+            # the header number only when the XML has none.
+            _x = e.get("event_record_id")
+            rid = str(_x if _x is not None else (e.get("record_id") or "")).strip()
             if not rid:
                 return None          # unidentifiable → never deduplicated
             return (
@@ -6131,7 +6134,7 @@ class _RemoteAssistJMFetchWorker(QThread):
         #           NewProcessName OR CommandLine OR Application (plus list-of-Data fallback).
         sql = (
             f"SELECT event_id, timestamp_utc, event_data_json, channel, "
-            f"       computer, record_id, source_file, provider "
+            f"       computer, record_id, source_file, provider, event_record_id "
             f"FROM parquet_scan({shard_list}) "
             f"WHERE ("
             f"    channel IN ({chan_placeholders})"
@@ -6216,7 +6219,7 @@ class _RemoteAssistJMFetchWorker(QThread):
             rows = rows[:200_000]
 
         events: list[dict] = []
-        for eid, ts_utc, ed_json, channel, computer, record_id, source_file, provider in rows:
+        for eid, ts_utc, ed_json, channel, computer, record_id, source_file, provider, xrid in rows:
             try:
                 ed = _json.loads(ed_json) if ed_json else {}
             except Exception:
@@ -6228,6 +6231,7 @@ class _RemoteAssistJMFetchWorker(QThread):
                 "channel":     str(channel or ""),
                 "computer":    str(computer or ""),
                 "record_id":   record_id,
+                "event_record_id": xrid,
                 "source_file": str(source_file or ""),
                 "provider":    str(provider or ""),
             })
@@ -6297,7 +6301,7 @@ class _JMAnalysisMaterializeWorker(QThread):
             cur = con.execute(
                 f"SELECT record_id, event_id, level_name, timestamp_utc, channel, "
                 f"       provider, event_source_name, computer, user_id, keywords, "
-                f"       source_file, event_data_json "
+                f"       source_file, event_data_json, event_record_id "
                 f"FROM parquet_scan([{quoted}]) WHERE {self._where_sql} "
                 f"ORDER BY timestamp_utc{lim}",
                 self._params,
@@ -6326,6 +6330,7 @@ class _JMAnalysisMaterializeWorker(QThread):
                         "keywords":    r[9] or "",
                         "source_file": r[10] or "",
                         "event_data":  ed,
+                        "event_record_id": r[12],
                     })
                 self.progress.emit(len(events), total)
             if self._cancel:
@@ -6426,7 +6431,7 @@ class _JMExportWorker(QThread):
         "e.record_id", "e.event_id", "p._q", "e.timestamp_utc", "e.channel", "e.provider",
         "e.event_source_name", "p._pg", "e.computer", "e.level", "e.level_name", "e.task",
         "e.opcode", "e.keywords", "p._ver", "e.process_id", "e.thread_id",
-        "e.correlation_id", "e.user_id", "p._ed", "e.source_file",
+        "e.correlation_id", "e.user_id", "p._ed", "e.source_file", "e.event_record_id",
     )
 
     @staticmethod
@@ -6438,9 +6443,9 @@ class _JMExportWorker(QThread):
         """
         import orjson as _json      # what the parser wrote it with; ~3x json.loads
         (rid, eid, q, ts, ch, prov, esn, pg, comp, lvl, lvln, task, op, kw, ver,
-         pid, tid, corr, uid, ed, sf) = r
+         pid, tid, corr, uid, ed, sf, xrid) = r
         return {
-            "record_id": rid, "event_id": eid, "qualifiers": q,
+            "record_id": rid, "event_record_id": xrid, "event_id": eid, "qualifiers": q,
             "timestamp": f"{ts.replace(' ', 'T')}Z" if ts else "",
             "channel": ch or "", "provider": prov or "", "event_source_name": esn or "",
             "provider_guid": pg or "", "computer": comp or "", "level": lvl,
@@ -6547,6 +6552,7 @@ class _JMExportWorker(QThread):
                 d = dict(zip(col_names, r, strict=True))   # see note above
                 events.append({
                     "record_id":      d.get("record_id"),
+                    "event_record_id": d.get("event_record_id"),
                     "event_id":       d.get("event_id"),
                     # Left out, so every Juggernaut XML <Level> was empty
                     # (Codex release audit C3).  None stays None, 0 stays 0.
@@ -8842,7 +8848,8 @@ class MainWindow(QMainWindow):
             17: 80,  # User Time
             18: 90,  # Processor Time
             19: 120, # Correlation Id
-            20: 90,  # Record ID
+            20: 90,  # Record Number
+            22: 100, # Event Record ID
         }
         for i, w_val in col_widths.items():
             table.setColumnWidth(i, w_val)
@@ -13064,6 +13071,7 @@ class MainWindow(QMainWindow):
             19: 'correlation_id',
             20: 'record_id',
             21: 'provider',
+            22: 'event_record_id',
         }
         col_key = col_key_map.get(col)
         cell_val = index.data() or ""
@@ -14418,8 +14426,12 @@ class MainWindow(QMainWindow):
             f"<span style='color:{C['text_dim']}'>Provider: </span>"
             f"<span style='color:{C['text']}'>{_escape_html(ev.get('provider',''))}</span>"
             f"&nbsp;&nbsp;"
-            f"<span style='color:{C['text_dim']}'>RecordID: </span>"
-            f"<span style='color:{C['text']}'>{ev.get('record_id','')}</span>",
+            f"<span style='color:{C['text_dim']}'>Record Number: </span>"
+            f"<span style='color:{C['text']}'>{ev.get('record_id','')}</span>"
+            f"&nbsp;&nbsp;"
+            f"<span style='color:{C['text_dim']}'>Event Record ID: </span>"
+            f"<span style='color:{C['text']}'>"
+            f"{'' if ev.get('event_record_id') is None else ev.get('event_record_id')}</span>",
 
             f"<span style='color:{C['text_dim']}'>Source: </span>"
             f"<span style='color:{C['text_muted']}'>"
@@ -17206,9 +17218,14 @@ class MainWindow(QMainWindow):
 
         # Record ID-only option
         act_missing = None
-        if visual_col == COL_RECORD_ID:
+        # Both IDs can be checked for gaps: a gap in Record Number means
+        # records missing from this file; a gap in Event Record ID means events
+        # missing from Windows' numbering (cleared, deleted, or a saved part).
+        if visual_col in (COL_RECORD_ID, COL_EVENT_RECORD_ID):
             menu.addSeparator()
-            act_missing = menu.addAction("Identify Missing Record IDs\u2026")
+            act_missing = menu.addAction(
+                "Identify Missing Record Numbers\u2026" if visual_col == COL_RECORD_ID
+                else "Identify Missing Event Record IDs\u2026")
 
         chosen = menu.exec(hdr.mapToGlobal(pos))
         if chosen is None:
@@ -17226,7 +17243,8 @@ class MainWindow(QMainWindow):
         elif act_group is not None and chosen == act_group:
             self._on_group_by_column(visual_col)
         elif act_missing and chosen == act_missing:
-            self._on_identify_missing_record_ids()
+            self._on_identify_missing_record_ids(
+                "record_id" if visual_col == COL_RECORD_ID else "event_record_id")
 
     def _on_sort_by_column(
         self,
@@ -17304,7 +17322,7 @@ class MainWindow(QMainWindow):
 
     # ── Missing Record ID analysis ─────────────────────────────────────────────
 
-    def _on_identify_missing_record_ids(self) -> None:
+    def _on_identify_missing_record_ids(self, field: str = "record_id") -> None:
         """
         Scan the currently loaded events for gaps in the EventRecordID sequence
         and display the results in a dialog.
@@ -17323,7 +17341,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Missing Record IDs", "No events loaded.")
                 return
             try:
-                rids = full_table.column("record_id").to_pylist()
+                rids = full_table.column(field).to_pylist()
                 srcs = full_table.column("source_file").to_pylist()
                 for rid, src in zip(rids, srcs, strict=True):   # equal-length by construction
                     if rid is not None:
@@ -17338,7 +17356,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Missing Record IDs", "No events loaded.")
                 return
             for ev in events:
-                rid = ev.get("record_id")
+                rid = ev.get(field)
                 if rid is not None:
                     src = ev.get("source_file", "<unknown>")
                     by_file[src].append(int(rid))
@@ -17398,6 +17416,7 @@ class MainWindow(QMainWindow):
             file_count=len(by_file),
             sections=report_sections,
             parent=self,
+            id_label="Record Number" if field == "record_id" else "Event Record ID",
         )
         dlg.exec()
 

@@ -44,7 +44,10 @@ LEVEL_NAMES = {0: "LogAlways", 1: "Critical", 2: "Error", 3: "Warning",
 # The CSV layout, shared by Normal mode (export_csv) and Juggernaut mode
 # (main_window._JMExportWorker): the same events must give the same file in
 # either mode.  EventData follows as one ED_<name> column per field.
-CSV_BASE_KEYS = ["RecordID", "EventID", "Timestamp", "Channel", "Provider",
+# RecordNumber is the record header number (unique in its file),
+# EventRecordID the XML number Windows assigned -- EvtxECmd's two columns
+# (user, 2026-11-05).  They differ in a file saved as part of a larger log.
+CSV_BASE_KEYS = ["RecordNumber", "EventRecordID", "EventID", "Timestamp", "Channel", "Provider",
                  "Computer", "Level", "LevelName", "Task", "Keywords",
                  "UserID", "ProcessID", "SourceFile", "ATT&CK"]
 
@@ -103,7 +106,9 @@ def csv_row(event: dict, ed_pos: dict, width: int) -> list:
     row came from.
     """
     row = [
-        event.get("record_id", ""), event.get("event_id", ""), event.get("timestamp", ""),
+        event.get("record_id", ""),
+        "" if event.get("event_record_id") is None else event.get("event_record_id"),
+        event.get("event_id", ""), event.get("timestamp", ""),
         event.get("channel", ""), event.get("provider", ""), event.get("computer", ""),
         event.get("level", ""), event.get("level_name", ""), event.get("task", ""),
         event.get("keywords", ""), event.get("user_id", ""), event.get("process_id", ""),
@@ -208,7 +213,7 @@ def _export_xml_lxml(events: list[dict], filepath: str) -> None:
     for ev in events:
         event_el = etree.SubElement(root, "Event")
         sys_el   = etree.SubElement(event_el, "System")
-        for tag, key in [("RecordID","record_id"),("EventID","event_id"),
+        for tag, key in [("RecordNumber","record_id"),("EventRecordID","event_record_id"),("EventID","event_id"),
                          ("Timestamp","timestamp"),("Channel","channel"),
                          ("Provider","provider"),("Computer","computer"),
                          ("Level","level"),("LevelName","level_name"),
@@ -265,7 +270,7 @@ def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
                 f'totalEvents="{len(events)}">\n')
         for ev in events:
             f.write("  <Event>\n    <System>\n")
-            for tag, key in [("RecordID","record_id"),("EventID","event_id"),
+            for tag, key in [("RecordNumber","record_id"),("EventRecordID","event_record_id"),("EventID","event_id"),
                               ("Timestamp","timestamp"),("Channel","channel"),
                               ("Provider","provider"),("Computer","computer"),
                               ("Level","level"),("LevelName","level_name"),
@@ -1263,7 +1268,9 @@ def export_html(
                 ("Provider",    ev.get('provider', '')),
                 ("Computer",    ev.get('computer', '')),
                 ("User / SID",  ev.get('user_id', '')),
-                ("Record ID",   str(ev.get('record_id', ''))),
+                ("Record Number",   str(ev.get('record_id', ''))),
+                ("Event Record ID", "" if ev.get('event_record_id') is None
+                                    else str(ev.get('event_record_id'))),
                 ("Activity ID", ev.get('activity_id', '')),
                 ("Opcode",      ev.get('opcode', '')),
                 ("Keywords",    ev.get('keywords', '')),
