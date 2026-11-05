@@ -9210,8 +9210,10 @@ class MainWindow(QMainWindow):
         # Inherit active session filter so a newly opened per-file tab is
         # already filtered to the same session as the merged view.
         _active_keys = getattr(self, "_active_jm_session_keys", frozenset())
-        if _active_keys:
-            file_model.apply_bookmark_filter(_active_keys)
+        # A session filter that matched nothing has no keys but is still on
+        # (its badge shows): the new tab must show nothing too, not everything.
+        if _active_keys or not self._session_filter_widget.isHidden():
+            file_model.apply_bookmark_filter(_active_keys, empty_shows_nothing=True)
         # ...and the applied profiles, as a Normal-mode tab does (a profile
         # ticked before Parse left later-opened JM tabs unfiltered: Codex
         # audit-5 E5-08).
@@ -13986,12 +13988,20 @@ class MainWindow(QMainWindow):
             # a TIMESTAMP made DuckDB refuse the query ("Cannot compare values
             # of type VARCHAR and type TIMESTAMP") on every session with a time
             # scope, and the view silently fell back to a subset (audit-2 A1).
+            #
+            # The scope bounds are whole seconds (the session browser pairs on
+            # second precision, as Normal mode compares); the shards keep the
+            # fraction.  Compared as they were, an event at 12:00:05.4 fell
+            # outside an inclusive end of 12:00:05, and a session inside one
+            # second matched nothing at all (Codex audit-5b B1: 0 events where
+            # the raw log has 3).  Truncate the event time to the second.
+            _ts_sec = "date_trunc('second', TRY_CAST(timestamp_utc AS TIMESTAMP))"
             if _start_ts:
-                _where_parts.append("TRY_CAST(timestamp_utc AS TIMESTAMP) >= CAST(? AS TIMESTAMP)")
+                _where_parts.append(f"{_ts_sec} >= CAST(? AS TIMESTAMP)")
                 _params.append(_start_ts)
             if _end_ts:
                 _where_parts.append(
-                    f"TRY_CAST(timestamp_utc AS TIMESTAMP) {'<=' if _end_inclusive else '<'} CAST(? AS TIMESTAMP)"
+                    f"{_ts_sec} {'<=' if _end_inclusive else '<'} CAST(? AS TIMESTAMP)"
                 )
                 _params.append(_end_ts)
             _where_sql = " AND ".join(_where_parts)
@@ -14114,14 +14124,18 @@ class MainWindow(QMainWindow):
                     )
 
             if not composite_keys:
+                # Show the empty result.  This used to return without filtering,
+                # leaving every event of the dataset on screen under the
+                # analyst's session selection (Codex audit-5b B1: 1,977,889
+                # rows instead of 3), and any filter added next ran over all of
+                # them (10,800 instead of 1).
                 QMessageBox.information(self, "Logon Sessions",
                                         f"No events found for LogonId {logon_id}.")
-                return False  # no-op — do not update badge
 
             # Apply composite-key filter to merged model and all open per-file JM tabs.
-            _hw_model.apply_bookmark_filter(composite_keys)
+            _hw_model.apply_bookmark_filter(composite_keys, empty_shows_nothing=True)
             for _fm in self._global_filter_models():
-                _fm.apply_bookmark_filter(composite_keys)
+                _fm.apply_bookmark_filter(composite_keys, empty_shows_nothing=True)
             # Remember active keys so tabs opened later can inherit this filter.
             self._active_jm_session_keys = composite_keys
             self._update_session_filter_badge(logon_id, session_info)

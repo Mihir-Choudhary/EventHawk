@@ -1100,7 +1100,8 @@ class ArrowTableModel(QAbstractTableModel):
             return "", []
         return " AND ".join(parts), params
 
-    def apply_bookmark_filter(self, keys: "frozenset[tuple[str, int]]") -> None:
+    def apply_bookmark_filter(self, keys: "frozenset[tuple[str, int]]",
+                              empty_shows_nothing: bool = False) -> None:
         """Filter to only bookmarked events using (source_file, record_id) composite key.
 
         Builds an OR chain so events with the same record_id from different files
@@ -1112,6 +1113,13 @@ class ArrowTableModel(QAbstractTableModel):
         filter is applied, and they cannot be restored by clearing that filter.
         """
         if not keys:
+            if empty_shows_nothing:
+                # A selection that matched no event (e.g. a logon session whose
+                # query found nothing) shows nothing -- never the whole dataset.
+                self._record_id_where_sql = "FALSE"
+                self._record_id_params    = []
+                self._invalidate()
+                return
             self.clear_record_id_filter()
             return
         # ONE membership test on a combined key, with the keys inlined as

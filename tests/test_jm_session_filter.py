@@ -8,6 +8,14 @@ input events, so the filtered view looked complete but was not: 4 of these
 
 Expected: all five events of logon 0xa01 in both modes; and if the query ever
 does fail, the analyst is told the view is incomplete (never a silent subset).
+
+Codex audit-5b B1: session bounds are whole seconds, but JM compared them with
+the full-precision timestamps.  A session whose events carry fractions of a
+second lost its last events (logoff at 4.4 s > bound 4 s), and a session inside
+one second matched NOTHING -- and an empty result then cleared the filter, so
+the view showed every event of the dataset (real corpus: 1,977,889 instead of
+3).  Expected: the same five events whatever the sub-second part, and a session
+query that matches nothing shows nothing, never everything.
 Synthetic data only.
 """
 import os
@@ -33,10 +41,11 @@ def check(name, cond, detail=""):
     print(f"  {'PASS' if cond else 'FAIL'}  {name}" + (f"  -- {detail}" if detail else ""), flush=True)
 
 
-def dataset():
+def dataset(frac=0.0, step=1.0):
     evs = []
     for i, (eid, sec) in enumerate([(4624, 0), (4672, 1), (4663, 2), (4688, 3), (4634, 4)]):
-        evs.append(T.ev(SEC, i + 1, "SYNTH-HOST", BASE + timedelta(seconds=sec), eid,
+        when = BASE + timedelta(seconds=sec * step + frac)
+        evs.append(T.ev(SEC, i + 1, "SYNTH-HOST", when, eid,
                         data={"TargetLogonId": "0xa01", "SubjectLogonId": "0xa01",
                               "TargetUserName": "SYNTH-USER", "LogonType": "2"}))
     # Another logon on the same host: must not appear.
@@ -54,12 +63,12 @@ def shown_ids(w, jm):
     return sorted(w._proxy_model.get_source_event(r)["record_id"] for r in range(w._proxy_model.rowCount()))
 
 
-def run(mw, jm, boxes):
-    tag = "JM" if jm else "Normal"
+def run(mw, jm, boxes, frac=0.0, step=1.0, label=""):
+    tag = ("JM" if jm else "Normal") + label
     print(f"\n=== {tag} ===", flush=True)
     m = T.Mode(mw, jm)
     w = mw.MainWindow()
-    m.load(w, dataset())
+    m.load(w, dataset(frac, step))
     w._on_show_logon_sessions()
     T.wait_for(lambda: getattr(w, "_logon_sessions_dlg", None) is not None, 20)
     dlg = w._logon_sessions_dlg
@@ -73,6 +82,15 @@ def run(mw, jm, boxes):
     got = shown_ids(w, jm)
     check(f"{tag}: the session filter shows all five of its events, and only them", got == [1, 2, 3, 4, 5], str(got))
     check(f"{tag}: ...with no warning box", len(boxes) == n_boxes, str(boxes[n_boxes:]))
+    if not label:
+        # A session whose query matches nothing (here: its host is renamed so
+        # no event qualifies) must show nothing -- not every event.
+        w._clear_session_filter()
+        T.pump(200)
+        empty = dict(s, computer="NO-SUCH-HOST")
+        dlg._on_filter_fn(s["lid"], empty)
+        got = shown_ids(w, jm)
+        check(f"{tag}: a session query that matches nothing shows no events, not all", got == [], str(got))
     w._clear_session_filter()
     try:
         dlg.close()
@@ -130,6 +148,8 @@ def main() -> int:
     QMessageBox.information = staticmethod(_box("information"))
     for jm in (False, True):
         run(mw, jm, boxes)
+        run(mw, jm, boxes, frac=0.4, label=" (fractional seconds)")
+        run(mw, jm, boxes, frac=0.1, step=0.1, label=" (session inside one second)")
     failure_is_disclosed(mw, boxes)
     ok = sum(1 for _n, c, _d in CHECKS if c)
     print(f"\n{'=' * 62}\n{ok}/{len(CHECKS)} checks passed")
