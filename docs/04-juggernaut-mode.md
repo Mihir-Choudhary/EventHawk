@@ -141,3 +141,7 @@ Disk space required: approximately `original EVTX size × 0.4` (Parquet with sna
 - [Advanced Filter](06-advanced-filter.md) — filtering in JM including full-text search
 - [Event Detail Panel](05-event-detail-panel.md) — lazy detail loading explained
 - [Performance & Scale](19-performance.md)
+
+## WiFi History, Remote Assistance and logon-session filters
+
+These tools read their events from the Parquet shards only when you open them, and they load every matching event: nothing is cut off. A tool first counts the events it would load. Above 200,000 events it asks before loading, with the count and about how much memory the load takes (roughly 3 KB per event, so 1 million events is about 3 GB); answer No and nothing is loaded. A logon-session filter asks above 100,000 events in the same way. The memory is released when the tool's window is closed.

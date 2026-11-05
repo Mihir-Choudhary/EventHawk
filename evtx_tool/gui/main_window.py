@@ -21,6 +21,22 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Juggernaut WiFi History / Remote Assistance / session filter load EVERY
+# matching event (user, 2026-11-06: no limits).  They load only when opened, so
+# above this many events the tool asks first, with the count and about how much
+# memory the load takes (measured 2.0-2.5 KB per event on the corpus; 3 KB is
+# quoted, never less than it will take).
+JM_LOAD_CONFIRM_ROWS = 200_000
+JM_LOAD_KB_PER_EVENT = 3
+
+
+def _jm_load_question(tool: str, n: int) -> str:
+    mb = n * JM_LOAD_KB_PER_EVENT / 1024
+    size = f"about {mb / 1024:,.1f} GB" if mb >= 1024 else f"about {mb:,.0f} MB"
+    return (f"{tool} will load {n:,} events into memory ({size}).\n\n"
+            f"Large loads can take a while and use a lot of memory; nothing is left out.\n\nLoad them?")
+
+
 # Every CSV this window writes is formula-safe (see exporters.csv_cell).
 from evtx_tool.output.exporters import safe_csv_writer as _safe_csv_writer  # noqa: E402
 from evtx_tool.output.exporters import SafeDictWriter as _SafeDictWriter    # noqa: E402
@@ -1557,7 +1573,8 @@ class _JMSessionFetchWorker(QThread):
             # Phase 2: full row fetch.
             rows = c.execute(
                 f"SELECT source_file, record_id FROM {self._scan_sql} "
-                f"WHERE {self._where_sql} LIMIT {self._row_limit}",
+                f"WHERE {self._where_sql}"
+                + (f" LIMIT {int(self._row_limit)}" if self._row_limit else ""),
                 self._params,
             ).fetchall()
             keys = frozenset(
@@ -4384,13 +4401,15 @@ class _WifiJMFetchWorker(QThread):
     # Python object by reference, untouched.
 
     fetch_error = Signal(str, str)    # (error_kind, detail_message)
+    counted     = Signal(int)          # count_only: how many events a load would read
 
     _WLAN_CHANNEL = "Microsoft-Windows-WLAN-AutoConfig/Operational"
     _RELEVANT_EIDS = (8001, 8002, 8003, 8004, 11001, 11006)
 
-    def __init__(self, parquet_dir: str, parent=None) -> None:
+    def __init__(self, parquet_dir: str, parent=None, count_only: bool = False) -> None:
         super().__init__(parent)
         self._parquet_dir = parquet_dir
+        self._count_only  = count_only
 
     def run(self) -> None:
         import json as _json
@@ -4440,9 +4459,7 @@ class _WifiJMFetchWorker(QThread):
         try:
             con = _duckdb.connect()
             try:
-                # Low fix: fetch one extra row so we can detect truncation without
-                # false-positive warnings when the result count exactly equals the cap.
-                rows = con.execute(
+                _sql = (
                     # computer + source_file: sessions are paired per host
                     # (Normal mode has both).  Without them every host fell in
                     # one ("", interface) bucket, and two hosts sharing an
@@ -4456,10 +4473,14 @@ class _WifiJMFetchWorker(QThread):
                     f"WHERE (channel = ? AND event_id IN ({eids_csv})) "
                     # Shutdowns and startups: see evtx_tool.analysis.host_power.
                     f"   OR {_POWER_SQL} "
-                    f"ORDER BY timestamp_utc "
-                    f"LIMIT 200001",
-                    [self._WLAN_CHANNEL],
-                ).fetchall()
+                    f"ORDER BY timestamp_utc"
+                )
+                # Every matching event (it stopped at 200,000).
+                if self._count_only:
+                    n = con.execute(f"SELECT count(*) FROM ({_sql})", [self._WLAN_CHANNEL]).fetchone()[0]
+                    self.counted.emit(int(n))
+                    return
+                rows = con.execute(_sql, [self._WLAN_CHANNEL]).fetchall()
             finally:
                 con.close()   # Low/Medium fix: guaranteed even on query exception
         except Exception as exc:
@@ -4467,9 +4488,7 @@ class _WifiJMFetchWorker(QThread):
             self.fetch_error.emit("duckdb_query_error", str(exc))
             return
 
-        truncated = len(rows) > 200_000
-        if truncated:
-            rows = rows[:200_000]
+        truncated = False                  # no limit any more
 
         events: list[dict] = []
         for ev_id, ts_utc, ed_json, computer, source_file, channel, provider in rows:
@@ -6159,6 +6178,7 @@ class _RemoteAssistJMFetchWorker(QThread):
     # Python object by reference, untouched.
 
     fetch_error = Signal(str, str)     # (error_kind, detail_message)
+    counted     = Signal(int)          # count_only: how many events a load would read
 
     _RA_CHANNELS = (
         "Microsoft-Windows-RemoteAssistance/Operational",
@@ -6175,9 +6195,10 @@ class _RemoteAssistJMFetchWorker(QThread):
     # (LogonType=10 for 4624/4634, LIKE filter for 4688) rather than a simple
     # EID IN list — so no class-level _SECURITY_EIDS constant is needed.
 
-    def __init__(self, parquet_dir: str, parent=None) -> None:
+    def __init__(self, parquet_dir: str, parent=None, count_only: bool = False) -> None:
         super().__init__(parent)
         self._parquet_dir = parquet_dir
+        self._count_only  = count_only
 
     def run(self) -> None:
         from evtx_tool.analysis.host_power import POWER_SQL as _POWER_SQL
@@ -6298,14 +6319,18 @@ class _RemoteAssistJMFetchWorker(QThread):
             f"    OR (channel = 'Security' AND event_id = 4648"
             f"        AND lower(event_data_json) LIKE '%termsrv%')"
             f") "
-            f"ORDER BY timestamp_utc "
-            f"LIMIT 200001"
+            f"ORDER BY timestamp_utc"
         )
         params = list(self._RA_CHANNELS)
 
         try:
             con = _duckdb.connect()
             try:
+                # Every matching event (it stopped at 200,000).
+                if self._count_only:
+                    n = con.execute(f"SELECT count(*) FROM ({sql})", params).fetchone()[0]
+                    self.counted.emit(int(n))
+                    return
                 rows = con.execute(sql, params).fetchall()
             finally:
                 con.close()
@@ -6314,9 +6339,7 @@ class _RemoteAssistJMFetchWorker(QThread):
             self.fetch_error.emit("duckdb_query_error", str(exc))
             return
 
-        truncated = len(rows) > 200_000
-        if truncated:
-            rows = rows[:200_000]
+        truncated = False                  # no limit any more
 
         events: list[dict] = []
         for eid, ts_utc, ed_json, channel, computer, record_id, source_file, provider, xrid in rows:
@@ -13411,6 +13434,45 @@ class MainWindow(QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
 
+    def _jm_confirm_load(self, worker_cls, tool: str, parquet_dir: str, reopen) -> bool:
+        """True when *tool* may load now.  Otherwise count its events in the
+        background first; above JM_LOAD_CONFIRM_ROWS ask before loading them
+        (they all go into memory: there is no limit), and call *reopen()* to
+        load once the count is small or the user said yes."""
+        if getattr(self, "_jm_load_ok", None) == tool:
+            self._jm_load_ok = None
+            return True
+        if not hasattr(self, "_jm_count_req"):
+            self._jm_count_req = {}
+        req = object()
+        self._jm_count_req[tool] = req
+
+        def _go(n: int) -> None:
+            if self._jm_count_req.get(tool) is not req:
+                return                       # superseded by a newer request
+            if n > JM_LOAD_CONFIRM_ROWS:
+                ans = QMessageBox.question(self, tool, _jm_load_question(tool, n),
+                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                           QMessageBox.StandardButton.No)
+                if ans != QMessageBox.StandardButton.Yes:
+                    self._set_status(f"{tool}: not loaded ({n:,} events).")
+                    return
+            self._jm_load_ok = tool
+            reopen()
+
+        cw = worker_cls(parquet_dir, parent=self, count_only=True)
+        cw.counted.connect(_go)
+        cw.finished.connect(lambda events, _t: _go(len(events)))   # empty dataset
+        # A failed count must not hide the tool: load, and let the load report.
+        cw.fetch_error.connect(lambda *_a: _go(0))
+        self._set_status(f"{tool}: counting events…")
+        if not hasattr(self, "_jm_count_workers"):
+            self._jm_count_workers = []
+        self._jm_count_workers = self._reap_finished_workers(self._jm_count_workers)
+        self._jm_count_workers.append(cw)
+        cw.start()
+        return False
+
     def _on_show_wifi_history(self) -> None:
         """Open the WiFi History Browser dialog (non-modal).
 
@@ -13434,6 +13496,9 @@ class MainWindow(QMainWindow):
             if not parquet_dir:
                 QMessageBox.information(self, "WiFi History",
                                         "No Juggernaut dataset loaded.")
+                return
+            if not self._jm_confirm_load(_WifiJMFetchWorker, "WiFi History", parquet_dir,
+                                         self._on_show_wifi_history):
                 return
             self._set_status("Fetching WiFi events…")
             # Medium fix: monotonic request token.  If the user triggers multiple
@@ -13550,6 +13615,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(
                     self, "Remote Assistance", "No Juggernaut dataset loaded."
                 )
+                return
+            if not self._jm_confirm_load(_RemoteAssistJMFetchWorker, "Remote Assistance", parquet_dir,
+                                         self._on_show_remote_assist):
                 return
             self._set_status("Fetching Remote Assistance events…")
             # Monotonic request token — stale results from aborted requests are
@@ -14157,8 +14225,8 @@ class MainWindow(QMainWindow):
                     elif _le == _end_ts:
                         _end_inclusive = _end_inclusive or _lei
             # ── Build WHERE clause ────────────────────────────────────────
-            _JM_SESSION_ROW_WARN  = 100_000   # warn before continuing
-            _JM_SESSION_ROW_LIMIT = 500_000   # hard cap
+            _JM_SESSION_ROW_WARN  = 100_000   # ask before continuing
+            _JM_SESSION_ROW_LIMIT = None      # every event (it stopped at 500,000)
 
             if _linked_lid:
                 _where_parts: list[str] = [
@@ -14232,7 +14300,9 @@ class MainWindow(QMainWindow):
                         self,
                         "Large Session",
                         f"This session matches {n:,} events.\n"
-                        "Applying the filter may take several seconds.\n\n"
+                        "Applying the filter may take several seconds and uses more "
+                        f"memory (about {max(1, n * JM_LOAD_KB_PER_EVENT // 1024):,} MB); "
+                        "nothing is left out.\n\n"
                         "Continue?",
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                         QMessageBox.StandardButton.No,
@@ -14297,26 +14367,9 @@ class MainWindow(QMainWindow):
                     f"not happen.",
                 )
             else:
+                # Every event of the session: there is no cap any more (the
+                # large-session question above names the count and memory).
                 composite_keys = _query_result[0] or frozenset()
-                if len(composite_keys) >= _JM_SESSION_ROW_LIMIT:
-                    import logging as _log
-                    _log.getLogger("eventhawk.session").warning(
-                        "JM session filter hit hard cap of %d rows for LogonId=%s; "
-                        "result set may be incomplete.",
-                        _JM_SESSION_ROW_LIMIT, logon_id,
-                    )
-                    # A log line the analyst never sees is not disclosure: the
-                    # filtered view would silently omit events, and an absence
-                    # in a filtered view reads as evidence of absence.
-                    QMessageBox.warning(
-                        self, "Session Filter Truncated",
-                        f"This logon session matched at least "
-                        f"<b>{_JM_SESSION_ROW_LIMIT:,}</b> events, which is the "
-                        f"hard cap for session filtering.<br><br>"
-                        f"The filtered view below is <b>INCOMPLETE</b> — events "
-                        f"beyond the cap are not shown. Do not read an absence "
-                        f"here as evidence that something did not happen.",
-                    )
 
             if not composite_keys:
                 # Show the empty result.  This used to return without filtering,
