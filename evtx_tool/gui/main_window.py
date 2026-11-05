@@ -16041,7 +16041,8 @@ class MainWindow(QMainWindow):
             return
 
         # Build the list of available source files for "Specific files" option
-        all_file_paths = list(self._per_file_data.keys())
+        _groups = self._export_source_groups()
+        all_file_paths = list(_groups.keys())
 
         dlg = _ExportScopeDialog(
             all_file_paths=all_file_paths,
@@ -16058,10 +16059,10 @@ class MainWindow(QMainWindow):
 
         # ── Export All Separate ────────────────────────────────────────────
         if scope == "separate":
-            self._export_separate(all_file_paths)
+            self._export_separate(all_file_paths, _groups)
             return
         if scope == "specific" and dlg.specific_separate():
-            self._export_separate(sorted(specific_files))
+            self._export_separate(sorted(specific_files), _groups)
             return
 
         # ── Resolve events for the other scopes ───────────────────────────
@@ -16082,7 +16083,7 @@ class MainWindow(QMainWindow):
         elif scope == "specific":
             export_events = []
             for fp in specific_files:
-                data = self._per_file_data.get(fp)
+                data = _groups.get(fp)
                 if data:
                     export_events.extend(data["events"])
             names = ", ".join(os.path.basename(fp) for fp in sorted(specific_files))
@@ -16133,8 +16134,28 @@ class MainWindow(QMainWindow):
             logger.exception("Event export failed: %s", path)
             QMessageBox.critical(self, "Export Failed", str(exc))
 
-    def _export_separate(self, file_paths: list[str]) -> None:
+    def _export_source_groups(self) -> dict:
+        """{source file: {"events": [...]}} for the export scopes, in any view.
+
+        The per-file map is filled only when the view is Separate; in the
+        merged view it is empty, so "All files separate" wrote 0 files and
+        "Specific files" had nothing to offer (Codex audit-5b
+        A5B-MERGED-EXPORT: 0 of 36 files, 0 of 130,889 events).  Group the
+        loaded events by their source instead, in load order, and list every
+        parsed file, as the Separate view does."""
+        if self._per_file_data:
+            return self._per_file_data
+        groups: dict = {}
+        for ev in self._events or []:
+            groups.setdefault(ev.get("source_file", "unknown"), {"events": []})["events"].append(ev)
+        for fp in getattr(self, "_last_parsed_files", None) or []:
+            groups.setdefault(fp, {"events": []})
+        return groups
+
+    def _export_separate(self, file_paths: list[str], groups: dict | None = None) -> None:
         """Export each source file to its own output file (user picks the output folder)."""
+        if groups is None:
+            groups = self._per_file_data
         out_dir = QFileDialog.getExistingDirectory(
             self, "Select Output Folder for Separate Exports"
         )
@@ -16161,13 +16182,13 @@ class MainWindow(QMainWindow):
             exported_files = 0
             total_events = 0
             sources = [fp for fp in file_paths
-                       if (self._per_file_data.get(fp) or {}).get("events")]
+                       if (groups.get(fp) or {}).get("events")]
             out_paths = _separate_export_paths(sources, out_dir, ext)
             _cc = self._export_custom_columns()
             from evtx_tool.core.custom_columns import with_custom_columns
             for fp in sources:
                 out_path = out_paths[fp]
-                _evs = self._per_file_data[fp]["events"]
+                _evs = groups[fp]["events"]
                 count = export(with_custom_columns(_evs, _cc) if _cc else _evs, out_path, None)
                 total_events += count
                 exported_files += 1
