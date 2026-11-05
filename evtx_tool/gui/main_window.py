@@ -3561,6 +3561,17 @@ class _WifiHistoryDialog(QDialog):
         return f"Code {code}"
 
     @staticmethod
+    def _is_boot(ev: dict) -> bool:
+        """An OS start: Kernel-General 12 or Security 4608 (as Logon Sessions)."""
+        try:
+            eid = int(ev.get("event_id") or ev.get("EventID") or 0)
+        except (TypeError, ValueError):
+            return False
+        if eid == 12:
+            return str(ev.get("provider") or "") == "Microsoft-Windows-Kernel-General"
+        return eid == 4608 and str(ev.get("channel") or "").casefold() == "security"
+
+    @staticmethod
     def _build_sessions(events: list[dict]) -> list[dict]:
         """
         Single-pass WLAN event filter → sort → pair 8001↔8003 by InterfaceGuid.
@@ -3580,8 +3591,20 @@ class _WifiHistoryDialog(QDialog):
         disco_ev:     list[dict] = []
         assoc_ev:     list[dict] = []   # EID 11001 — channel / PHY
         auth_fail_ev: list[dict] = []   # EID 11006
+        # OS boots per host (lower-cased computer -> sorted second-precision
+        # times).  A connection cannot survive a restart, so a connect and a
+        # disconnect with a boot of the same host between them are not one
+        # session with a measurable length (Codex audit-5b A5B-WIFI: a 95,422 s
+        # "duration" spanning a proved boot).
+        boots: dict[str, list[str]] = {}
 
         for ev in events:
+            if _WifiHistoryDialog._is_boot(ev):
+                _bc = str(ev.get("computer") or ev.get("Computer") or "").lower()
+                _bt = _nts(ev.get("timestamp") or ev.get("Timestamp") or "")
+                if _bc and _bt:
+                    boots.setdefault(_bc, []).append(_bt)
+                continue
             ch = str(ev.get("channel") or ev.get("Channel") or "")
             # Low/Medium fix: use exact equality instead of substring containment.
             # The old "ch not in WLAN_CH" let any short prefix like "Microsoft"
@@ -3620,6 +3643,15 @@ class _WifiHistoryDialog(QDialog):
 
         if not connect_ev and not disco_ev:
             return []
+        for _bl in boots.values():
+            _bl.sort()
+
+        def _boot_after(computer: str, start: str, end: str | None) -> bool:
+            """A boot of *computer* strictly after *start* (and before *end*)."""
+            for _b in boots.get(computer, ()):
+                if _b > start and (end is None or _b < end):
+                    return True
+            return False
 
         # Pair connects with disconnects in chronological order per interface.
         # Key: (computer, iface) so events from different hosts in merged datasets
@@ -3748,6 +3780,9 @@ class _WifiHistoryDialog(QDialog):
                         reason_int = 0
                     reason_str = _WifiHistoryDialog._decode_reason(reason_int)
                     dur_label, dur_secs    = _WifiHistoryDialog._calc_duration(sess["connect_ts"], ts)
+                    if _boot_after(computer, sess["connect_ts"], ts):
+                        dur_label, dur_secs = "Unavailable (host restarted in between)", -1.0
+                        sess["anomaly_flags"].append("reboot_between")
                     sess["disconnect_ts"]  = ts
                     sess["disconnect_ts_full"] = ts_full
                     sess["duration"]       = dur_label
@@ -3765,6 +3800,11 @@ class _WifiHistoryDialog(QDialog):
             for s in iface_list:
                 if s["connect_eid"] == 8004 and not s["disconnect_ts"]:
                     s["duration"] = "Failed (no close)"
+                elif not s["disconnect_ts"] and _boot_after(s["computer"], s["connect_ts"], None):
+                    # Not "Active": the host restarted after this connect.
+                    s["duration"] = "Unavailable (host restarted, no disconnect logged)"
+                    s["duration_secs"] = -1.0
+                    s["anomaly_flags"].append("reboot_between")
             sessions.extend(iface_list)
 
         # Backfill channel / PHY from nearest EID 11001 on same interface (within 30 s).
@@ -4336,10 +4376,14 @@ class _WifiJMFetchWorker(QThread):
                     # one ("", interface) bucket, and two hosts sharing an
                     # interface GUID had their connects and disconnects paired
                     # across hosts (Codex audit-5 E5-15).
-                    f"SELECT event_id, timestamp_utc, event_data_json, computer, source_file "
+                    # Boots too: a session spanning a restart of its host
+                    # has no measurable length (Codex audit-5b A5B-WIFI).
+                    f"SELECT event_id, timestamp_utc, event_data_json, computer, source_file, "
+                    f"       channel, provider "
                     f"FROM parquet_scan({shard_list}) "
-                    f"WHERE channel = ? "
-                    f"  AND event_id IN ({eids_csv}) "
+                    f"WHERE (channel = ? AND event_id IN ({eids_csv})) "
+                    f"   OR (event_id = 12 AND provider = 'Microsoft-Windows-Kernel-General') "
+                    f"   OR (event_id = 4608 AND lower(channel) = 'security') "
                     f"ORDER BY timestamp_utc "
                     f"LIMIT 200001",
                     [self._WLAN_CHANNEL],
@@ -4356,7 +4400,7 @@ class _WifiJMFetchWorker(QThread):
             rows = rows[:200_000]
 
         events: list[dict] = []
-        for ev_id, ts_utc, ed_json, computer, source_file in rows:
+        for ev_id, ts_utc, ed_json, computer, source_file, channel, provider in rows:
             try:
                 ed = _json.loads(ed_json) if ed_json else {}
             except Exception:
@@ -4365,7 +4409,8 @@ class _WifiJMFetchWorker(QThread):
                 "event_id":   ev_id,
                 "timestamp":  str(ts_utc or ""),
                 "event_data": ed,
-                "channel":    self._WLAN_CHANNEL,
+                "channel":    channel or "",
+                "provider":   provider or "",
                 "computer":   computer or "",
                 "source_file": source_file or "",
             })
