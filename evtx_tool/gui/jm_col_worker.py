@@ -322,6 +322,33 @@ def build_cascade_where(
     return " AND ".join(parts), params
 
 
+# ── How many values a column popup lists (user, 2026-11-06: option A) ────────
+# The popup lists the POPUP_LIMIT most common values of a column and SAYS SO when
+# there are more ("Showing the 1,000 most common of 14,342 values"); its search
+# box queries every value.  Dates and hours are never capped (a few hundred to a
+# few thousand at most, and a missing day in the date tree reads as "no events
+# that day").  Each listed value is a checkbox, so a popup of 200,000 record
+# numbers would take ~20 s to draw: that is why the list is capped, not the data.
+POPUP_LIMIT = 1000
+_UNCAPPED_KEYS = frozenset({"timestamp_date", "timestamp_hour"})
+
+
+class ColValues(dict):
+    """{value: count} for a column popup, plus ``total``: how many different
+    values the column has in this view (more than len() when capped)."""
+
+    def __init__(self, *args, total=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.total = len(self) if total is None else total
+
+
+def popup_limit(col_key: str, search_term: str = "") -> "int | None":
+    """How many values to list: None (all) for dates / hours and for a search."""
+    if search_term or col_key in _UNCAPPED_KEYS:
+        return None
+    return POPUP_LIMIT
+
+
 class NormalColValueWorker(QThread):
     """Count distinct column values from an in-memory event list on a background thread.
 
@@ -333,7 +360,7 @@ class NormalColValueWorker(QThread):
     current column) so only values visible in the current view are counted.
     """
 
-    finished = Signal(dict)
+    finished = Signal(object)       # ColValues -- object keeps .total (a dict signal would not)
 
     # timestamp_date is intentionally not in _COL_MAP (it's dynamic — see
     # _timestamp_date_expr).  Re-add it here so the NormalColValueWorker
@@ -407,7 +434,7 @@ class NormalColValueWorker(QThread):
 
     def run(self) -> None:
         if self._col_key not in self._ALLOWED_KEYS and not self._col_key.startswith("custom:"):
-            self.finished.emit({})
+            self.finished.emit(ColValues())
             return
         try:
             counts: dict[str, int] = {}
@@ -460,12 +487,13 @@ class NormalColValueWorker(QThread):
                 # offered as "(empty)" to filter on.
                 if s or custom_id is not None:
                     counts[s] = counts.get(s, 0) + 1
-            top = dict(sorted(counts.items(), key=lambda x: -x[1])[:1000])
-            self.finished.emit(top)
+            lim = popup_limit(self._col_key, self._search_term)
+            items = sorted(counts.items(), key=lambda x: -x[1])
+            self.finished.emit(ColValues(items if lim is None else items[:lim], total=len(counts)))
         except Exception as exc:
             logger.warning("NormalColValueWorker: col_key=%r  error: %s",
                            self._col_key, exc)
-            self.finished.emit({})
+            self.finished.emit(ColValues())
 
 
 class NormalColValuePrewarmWorker(QThread):
@@ -477,7 +505,7 @@ class NormalColValuePrewarmWorker(QThread):
     smooth.  One pass, one thread, results emitted per column.
     """
 
-    column_ready = Signal(str, dict)
+    column_ready = Signal(str, object)    # (col_key, ColValues)
     finished_all = Signal()
 
     def __init__(self, events_by_col: dict, parent=None):
@@ -502,10 +530,10 @@ class NormalColValuePrewarmWorker(QThread):
                 # run() is called directly, so it executes on THIS thread.
                 try:
                     sub = NormalColValueWorker(events, col_key, cancel_check=lambda: self._cancel)
-                    box: dict = {}
-                    sub.finished.connect(box.update)
+                    box: list = []
+                    sub.finished.connect(box.append)
                     sub.run()
-                    vals = dict(box)
+                    vals = box[0] if box else ColValues()
                 except Exception as exc:
                     logger.warning("normal prewarm: col=%r error: %s", col_key, exc)
                     continue
@@ -517,6 +545,18 @@ class NormalColValuePrewarmWorker(QThread):
                 self.finished_all.emit()
             except RuntimeError:
                 pass
+
+
+def _grouped_sql(expr: str, where: str, limit: "int | None") -> str:
+    """{value, count, number of distinct values} -- COUNT(*) OVER () counts the
+    groups before LIMIT, so the popup can say how many values exist."""
+    return (f"SELECT {expr}, COUNT(*), COUNT(*) OVER () FROM events WHERE {where} "
+            f"GROUP BY {expr} ORDER BY COUNT(*) DESC" + (f" LIMIT {int(limit)}" if limit else ""))
+
+
+def _col_values(rows) -> ColValues:
+    return ColValues({(str(r[0]) if r[0] is not None else ""): r[1] for r in rows},
+                     total=(rows[0][2] if rows else 0))
 
 
 class ColValuePrewarmWorker(QThread):
@@ -533,7 +573,7 @@ class ColValuePrewarmWorker(QThread):
     the earliest ones are usable before the sweep finishes.
     """
 
-    column_ready = Signal(str, dict)   # (col_key, {value: count})
+    column_ready = Signal(str, object)   # (col_key, ColValues)
     finished_all = Signal()
 
     def __init__(self, arrow_table: "pa.Table", col_keys: list,
@@ -584,12 +624,8 @@ class ColValuePrewarmWorker(QThread):
                     if self._where_sql:
                         clauses.append(f"({self._where_sql})")
                     clauses.append(f"{expr} IS NOT NULL")
-                    rows = con.execute(
-                        f"SELECT {expr}, COUNT(*) FROM events "
-                        f"WHERE {' AND '.join(clauses)} "
-                        f"GROUP BY {expr} ORDER BY COUNT(*) DESC LIMIT 1000",
-                        params,
-                    ).fetchall()
+                    rows = con.execute(_grouped_sql(expr, " AND ".join(clauses),
+                                                    popup_limit(col_key)), params).fetchall()
                 except Exception as exc:
                     if self._cancel:
                         return              # interrupted by cancel(): not an error
@@ -598,10 +634,7 @@ class ColValuePrewarmWorker(QThread):
                     continue
                 if self._cancel:
                     return
-                self.column_ready.emit(
-                    col_key,
-                    {(str(r[0]) if r[0] is not None else ""): r[1] for r in rows},
-                )
+                self.column_ready.emit(col_key, _col_values(rows))
         except Exception as exc:
             logger.warning("ColValuePrewarmWorker failed: %s", exc)
         finally:
@@ -626,7 +659,7 @@ class ColValueWorker(QThread):
     conflicts, no dependency on the defunct open_session_duck() function.
     """
 
-    finished = Signal(dict)   # {value_str: count_int}
+    finished = Signal(object)   # ColValues
 
     def __init__(self, arrow_table: "pa.Table", col_key: str,
                  where_sql: "str | None" = None,
@@ -649,7 +682,7 @@ class ColValueWorker(QThread):
         # depends on the current display-TZ state and must be rebuilt fresh.
         expr = resolve_col_expr(self._col_key)
         if not expr:
-            self.finished.emit({})
+            self.finished.emit(ColValues())
             return
         try:
             import duckdb
@@ -672,17 +705,11 @@ class ColValueWorker(QThread):
                     )
                     params.append(f"%{esc}%")
                 where = " AND ".join(clauses)
-                rows = con.execute(
-                    f"SELECT {expr}, COUNT(*) FROM events "
-                    f"WHERE {where} "
-                    f"GROUP BY {expr} ORDER BY COUNT(*) DESC LIMIT 1000",
-                    params,
-                ).fetchall()
-                self.finished.emit(
-                    {(str(r[0]) if r[0] is not None else ""): r[1] for r in rows}
-                )
+                rows = con.execute(_grouped_sql(expr, where, popup_limit(self._col_key, self._search_term)),
+                                   params).fetchall()
+                self.finished.emit(_col_values(rows))
             finally:
                 con.close()
         except Exception as exc:
             logger.warning("ColValueWorker: col_key=%r  error: %s", self._col_key, exc)
-            self.finished.emit({})
+            self.finished.emit(ColValues())

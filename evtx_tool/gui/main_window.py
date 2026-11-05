@@ -382,6 +382,10 @@ class ColumnFilterPopup(QDialog):
     filterApplied = Signal(int, str, object)
     sortRequested = Signal(int, Qt.SortOrder)  # (column_index, order)
 
+    # Matches of one search added as checkboxes at most (the value typed is
+    # always among them); see _merge_search_results.
+    _SEARCH_SHOW = 5000
+
     # Columns that support dropdown filtering  →  event-dict key
     FILTERABLE = {
         1:  "event_id",        # Event ID
@@ -454,6 +458,22 @@ class ColumnFilterPopup(QDialog):
         self._inp_search.setPlaceholderText("Search…")
         self._inp_search.textChanged.connect(self._on_search_changed)
         root.addWidget(self._inp_search)
+
+        # Say when the list is not every value (user, 2026-11-06: option A):
+        # the popup lists the most common values; the search box finds any.
+        _total = getattr(self._all_values, "total", None)
+        self._lbl_partial = QLabel("")
+        self._lbl_partial.setWordWrap(True)
+        self._lbl_partial.setStyleSheet("color:#7a4c00; font-size:8pt;")
+        self._partial_text = ""
+        if _total and _total > len(self._all_values):
+            self._partial_text = (
+                f"Showing the {len(self._all_values):,} most common of {_total:,} values. "
+                f"Search to find any of them.")
+            self._lbl_partial.setText(self._partial_text)
+        else:
+            self._lbl_partial.hide()
+        root.addWidget(self._lbl_partial)
 
         # Debounce timer for the full-dataset re-query (only used when a
         # search_provider was supplied).  Keystrokes filter the in-memory list
@@ -1090,6 +1110,10 @@ class ColumnFilterPopup(QDialog):
            initial top-1000.
         """
         self._filter_list(text)
+        if not text.strip():
+            # Back to the list as it opened: its own notice, if any.
+            self._lbl_partial.setText(self._partial_text)
+            self._lbl_partial.setVisible(bool(self._partial_text))
         if not self._search_provider:
             return
         term = text.strip()
@@ -1132,6 +1156,19 @@ class ColumnFilterPopup(QDialog):
             return
         if not values:
             return
+        # The search queries EVERY value.  Each match becomes a checkbox, so a
+        # broad term (one digit over 200,000 record numbers) could not be drawn
+        # in reasonable time: add the value typed (exact match) plus the most
+        # common other matches up to _SEARCH_SHOW, and say how many matched.
+        _matched = len(values)
+        if _matched > self._SEARCH_SHOW and not self._is_date_tree:
+            low = term.lower()
+            exact = {k: v for k, v in values.items() if str(k).lower() == low}
+            rest = sorted(((k, v) for k, v in values.items() if k not in exact), key=lambda kv: -kv[1])
+            values = dict(list(exact.items()) + rest[:self._SEARCH_SHOW - len(exact)])
+            self._lbl_partial.setText(
+                f"{len(values):,} of {_matched:,} matching values shown; type more to narrow the search.")
+            self._lbl_partial.show()
         if self._is_date_tree:
             self._merge_search_results_tree(values)
             return
@@ -10426,7 +10463,7 @@ class MainWindow(QMainWindow):
         _w.start()
         self._track_col_worker(_w)
 
-    @Slot(str, dict)
+    @Slot(str, object)
     def _on_col_prewarmed(self, col_key: str, values: dict,
                           where_sql=None, where_params=None, table_id=None) -> None:
         """File a prewarmed column's values under the key they belong to.
