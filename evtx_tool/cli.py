@@ -557,7 +557,7 @@ def diff_cmd(baseline, incident, profile, output, fmt, spike_factor, max_threads
                   header_style="bold red", border_style="red")
         t.add_column("EventID", style="bold")
         t.add_column("Count", justify="right")
-        for eid in new_eids[:30]:
+        for eid in new_eids:
             t.add_row(str(eid), f"{inc_cnt[eid]:,}")
         console.print(t)
 
@@ -569,7 +569,7 @@ def diff_cmd(baseline, incident, profile, output, fmt, spike_factor, max_threads
         )
         t.add_column("EventID", style="bold")
         t.add_column("Baseline Count", justify="right")
-        for eid in missing_eids[:20]:
+        for eid in missing_eids:
             t.add_row(str(eid), f"{base_cnt[eid]:,}")
         console.print(t)
 
@@ -582,7 +582,7 @@ def diff_cmd(baseline, incident, profile, output, fmt, spike_factor, max_threads
         t.add_column("Baseline",  justify="right")
         t.add_column("Incident",  justify="right")
         t.add_column("Ratio",     justify="right")
-        for eid, b, i in spikes[:20]:
+        for eid, b, i in spikes:
             t.add_row(str(eid), f"{b:,}", f"{i:,}", f"{i/max(b,1):.1f}x")
         console.print(t)
 
@@ -594,7 +594,7 @@ def diff_cmd(baseline, incident, profile, output, fmt, spike_factor, max_threads
         t.add_column("EventID", style="bold")
         t.add_column("Baseline", justify="right")
         t.add_column("Incident", justify="right")
-        for eid, b, i in drops[:10]:
+        for eid, b, i in drops:
             t.add_row(str(eid), f"{b:,}", f"{i:,}")
         console.print(t)
 
