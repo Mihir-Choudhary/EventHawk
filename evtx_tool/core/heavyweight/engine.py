@@ -370,7 +370,10 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes) -> "tuple | boo
             # _n < 19 (malformed) is stored as-is; still sortable text
         else:
             ts_db = None
-        level_name = _LEVEL_MAP.get(level, "Information")
+        # A level with no standard name shows its number, as Normal mode does.
+        # "Information" here gave 4,672 real Level-16 events a severity the
+        # log never recorded, in the grid and every export (Codex audit-5b).
+        level_name = _LEVEL_MAP.get(level, str(level))
         record_id  = _safe_int(system.get("EventRecordID"))
         keywords   = str(system.get("Keywords", "") or "")
         opcode_val = _safe_int(system.get("Opcode"))
