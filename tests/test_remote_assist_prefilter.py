@@ -121,7 +121,11 @@ def main() -> int:
 
     print("=== 1. every _classify branch gives the pre-change result ===")
     s = build(synth(11))
-    unchanged = [{k:v for k,v in row.items() if k not in ("row_ref", "continuity")}
+    # "notes" (2026-11-05, restarts during a session) is newer than GOLDEN;
+    # this data has no shutdown or startup, so every note must be empty.
+    check("no session here has a restart note", not any(r.get("notes") for r in s),
+          str([r.get("notes") for r in s if r.get("notes")][:1]))
+    unchanged = [{k:v for k,v in row.items() if k not in ("row_ref", "continuity", "notes")}
                  for row in s if row["type"] != "RDP Session"]
     for row in unchanged:
         if row["session_key"].startswith("__syn_"):

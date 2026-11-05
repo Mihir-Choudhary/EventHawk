@@ -3314,7 +3314,7 @@ class _WifiHistoryDialog(QDialog):
         "SSID", "BSSID", "Vendor", "Adapter",
         "Connected", "Disconnected", "Duration",
         "Security", "Band/Channel", "PHY",
-        "Disconnect Reason", "Flags",
+        "Disconnect Reason", "Flags", "Notes",
     ]
 
     def __init__(self, events: list[dict], truncated: bool = False, parent=None):
@@ -3604,36 +3604,15 @@ class _WifiHistoryDialog(QDialog):
         disco_ev:     list[dict] = []
         assoc_ev:     list[dict] = []   # EID 11001 — channel / PHY
         auth_fail_ev: list[dict] = []   # EID 11006
-        # OS boots per host (lower-cased computer -> (earliest, latest) time
-        # the restart can have happened, second precision).  A connection
-        # cannot survive a restart, so a connect and a disconnect with a boot
-        # of the same host between them are not one session with a measurable
-        # length (Codex audit-5b A5B-WIFI: a 95,422 s "duration" spanning a
-        # proved boot).  A Kernel-General 12 record also carries the boot's
-        # StartTime and can be written later; on the corpus one StartTime sat
-        # exactly an hour before its record with nothing logged in between, so
-        # neither time alone proves the moment (Codex retest R17, ruling R19):
-        # the restart lies between the two.  4608 has only its record time.
-        boots: dict[str, list[tuple[str, str]]] = {}
+        # Shutdowns and startups per host (evtx_tool.analysis.host_power).  A
+        # connection cannot survive a restart: a session spanning one has its
+        # downtime subtracted when both the shutdown and the startup are logged
+        # (marked, with every part in Notes -- user decision 2026-11-05), and
+        # no duration otherwise (Codex audit-5b A5B-WIFI; retest R17, R19).
+        from evtx_tool.analysis.host_power import HostPower, fmt_secs as _fmt_secs
+        _power = HostPower(events)
 
         for ev in events:
-            if _WifiHistoryDialog._is_boot(ev):
-                _bc = str(ev.get("computer") or ev.get("Computer") or "").lower()
-                _bt = _nts(ev.get("timestamp") or ev.get("Timestamp") or "")
-                if _bc and _bt:
-                    _st = ""
-                    _sted = (ev.get("event_data") or {}) if isinstance(ev.get("event_data"), dict) else {}
-                    _raw_st = _sted.get("StartTime")
-                    if isinstance(_raw_st, str) and _raw_st.strip():
-                        _cand = _nts(_raw_st)
-                        try:
-                            datetime.strptime(_cand, "%Y-%m-%d %H:%M:%S")
-                            _st = _cand
-                        except (TypeError, ValueError):
-                            _st = ""          # not a time: the record time alone
-                    boots.setdefault(_bc, []).append(
-                        (min(_bt, _st), max(_bt, _st)) if _st else (_bt, _bt))
-                continue
             ch = str(ev.get("channel") or ev.get("Channel") or "")
             # Low/Medium fix: use exact equality instead of substring containment.
             # The old "ch not in WLAN_CH" let any short prefix like "Microsoft"
@@ -3672,21 +3651,30 @@ class _WifiHistoryDialog(QDialog):
 
         if not connect_ev and not disco_ev:
             return []
-        for _bl in boots.values():
-            _bl.sort()
-
-        def _boot_between(computer: str, start: str, end: str | None) -> str | None:
-            """"between" when a restart of *computer* certainly falls strictly
-            after *start* (and before *end*); "uncertain" when one may, its
-            possible times reaching across *start* or *end*; else None."""
-            found = None
-            for _lo, _hi in boots.get(computer, ()):
-                if _hi <= start or (end is not None and _lo >= end):
-                    continue                          # wholly before / after
-                if _lo > start and (end is None or _hi < end):
-                    return "between"
-                found = "uncertain"
-            return found
+        def _apply_power(sess: dict, end_full: "str | None") -> None:
+            """Adjust *sess* for restarts of its host during it (see host_power)."""
+            res = _power.assess(sess["computer"], sess.get("connect_ts_full") or sess["connect_ts"], end_full)
+            if res is None:
+                return
+            kind = res["kind"]
+            sess["notes"] = res["note"]
+            if kind == "subtracted":
+                sess["duration"] = f"{_fmt_secs(res['seconds'])} (downtime subtracted)"
+                sess["duration_secs"] = res["seconds"]
+                sess["anomaly_flags"].append("downtime_subtracted")
+                return
+            sess["duration_secs"] = -1.0
+            if kind == "uncertain":
+                sess["duration"] = ("Unavailable (host restarted near the session; restart time uncertain)"
+                                    if end_full else
+                                    "Unavailable (host restarted near the connect; restart time uncertain)")
+                sess["anomaly_flags"].append("reboot_uncertain")
+            elif kind == "open":
+                sess["duration"] = "Unavailable (host restarted, no disconnect logged)"
+                sess["anomaly_flags"].append("reboot_between")
+            else:
+                sess["duration"] = "Unavailable (host restarted in between)"
+                sess["anomaly_flags"].append("reboot_between")
 
         # Pair connects with disconnects in chronological order per interface.
         # Key: (computer, iface) so events from different hosts in merged datasets
@@ -3747,6 +3735,7 @@ class _WifiHistoryDialog(QDialog):
                     "auth_failures":     0,
                     "connect_eid":       eid,
                     "anomaly_flags":     [],
+                    "notes":             "",
                 }
                 # A new connect on an interface that STILL has an open session
                 # means Windows never logged the previous session's disconnect
@@ -3815,18 +3804,12 @@ class _WifiHistoryDialog(QDialog):
                         reason_int = 0
                     reason_str = _WifiHistoryDialog._decode_reason(reason_int)
                     dur_label, dur_secs    = _WifiHistoryDialog._calc_duration(sess["connect_ts"], ts)
-                    _rb = _boot_between(computer, sess["connect_ts"], ts)
-                    if _rb == "between":
-                        dur_label, dur_secs = "Unavailable (host restarted in between)", -1.0
-                        sess["anomaly_flags"].append("reboot_between")
-                    elif _rb == "uncertain":
-                        dur_label, dur_secs = ("Unavailable (host restarted near the session; "
-                                               "restart time uncertain)"), -1.0
-                        sess["anomaly_flags"].append("reboot_uncertain")
                     sess["disconnect_ts"]  = ts
                     sess["disconnect_ts_full"] = ts_full
                     sess["duration"]       = dur_label
                     sess["duration_secs"]  = dur_secs
+                    if dur_secs >= 0:
+                        _apply_power(sess, ts_full or ts)
                     sess["disconnect_reason"] = reason_str
                     sessions.append(sess)
                 # Orphaned disconnect (no matching connect) — skip
@@ -3840,17 +3823,10 @@ class _WifiHistoryDialog(QDialog):
             for s in iface_list:
                 if s["connect_eid"] == 8004 and not s["disconnect_ts"]:
                     s["duration"] = "Failed (no close)"
-                elif not s["disconnect_ts"] and _boot_between(s["computer"], s["connect_ts"], None):
-                    # Not "Active": the host restarted after this connect, or
-                    # may have (its restart time reaches across the connect).
-                    if _boot_between(s["computer"], s["connect_ts"], None) == "between":
-                        s["duration"] = "Unavailable (host restarted, no disconnect logged)"
-                        s["anomaly_flags"].append("reboot_between")
-                    else:
-                        s["duration"] = ("Unavailable (host restarted near the connect; "
-                                         "restart time uncertain)")
-                        s["anomaly_flags"].append("reboot_uncertain")
-                    s["duration_secs"] = -1.0
+                elif not s["disconnect_ts"]:
+                    # Not "Active" when the host restarted after this connect,
+                    # or may have (its restart time reaches across the connect).
+                    _apply_power(s, None)
             sessions.extend(iface_list)
 
         # Backfill channel / PHY from nearest EID 11001 on same interface (within 30 s).
@@ -4088,8 +4064,8 @@ class _WifiHistoryDialog(QDialog):
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(False)
         # SSID, BSSID, Vendor, Adapter, Connected, Disconnected, Duration,
-        # Security, Band/Channel, PHY, Disconnect Reason, Flags
-        for i, w in enumerate([140, 145, 90, 160, 140, 140, 75, 75, 90, 90, 200, 120]):
+        # Security, Band/Channel, PHY, Disconnect Reason, Flags, Notes
+        for i, w in enumerate([140, 145, 90, 160, 140, 140, 75, 75, 90, 90, 200, 120, 400]):
             self._tbl.setColumnWidth(i, w)
 
         self._tbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -4154,7 +4130,10 @@ class _WifiHistoryDialog(QDialog):
                 if s["disconnect_ts"] else "Active"
             )
             _dur_disp = s["duration"]
-            if digits and s["duration_secs"] >= 0 and s.get("connect_ts_full") and s.get("disconnect_ts_full"):
+            # Not for a subtracted duration: connect-to-disconnect would put
+            # the host's downtime back in.
+            if (digits and s["duration_secs"] >= 0 and s.get("connect_ts_full") and s.get("disconnect_ts_full")
+                    and "downtime_subtracted" not in s["anomaly_flags"]):
                 _precise = _WifiHistoryDialog._fmt_dur_precise(
                     s["connect_ts_full"], s["disconnect_ts_full"], digits
                 )
@@ -4174,6 +4153,7 @@ class _WifiHistoryDialog(QDialog):
                 s["phy_label"],
                 s["disconnect_reason"],
                 ", ".join(s["anomaly_flags"]),
+                s.get("notes", ""),
             ]
 
             for col, text in enumerate(cells):
@@ -4324,6 +4304,7 @@ class _WifiHistoryDialog(QDialog):
                         s["connect_ts"], s["disconnect_ts"], s["duration"],
                         s["security_grade"], band_ch, s["phy_label"],
                         s["disconnect_reason"], ", ".join(s["anomaly_flags"]),
+                        s.get("notes", ""),
                     ])
         except Exception as exc:
             QMessageBox.critical(self, "Export Failed", f"Could not write CSV:\n{exc}")
@@ -4371,6 +4352,7 @@ class _WifiJMFetchWorker(QThread):
         import json as _json
         import os  as _os
         import duckdb as _duckdb
+        from evtx_tool.analysis.host_power import POWER_SQL as _POWER_SQL
 
         manifest_path = _os.path.join(self._parquet_dir, "parquet_manifest.json")
         # Structured manifest read — distinguish missing file from corrupt JSON
@@ -4428,8 +4410,8 @@ class _WifiJMFetchWorker(QThread):
                     f"       channel, provider "
                     f"FROM parquet_scan({shard_list}) "
                     f"WHERE (channel = ? AND event_id IN ({eids_csv})) "
-                    f"   OR (event_id = 12 AND provider = 'Microsoft-Windows-Kernel-General') "
-                    f"   OR (event_id = 4608 AND lower(channel) = 'security') "
+                    # Shutdowns and startups: see evtx_tool.analysis.host_power.
+                    f"   OR {_POWER_SQL} "
                     f"ORDER BY timestamp_utc "
                     f"LIMIT 200001",
                     [self._WLAN_CHANNEL],
@@ -4511,7 +4493,7 @@ class _RemoteAssistanceDialog(QDialog):
         # file(s) the session was reconstructed from.  A duration is only as
         # trustworthy as the two events it was measured between, so the analyst
         # must be able to see them without opening the event list.
-        "Evidence", "Source Log", "Row", "Continuity",
+        "Evidence", "Source Log", "Row", "Continuity", "Notes",
     ]
 
     # Hover text for the Flags column.  Several of these exist purely to warn
@@ -4652,6 +4634,9 @@ class _RemoteAssistanceDialog(QDialog):
     def _build_sessions(events: list[dict]) -> list[dict]:
         """Parse raw events into Remote Assistance session dicts."""
         from datetime import datetime as _dt
+        # Shutdowns and startups per host, before anything filters the input.
+        from evtx_tool.analysis.host_power import HostPower, fmt_secs as _pfmt
+        _power = HostPower(events)
 
         _RA_CHAN    = "remoteassistance"
         _RH_CHAN    = "remotehelp"
@@ -5693,6 +5678,37 @@ class _RemoteAssistanceDialog(QDialog):
         # value left sessions that begin in the same second in arbitrary order,
         # which reads as a bug once the display is set to milliseconds.
         sessions.extend(inbound_sessions)
+        # A session cannot survive its host being switched off.  Across a clean
+        # restart the downtime is subtracted, marked, with every part in Notes;
+        # otherwise there is no duration (user decision 2026-11-05; see
+        # evtx_tool.analysis.host_power).
+        for s in sessions:
+            s.setdefault("notes", "")
+            _end = s.get("end_ts_full") or s.get("end_ts")
+            _end = None if not _end or _end == "Unavailable" else _end
+            _start = s.get("start_ts_full") or s.get("start_ts")
+            if not _start or _start == "Unavailable":
+                continue
+            if s.get("duration_secs", -1) < 0 and _end is not None:
+                continue                     # no duration to adjust
+            res = _power.assess(s.get("computer"), _start, _end if s.get("duration_secs", -1) >= 0 else None)
+            if res is None:
+                continue
+            s["notes"] = res["note"]
+            if res["kind"] == "subtracted":
+                s["duration"] = f"{_pfmt(res['seconds'])} (downtime subtracted)"
+                s["duration_secs"] = res["seconds"]
+                s["flags"].append("DOWNTIME_SUBTRACTED")
+            elif res["kind"] == "uncertain":
+                if s.get("duration_secs", -1) >= 0:
+                    s["duration"], s["duration_secs"] = ("Unavailable (host restarted near the session; "
+                                                         "restart time uncertain)"), -1.0
+                s["flags"].append("REBOOT_UNCERTAIN")
+            elif res["kind"] == "restarted":
+                s["duration"], s["duration_secs"] = "Unavailable (host restarted in between)", -1.0
+                s["flags"].append("REBOOT_BETWEEN")
+            else:                            # "open": no end logged, a restart followed
+                s["flags"].append("REBOOT_AFTER_START")
         sessions.sort(key=lambda s: (s.get("_observed_order") or s.get("start_ts_full") or s["start_ts"] or ""))
         row_numbers = {id(s): n for n, s in enumerate(sessions, 1)}
         for n, s in enumerate(sessions, 1):
@@ -5869,6 +5885,7 @@ class _RemoteAssistanceDialog(QDialog):
                 s.get("source_log", ""),
                 str(s.get("row_ref", "")),
                 s.get("continuity", ""),
+                s.get("notes", ""),
             ]
             _COL_TYPE     = 0
             _COL_DURATION = 4
@@ -6041,6 +6058,7 @@ class _RemoteAssistanceDialog(QDialog):
                     lambda s: s.get("source_log", ""),
                     lambda s: s.get("row_ref", ""),
                     lambda s: s.get("continuity", ""),
+                    lambda s: s.get("notes", ""),
                 ]
                 assert len(_EXTRACTORS) == len(self._HEADERS), (
                     f"CSV extractors ({len(_EXTRACTORS)}) out of sync with "
@@ -6114,6 +6132,7 @@ class _RemoteAssistJMFetchWorker(QThread):
         self._parquet_dir = parquet_dir
 
     def run(self) -> None:
+        from evtx_tool.analysis.host_power import POWER_SQL as _POWER_SQL
         import json  as _json
         import os    as _os
         import duckdb as _duckdb
@@ -6172,10 +6191,10 @@ class _RemoteAssistJMFetchWorker(QThread):
             f"WHERE ("
             f"    channel IN ({chan_placeholders})"
             f"    OR (channel = 'Security' AND event_id IN (4778, 4779))"
-            # Reboot evidence prevents an inbound ID from joining across boots.
-            f"    OR (channel = 'Security' AND event_id = 4608)"
-            f"    OR (channel = 'System' AND event_id = 12"
-            f"        AND provider = 'Microsoft-Windows-Kernel-General')"
+            # Shutdown / startup evidence: an inbound ID never joins across
+            # boots, and a measured session spanning a restart is adjusted
+            # (evtx_tool.analysis.host_power).
+            f"    OR {_POWER_SQL}"
             f"    OR (channel = 'Security' AND event_id IN (4624, 4634)"
             f"        AND ("
             f"            json_extract_string(event_data_json, '$.LogonType') = '10'"
