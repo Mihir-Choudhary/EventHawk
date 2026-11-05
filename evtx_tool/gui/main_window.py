@@ -15496,7 +15496,7 @@ class MainWindow(QMainWindow):
                 desc_item.setForeground(0, QColor(COLORS["text_dim"]))
                 top.addChild(desc_item)
 
-            for ev in (chain.get("events") or [])[:10]:
+            for ev in (chain.get("events") or []):   # every event (it showed 10)
                 # events are full event dicts, not plain IDs
                 if isinstance(ev, dict):
                     eid = ev.get("event_id", "?")

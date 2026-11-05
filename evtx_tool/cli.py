@@ -243,15 +243,13 @@ def _run_analysis(
             f"({crit} critical, {high} high)"
         )
         sev_col = {"critical": "red", "high": "yellow", "medium": "magenta", "low": "cyan"}
-        for chain in chains[:5]:
+        for chain in chains:
             sc = sev_col.get(chain["severity"], "white")
             console.print(
                 f"  [{sc}][{chain['severity'].upper()}][/{sc}] "
                 f"{chain['rule_name']} -- "
                 f"{', '.join(chain['computers']) or '?'}"
             )
-        if len(chains) > 5:
-            console.print(f"  [dim]... and {len(chains)-5} more[/dim]")
 
     return attack_summary, iocs, chains
 

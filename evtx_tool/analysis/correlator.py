@@ -344,13 +344,11 @@ def _rule_guid_process_tree(idx: _EventIndex, guid_idx: _GuidIndex) -> list[dict
       high     — LOLBAS binary appears as a descendant
       medium   — descendant process lands in a suspicious filesystem path
 
-    Hard bounds: depth 5, 20 events/chain, 50 chains total (performance guard).
+    No bounds: every suspicious tree is a chain and every descendant is in it
+    (user, 2026-11-06: "dont hide anything").  It used to stop at 50 chains,
+    depth 5 and 20 events per chain, silently.  A visited set still stops cycles.
     """
     from evtx_tool.analysis.ioc_scorer import _LOLBAS, _SUSP_PROC_PATHS
-
-    MAX_CHAINS       = 50
-    MAX_DEPTH        = 5
-    MAX_CHAIN_EVENTS = 20
 
     chains:  list[dict] = []
     emitted: set[str]   = set()
@@ -365,33 +363,32 @@ def _rule_guid_process_tree(idx: _EventIndex, guid_idx: _GuidIndex) -> list[dict
         img = str(ed.get("Image") or ed.get("NewProcessName") or "").lower()
         return any(frag in img for frag in _SUSP_PROC_PATHS)
 
-    def _walk(guid: str, depth: int, visited: set) -> list[dict]:
-        """DFS subtree walk bounded by depth and per-chain event count.
-        visited prevents duplicate events if a GUID is reused across reboots
-        or appears in multiple positions in the tree."""
-        if depth == 0 or guid in visited:
-            return []
-        visited.add(guid)
+    def _walk(guid: str) -> list[dict]:
+        """Every descendant, depth-first in the same order as before (a child,
+        then its subtree, then the next child).  Iterative, so no depth can hit
+        Python's recursion limit; the visited set prevents duplicate events if
+        a GUID is reused across reboots or appears in several places."""
+        visited: set = {guid}
         result: list[dict] = []
-        for child in guid_idx.children.get(guid, []):
+        stack = [iter(guid_idx.children.get(guid, []))]
+        while stack:
+            child = next(stack[-1], None)
+            if child is None:
+                stack.pop()
+                continue
             result.append(child)
-            if len(result) >= MAX_CHAIN_EVENTS:
-                break
             cg = str((child.get("event_data") or {}).get("ProcessGuid") or "").strip().lower()
-            if cg:
-                result.extend(_walk(cg, depth - 1, visited))
-            if len(result) >= MAX_CHAIN_EVENTS:
-                break
-        return result[:MAX_CHAIN_EVENTS]
+            if cg and cg not in visited:
+                visited.add(cg)
+                stack.append(iter(guid_idx.children.get(cg, [])))
+        return result
 
     for guid, root_ev in guid_idx.guid_to_event.items():
-        if len(chains) >= MAX_CHAINS:
-            break
         if guid in emitted or not guid_idx.children.get(guid):
             continue
 
         root_base = _base(root_ev)
-        children  = _walk(guid, MAX_DEPTH, set())
+        children  = _walk(guid)
         if not children:
             continue
 
@@ -458,8 +455,8 @@ def _chain(name: str, tactic: str, severity: str, description: str,
     ts_list = [ev.get("timestamp", "") for ev in events if ev.get("timestamp")]
     first_ts = min(ts_list) if ts_list else ""
     last_ts  = max(ts_list) if ts_list else ""
-    computers = list({ev.get("computer", "") for ev in events if ev.get("computer")})
-    users     = list({u for ev in events if (u := _get_user(ev))})
+    computers = sorted({ev.get("computer", "") for ev in events if ev.get("computer")})
+    users     = sorted({u for ev in events if (u := _get_user(ev))})
     c = {
         "rule_name":   name,
         "tactic":      tactic,
@@ -541,13 +538,14 @@ def _rule_brute_force_success(idx: _EventIndex) -> list[dict]:
                     and _ts_ge(ev["timestamp"], last_fail_ts)
                 ]
                 if matching_success:
-                    chain_events = window + matching_success[:1]
+                    chain_events = window + matching_success
                     chains.append(_chain(
                         name        = "Brute Force -> Successful Logon",
                         tactic      = "Credential Access -> Initial Access",
                         severity    = "high",
                         description = (
-                            f"{len(window)} failed logons (4625) followed by success (4624) "
+                            f"{len(window)} failed logons (4625) followed by "
+                            f"{len(matching_success)} success(es) (4624) "
                             f"on {computer} user={user or '?'} within 5-min window. "
                             f"Indicates credential stuffing, brute force, or password spray."
                         ),
@@ -598,14 +596,17 @@ def _rule_network_logon_service_install(idx: _EventIndex) -> list[dict]:
                 or (svc.get("event_data") or {}).get("ServiceFileName", "")
             )
         ]
-        final = suspicious if suspicious else matches
 
         svc_names = ", ".join(filter(None, [
             (svc.get("event_data") or {}).get("ServiceName", "")
-            for svc in final[:3]
+            for svc in matches
         ])) or "?"
-        path_note = ("Suspicious binary path detected. " if suspicious
-                     else "Binary path not extracted — verify manually. ")
+        sus_names = ", ".join(filter(None, [
+            (svc.get("event_data") or {}).get("ServiceName", "")
+            for svc in suspicious
+        ])) or "?"
+        path_note = (f"Suspicious binary path: {sus_names}. " if suspicious
+                     else "No suspicious binary path found (or not extracted) — verify manually. ")
 
         chains.append(_chain(
             name        = "Network Logon -> Service Install (PSExec/Impacket Pattern)",
@@ -617,7 +618,7 @@ def _rule_network_logon_service_install(idx: _EventIndex) -> list[dict]:
                 f"Service(s): {svc_names}. {path_note}"
                 f"Matches PSExec, Impacket SMBExec, or smbexec patterns."
             ),
-            events      = [logon] + final[:3],
+            events      = [logon] + matches,
         ))
     return chains
 
@@ -690,7 +691,7 @@ def _rule_privilege_escalation_chain(idx: _EventIndex) -> list[dict]:
                     f"privileges (4672) for {user} on {computer}. "
                     f"Privileges: {', '.join(sorted(found_privs))}."
                 ),
-                events      = [logon] + matches[:2],
+                events      = [logon] + matches,
             ))
     return chains
 
@@ -885,7 +886,7 @@ def _rule_log_clearing(idx: _EventIndex) -> list[dict]:
                     f"Attackers clear logs to remove forensic evidence. "
                     f"(Channel-validated — operational/diagnostic logs excluded.)"
                 ),
-                events      = prior[-5:] + [clr],  # last 5 prior + clear event
+                events      = prior + [clr],
             ))
     return chains
 
@@ -930,7 +931,7 @@ def _rule_scheduled_task_after_logon(idx: _EventIndex) -> list[dict]:
                     f"Scheduled task created (4698/4702) on {computer} within 5 minutes "
                     f"of logon by {user or '?'}. Common persistence mechanism."
                 ),
-                events      = [logon] + matches[:2],
+                events      = [logon] + matches,
             ))
     return chains
 
@@ -970,7 +971,7 @@ def _rule_account_created_after_recon(idx: _EventIndex) -> list[dict]:
                     f"Attacker may be establishing persistence via a new account. "
                     f"(Same-actor validated — provisioning-service FP eliminated.)"
                 ),
-                events      = [recon] + matches[:2],
+                events      = [recon] + matches,
             ))
     return chains
 
@@ -1022,7 +1023,7 @@ def _rule_password_spray(idx: _EventIndex) -> list[dict]:
                             f"Indicates a password spray attack — one password tried "
                             f"against many accounts to avoid lockout."
                         ),
-                        events      = window[:10],  # cap at 10 representative events
+                        events      = window,
                         extra       = {"distinct_users": len(distinct_users)},
                     ))
                     i = j
@@ -1079,7 +1080,7 @@ def _rule_ps_exec_chain(idx: _EventIndex) -> list[dict]:
                     f"'{parent}' on {computer}, followed by PS script block logging (4104). "
                     f"Matches WMI execution, macro-based attacks, or living-off-the-land."
                 ),
-                events      = [pe] + related_ps[:2],
+                events      = [pe] + related_ps,
             ))
     return chains
 
@@ -1141,7 +1142,7 @@ def _rule_logonid_privesc(idx: _EventIndex, session_idx: _LogonSessionIndex) -> 
                 f"Privileges: {', '.join(sorted(found_privs))}. "
                 f"Exact LogonId match eliminates false positives from concurrent sessions."
             ),
-            events      = [logon_ev] + dangerous[:2],
+            events      = [logon_ev] + dangerous,
         ))
 
     return chains
@@ -1214,10 +1215,12 @@ def _rule_logonid_process_chain(idx: _EventIndex, session_idx: _LogonSessionInde
                 f"Network logon (4624 Type=3) for '{user or '?'}' on {computer} "
                 f"spawned {len(procs)} process(es) under LogonId {lid} "
                 f"({len(interesting_procs)} non-benign). "
-                f"Processes: {', '.join(proc_names[:5]) or '?'}. "
+                f"Processes: {', '.join(proc_names) or '?'}. "
                 f"LogonId linking provides direct session-to-execution attribution."
             ),
-            events      = [logon_ev] + interesting_procs[:3],
+            # Every process of the session: the benign filter decides whether
+            # the chain fires, not what it shows.
+            events      = [logon_ev] + procs,
         ))
 
     return chains
@@ -1415,12 +1418,18 @@ def correlate(events: list[dict], progress_fn: object = None) -> list[dict]:
         if progress_fn:
             progress_fn(int(rule_idx / total_rules * 100))
 
-    # Deduplicate: same rule + same computer + overlapping time window
-    seen: set[str] = set()
+    # Merge only chains that hold exactly the same events (the same rule found
+    # the same evidence twice).  This merged every chain with the same rule,
+    # hosts and start MINUTE, so different process trees or logons starting in
+    # the same minute were silently dropped (39 Sysmon chains -> 23 on the
+    # public samples; user, 2026-11-06: "dont hide anything").
+    def _ev_key(ev: dict) -> tuple:
+        return (str(ev.get("source_file") or ""), str(ev.get("record_id") or ""),
+                str(ev.get("timestamp") or ""), str(ev.get("event_id") or ""))
+    seen: set = set()
     unique: list[dict] = []
     for chain in all_chains:
-        ts_key = (chain.get("first_ts") or "")[:16] or "__no_ts__"
-        key = f"{chain['rule_name']}|{','.join(sorted(chain['computers']))}|{ts_key}"
+        key = (chain["rule_name"], tuple(sorted(_ev_key(e) for e in chain.get("events") or [])))
         if key not in seen:
             seen.add(key)
             unique.append(chain)

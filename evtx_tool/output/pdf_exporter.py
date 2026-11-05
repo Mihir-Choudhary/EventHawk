@@ -342,7 +342,7 @@ def export_pdf(
                                 color=rl_colors.Color(*_C_HEADER)))
         story.append(Spacer(1, 0.3*cm))
 
-        for i, chain in enumerate(chains[:20], 1):
+        for i, chain in enumerate(chains, 1):   # every chain (it listed 20)
             sev = chain["severity"]
             sev_color = rl_colors.Color(*_SEV_COLORS.get(sev, _C_LOW))
             computers = ", ".join(chain["computers"]) or "?"

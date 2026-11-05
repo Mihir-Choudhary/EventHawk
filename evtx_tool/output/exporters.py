@@ -965,7 +965,7 @@ def export_html(
             f.write(f"<h2>&#128683; Attack Chain Correlation "
                     f"<span style='color:#8b949e;font-size:0.85em;font-weight:normal'>"
                     f"({len(chains)} detected — {crit} critical, {high} high)</span></h2>\n")
-            for chain in chains[:50]:  # cap at 50 in HTML
+            for chain in chains:       # every chain (it showed 50)
                 sev    = chain["severity"]
                 comps  = ", ".join(chain["computers"]) or "?"
                 users  = ", ".join(chain["users"]) or "?"
@@ -980,9 +980,6 @@ def export_html(
                         f"</div>\n")
                 f.write(f"<div class='chain-desc'>{_esc(chain['description'])}</div>\n")
                 f.write("</div>\n")
-            if len(chains) > 50:
-                f.write(f"<div class='meta'>... and {len(chains)-50} more chains. "
-                        f"Use --output report.pdf for full listing.</div>\n")
             f.write("</div>\n")
 
         # ── IOC Section ───────────────────────────────────────────────────
