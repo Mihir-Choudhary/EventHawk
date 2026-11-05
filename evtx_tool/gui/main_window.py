@@ -12821,14 +12821,17 @@ class MainWindow(QMainWindow):
         # Normal mode: an applied profile lives in the same proxy slot as the
         # dialog cfg, so clearing the slot used to wipe the profile while its
         # box stayed ticked.  Keep the applied profiles.
+        # All Events' own proxy, whichever tab is in front (the loop covers the
+        # file tabs): _global_proxy is the file tab in front in the separate
+        # view, so All Events kept the old Advanced Filter (audit-3 P1 remainder).
         if self._applied_profiles:
             _profile_fc = self._build_filter_config(base=None)
-            self._global_proxy.set_advanced_filter(_profile_fc)
+            self._proxy_model.set_advanced_filter(_profile_fc)
             for _fp, _st in self._file_tabs.items():
                 if not _is_pivot_tab_key(_fp):
                     _st.proxy.set_advanced_filter(_profile_fc)
         else:
-            self._global_proxy.clear_advanced_filter()
+            self._proxy_model.clear_advanced_filter()
             # Also clear per-file tab proxies (separate-tabs mode)
             for _fp, _st in self._file_tabs.items():
                 if not _is_pivot_tab_key(_fp):
