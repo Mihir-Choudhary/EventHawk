@@ -60,6 +60,18 @@ def main() -> int:
     check("HTML: the search index still holds the value, unchanged",
           len(idx) == 1 and payload.lower() in idx[0], str(idx)[:200])
 
+    # A5B-HTML-CONTROL (Minor): raw C0 control characters were written into
+    # the page, where an HTML parser drops or changes them (4 controls read
+    # back as nothing plus one space).  Expected: the same visible, reversible
+    # \xNN escape the XML export uses, so the report shows which byte was there.
+    out = os.path.join(d, "ctl.html")
+    ctl = "A\x00B\x01C\x08D\x1fE"
+    export([ev({"Payload": ctl})], out, None)
+    page = lhtml.fromstring(open(out, encoding="utf-8").read()).text_content()
+    want = "A\\x00B\\x01C\\x08D\\x1FE"
+    check("HTML: control characters are shown as \\xNN, as in the XML export", want in page,
+          repr(page[page.find("A"):page.find("A") + 30]) if "A" in page else "value not found")
+
     out = os.path.join(d, "r.csv")
     export([ev({"payload (custom)": "ED-VALUE"}, {"ED_payload": "CC-VALUE"})], out, None)
     with open(out, encoding="utf-8-sig", newline="") as fh:

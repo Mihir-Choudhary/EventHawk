@@ -817,9 +817,15 @@ def _esc(s) -> str:
     row's attributes.
 
     ``html.escape(quote=True)`` covers ``& < > " '``.
+
+    Control characters get the XML export's visible backslash-x-hex escape
+    first (NUL is shown as the four characters backslash, x, 0, 0):
+    HTML cannot carry them, and a parser dropped or changed them (Codex
+    audit-5b: four C0 controls read back as nothing plus one space), so the
+    report no longer showed which byte the log held.
     """
     import html as _html
-    return _html.escape(str(s), quote=True)
+    return _html.escape(_xml_text(s), quote=True)
 
 
 def _fmt_ts(ts: str) -> str:
