@@ -121,6 +121,9 @@ class _Accum:
         # EventID-0 records were missing from their IOCs' context).
         self.eids: set[int]       = {eid}       if eid is not None else set()
         self.record_ids: set[int] = {record_id} if record_id else set()
+        # The record numbers of every copy too (a copy collapsed by its XML
+        # EventRecordID can carry a different header number), as record_keys.
+        self.record_ids.update(k[1] for k in keys if k[1])
         self.users: set[str]      = {user}      if user      else set()
         self.computers: set[str]  = {computer}  if computer  else set()
         self.sources: set[str]    = set()
@@ -147,6 +150,7 @@ class _Accum:
             self.eids.add(eid)
         if record_id:
             self.record_ids.add(record_id)
+        self.record_ids.update(k[1] for k in keys if k[1])
         if user:
             self.users.add(user)
         if computer:
