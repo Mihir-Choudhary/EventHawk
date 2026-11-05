@@ -60,12 +60,15 @@ CSV_BASE_KEYS = ["RecordID", "EventID", "Timestamp", "Channel", "Provider",
 MAX_ED_CELLS = 50_000_000
 
 
-def custom_headers(titles) -> list[str]:
+def custom_headers(titles, reserved=()) -> list[str]:
     """CSV headers of custom columns, in order: each title, made distinct from
     the built-in headers ("EventID" -> "EventID (custom)"), from the EventData
-    columns ("ED_..." / "EventData") and from each other ("... (custom 2)"),
-    so a reader keyed by header never loses a value (Codex audit-5 E5-04)."""
-    taken = set(CSV_BASE_KEYS) | {"EventData"}
+    columns ("ED_..." / "EventData", plus the actual expanded headers passed as
+    *reserved*) and from each other ("... (custom 2)"), so a reader keyed by
+    header never loses a value (Codex audit-5 E5-04; audit-5b A5B-CSV-ED: a
+    title "ED_payload" became "ED_payload (custom)", the header of an
+    EventData field named "payload (custom)")."""
+    taken = set(CSV_BASE_KEYS) | {"EventData"} | set(reserved)
     out: list[str] = []
     for t in titles:
         h, n = t, 1
@@ -81,10 +84,10 @@ def csv_headers(ed_keys, rows: int, custom_titles=()) -> list[str]:
     """Full CSV header for *rows* events whose EventData field names are *ed_keys*;
     custom columns (titles in order) follow the base columns."""
     names = set(ed_keys)
-    base = CSV_BASE_KEYS + custom_headers(custom_titles)
     if len(names) * rows > MAX_ED_CELLS:
-        return base + ["EventData"]
-    return base + sorted(f"ED_{k}" for k in names)
+        return CSV_BASE_KEYS + custom_headers(custom_titles) + ["EventData"]
+    ed_headers = sorted(f"ED_{k}" for k in names)
+    return CSV_BASE_KEYS + custom_headers(custom_titles, reserved=ed_headers) + ed_headers
 
 
 def csv_row(event: dict, ed_pos: dict, width: int) -> list:
@@ -1310,7 +1313,13 @@ def export_html(
         for si, ev in enumerate(events):
             if si > 0:
                 f.write(",")
-            f.write(fast_dumps(_build_search_string(ev)))
+            # Inside <script> the JSON must not contain a raw "<": an event
+            # value "</script>" ended the script and the rest of the value
+            # became real markup (Codex audit-5b A5B-HTML-SCRIPT).  The JSON
+            # escapes \u003c / \u003e / \u0026 are the same characters to
+            # JSON and JavaScript.
+            f.write(fast_dumps(_build_search_string(ev))
+                    .replace("<", r"\u003c").replace(">", r"\u003e").replace("&", r"\u0026"))
         f.write("];</script>\n")
 
         # ── Optional WASM init (Tier 1 — present only when pkg/ was built) ───
