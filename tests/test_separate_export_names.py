@@ -44,17 +44,20 @@ def main() -> int:
     with open(keep, "w", encoding="utf-8") as fh:
         fh.write("an earlier export the analyst kept")
     a, b, c = r"C:\case\HOST-A\Security.evtx", r"C:\case\HOST-B\Security.evtx", r"C:\case\HOST-A\System.evtx"
+    d = r"C:\case\HOST-A\Application.evtx"
     w = mw.MainWindow()
     w._per_file_data = {a: {"events": [ev(a, 1, "HOST-A"), ev(a, 2, "HOST-A")]},
                         b: {"events": [ev(b, 1, "HOST-B")]},
-                        c: {"events": [ev(c, 7, "HOST-A")]}}
+                        c: {"events": [ev(c, 7, "HOST-A")]},
+                        # Keeps its own name: the summary must still name it.
+                        d: {"events": [ev(d, 9, "HOST-A")]}}
     boxes = []
     mw.QFileDialog.getExistingDirectory = staticmethod(lambda *x, **k: out_dir)
     from PySide6.QtWidgets import QInputDialog
     QInputDialog.getItem = staticmethod(lambda *x, **k: ("JSON", True))
     QMessageBox.information = staticmethod(lambda p, t, text, *x, **k: boxes.append(text))
     QMessageBox.critical = staticmethod(lambda p, t, text, *x, **k: boxes.append("CRITICAL " + text))
-    w._export_separate([a, b, c])
+    w._export_separate([a, b, c, d])
 
     files = sorted(glob.glob(os.path.join(out_dir, "*.json")))
     got = {}
@@ -65,7 +68,7 @@ def main() -> int:
         evs = data if isinstance(data, list) else data.get("events", [])
         for e in evs:
             got[(e.get("source_file"), str(e.get("record_id") or e.get("EventRecordID")))] = os.path.basename(f)
-    want = {(a, "1"), (a, "2"), (b, "1"), (c, "7")}
+    want = {(a, "1"), (a, "2"), (b, "1"), (c, "7"), (d, "9")}
     check("every source's events are in the export folder", set(got) == want,
           f"missing {sorted(want - set(got))}")
     fa, fb = got.get((a, "1")), got.get((b, "1"))
@@ -75,8 +78,11 @@ def main() -> int:
           open(keep, encoding="utf-8").read() == "an earlier export the analyst kept")
     msg = boxes[-1] if boxes else ""
     written = len(set(got.values()))
-    check("three files were really written, and the message says 3",
-          written == 3 and ("across 3 files" in msg or "3 files" in msg), f"{written} written; {msg[:200]}")
+    names = sorted(set(got.values()))
+    check("the message names every file written (spec R-9; it named only the renamed ones)",
+          all(n in msg for n in names), f"written {names}; message: {msg[:300]}")
+    check("four files were really written, and the message says 4",
+          written == 4 and "across 4 files" in msg, f"{written} written; {msg[:200]}")
     w.close()
 
     ok = sum(1 for _n, c_, _d in CHECKS if c_)

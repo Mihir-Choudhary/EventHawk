@@ -1392,6 +1392,19 @@ class FileTabState:
     iocs: dict | None = None
 
 
+_SUMMARY_INLINE_FILES = 25
+
+
+def _written_files_list(written: list, out_paths: dict) -> str:
+    """One line per file written: output name, event count, source.
+
+    Spec R-9: the export summary names exactly which files were written.  It
+    named only the outputs whose name differs from their source (Codex
+    audit-5b A5B-R9: 2 of 36 in Normal, 57 of 664 in Juggernaut)."""
+    return "\n".join(f"{os.path.basename(out_paths[fp])}  ({n:,} events)  from {fp}"
+                      for fp, n in written)
+
+
 def _separate_export_paths(file_paths: list[str], out_dir: str, ext: str) -> dict[str, str]:
     """One output path per source file, never shared and never an existing file.
 
@@ -16231,20 +16244,25 @@ class MainWindow(QMainWindow):
             out_paths = _separate_export_paths(sources, out_dir, ext)
             _cc = self._export_custom_columns()
             from evtx_tool.core.custom_columns import with_custom_columns
+            written: list = []
             for fp in sources:
                 out_path = out_paths[fp]
                 _evs = groups[fp]["events"]
                 count = export(with_custom_columns(_evs, _cc) if _cc else _evs, out_path, None)
                 total_events += count
                 exported_files += 1
+                written.append((fp, count))
                 logger.info("Separate export: %d event(s) from %s -> %s", count, fp, out_path)
 
             renamed = [os.path.basename(p) for fp, p in out_paths.items()
                        if os.path.splitext(os.path.basename(p))[0]
                        != os.path.splitext(os.path.basename(fp))[0]]
-            QMessageBox.information(
-                self, "Exported",
+            _listing = _written_files_list(written, out_paths)
+            _inline = len(written) <= _SUMMARY_INLINE_FILES
+            _text = (
                 f"Exported {total_events:,} events across {exported_files} files to:\n{out_dir}"
+                + (f"\n\nFiles written:\n{_listing}" if _inline else
+                   f"\n\nFiles written: {len(written)} -- every one is listed under Show Details.")
                 + ("\n\nNamed differently from their source (the same file name in two "
                    "folders, or a file already in the output folder): " + ", ".join(renamed)
                    if renamed else "")
@@ -16252,6 +16270,11 @@ class MainWindow(QMainWindow):
                    + ", ".join(fp for fp in file_paths if fp not in out_paths)
                    if any(fp not in out_paths for fp in file_paths) else "")
             )
+            if _inline:
+                QMessageBox.information(self, "Exported", _text)
+            else:
+                self._warn_blocking("Exported", _text, icon=QMessageBox.Icon.Information,
+                                    detail=_listing)
         except Exception as exc:
             logger.exception("Per-file export failed: %s", out_dir)
             QMessageBox.critical(self, "Export Failed", str(exc))
@@ -16471,6 +16494,11 @@ class MainWindow(QMainWindow):
                        != os.path.splitext(os.path.basename(fp))[0]]
             total_events = sum(c for _f, c in written)
             text = f"Exported {total_events:,} events across {len(written)} files to:\n{out_dir}"
+            _listing = _written_files_list(written, out_paths)
+            _inline = len(written) <= _SUMMARY_INLINE_FILES
+            if written:
+                text += (f"\n\nFiles written:\n{_listing}" if _inline else
+                         f"\n\nFiles written: {len(written)} -- every one is listed under Show Details.")
             if renamed:
                 text += ("\n\nNamed differently from their source (the same file name in two "
                          "folders, or a file already in the output folder): " + ", ".join(renamed))
@@ -16482,7 +16510,8 @@ class MainWindow(QMainWindow):
                          "Not written: " + ", ".join(f for f in sources if f not in done))
             self._warn_blocking("Exported" if stop is None else "Export Stopped", text,
                                 icon=(QMessageBox.Icon.Information if stop is None
-                                      else QMessageBox.Icon.Warning))
+                                      else QMessageBox.Icon.Warning),
+                                detail=None if _inline else _listing)
 
         def _step(i: int) -> None:
             if i == len(sources):

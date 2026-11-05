@@ -51,7 +51,7 @@ def main() -> int:
     T.Mode(mw, True).load(w, evs)
     w._table.setModel(w._hw_model)
     msgs = []
-    w._warn_blocking = lambda title, text, **k: msgs.append(text)
+    w._warn_blocking = lambda title, text, **k: msgs.append(text + " | " + (k.get("detail") or ""))
 
     choice = {}
 
@@ -106,6 +106,10 @@ def main() -> int:
               sorted(got.values()) == [3, 4, 6] and len(got) == 3, f"{got}")
         check("the summary names the folder and the counts",
               r and "13" in r[-1] and out in r[-1], str(r)[:200])
+        # Spec R-9 / Codex audit-5b A5B-R9: the summary names EVERY file
+        # written (it named only the renamed ones: 2 of 3 here).
+        missing = [f for f in got if f not in (r[-1] if r else "")]
+        check("the summary names every file written", not missing, f"not named: {missing}")
     finally:
         mw._ExportScopeDialog, QFileDialog.getSaveFileName, QFileDialog.getExistingDirectory, QInputDialog.getItem = real
         w.close(); T.pump(100)
