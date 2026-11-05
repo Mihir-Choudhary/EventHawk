@@ -10,7 +10,19 @@ no boot barrier, and the JM fetch did not even load boot events.
 Expected, in both modes: a session with a boot of ITS host between connect
 and disconnect reads "Unavailable", with no numeric duration; an open session
 followed by a boot is not "Active"; a boot of another host changes nothing.
-Synthetic events.
+
+Codex retest (R17): a Kernel-General 12 record carries the boot's StartTime
+and can be written later.  The barrier used only the record time, so a boot
+before the connect whose record was written inside the session voided a
+valid duration ("restarted in between"), and a boot inside the session
+written after the disconnect left a numeric duration across it.  On the
+corpus a StartTime also sat exactly one hour before its record with nothing
+logged in between, so neither time alone proves when the host restarted
+(ruling R19): the restart lies somewhere from the earlier to the later of the
+two.  Inside the session for certain: "restarted in between".  Wholly before
+or after: the duration stands.  Overlapping the connect or the disconnect:
+no duration, and the reason says the restart time is uncertain (never the
+"restarted in between" claim).  Synthetic events.
 """
 import os
 import sys
@@ -43,9 +55,10 @@ def wlan(host, rid, secs, eid, ssid):
     return e
 
 
-def kernel_boot(host, rid, secs):
+def kernel_boot(host, rid, secs, start=None):
+    st = T.iso(T.T0 + timedelta(seconds=start)) if start is not None else "x"
     e = T.ev(rf"C:\c\{host}-System.evtx", rid, host, T.T0 + timedelta(seconds=secs), 12,
-             "Microsoft-Windows-Kernel-General", {"StartTime": "x"})
+             "Microsoft-Windows-Kernel-General", {"StartTime": st})
     e["channel"] = "System"
     return e
 
@@ -66,6 +79,24 @@ def dataset():
         wlan("HOST-A", 3, 1000, 8001, "NetA2"), security_boot("HOST-A", 1, 1200),
         # HOST-B: connect 50, disconnect 400; HOST-A's boot at 100 is not its own.
         wlan("HOST-B", 1, 50, 8001, "NetB"), wlan("HOST-B", 2, 400, 8003, "NetB"),
+        # R17 cases, connect 100 / disconnect 300 (boot StartTime / record time):
+        # C: 50 / 200 -- overlaps the connect: uncertain.
+        wlan("HOST-C", 1, 100, 8001, "NetC"), kernel_boot("HOST-C", 1, 200, 50),
+        wlan("HOST-C", 2, 300, 8003, "NetC"),
+        # D: 200 / 400 -- overlaps the disconnect: uncertain.
+        wlan("HOST-D", 1, 100, 8001, "NetD"), kernel_boot("HOST-D", 1, 400, 200),
+        wlan("HOST-D", 2, 300, 8003, "NetD"),
+        # E: 150 / 151 -- inside for certain.
+        wlan("HOST-E", 1, 100, 8001, "NetE"), kernel_boot("HOST-E", 1, 151, 150),
+        wlan("HOST-E", 2, 300, 8003, "NetE"),
+        # F: 10 / 20 -- before the connect: 200 s stands.
+        kernel_boot("HOST-F", 1, 20, 10), wlan("HOST-F", 1, 100, 8001, "NetF"),
+        wlan("HOST-F", 2, 300, 8003, "NetF"),
+        # G: 400 / 401 -- after the disconnect: 200 s stands.
+        wlan("HOST-G", 1, 100, 8001, "NetG"), wlan("HOST-G", 2, 300, 8003, "NetG"),
+        kernel_boot("HOST-G", 1, 401, 400),
+        # H: open session from 100; boot 50 / 150 overlaps the connect.
+        wlan("HOST-H", 1, 100, 8001, "NetH"), kernel_boot("HOST-H", 1, 150, 50),
     ]
 
 
@@ -84,6 +115,25 @@ def grade(tag, sessions):
           str(a2 and (a2["duration"], a2["duration_secs"])))
     check(f"{tag}: another host's reboot leaves a session's duration alone",
           b is not None and b["duration_secs"] == 350.0, str(b and (b["duration"], b["duration_secs"])))
+
+    def uncertain(x):
+        return (x is not None and x["duration_secs"] < 0 and "uncertain" in str(x["duration"])
+                and "reboot_between" not in x["anomaly_flags"])
+    show = lambda x: str(x and (x["duration"], x["duration_secs"], x["anomaly_flags"]))   # noqa: E731
+    check(f"{tag}: boot window overlapping the connect: no duration, restart time uncertain",
+          uncertain(s.get("NetC")), show(s.get("NetC")))
+    check(f"{tag}: boot inside but written after the disconnect: no duration, uncertain",
+          uncertain(s.get("NetD")), show(s.get("NetD")))
+    e = s.get("NetE")
+    check(f"{tag}: boot inside for certain: restarted in between",
+          e is not None and e["duration_secs"] < 0 and "reboot_between" in e["anomaly_flags"], show(e))
+    check(f"{tag}: boot wholly before the connect: duration stands",
+          s.get("NetF") is not None and s["NetF"]["duration_secs"] == 200.0, show(s.get("NetF")))
+    check(f"{tag}: boot wholly after the disconnect: duration stands",
+          s.get("NetG") is not None and s["NetG"]["duration_secs"] == 200.0, show(s.get("NetG")))
+    h = s.get("NetH")
+    check(f"{tag}: open session, boot overlapping its connect: not Active, uncertain",
+          h is not None and h["duration"] != "Active" and uncertain(h), show(h))
 
 
 def main() -> int:

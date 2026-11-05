@@ -3604,19 +3604,35 @@ class _WifiHistoryDialog(QDialog):
         disco_ev:     list[dict] = []
         assoc_ev:     list[dict] = []   # EID 11001 — channel / PHY
         auth_fail_ev: list[dict] = []   # EID 11006
-        # OS boots per host (lower-cased computer -> sorted second-precision
-        # times).  A connection cannot survive a restart, so a connect and a
-        # disconnect with a boot of the same host between them are not one
-        # session with a measurable length (Codex audit-5b A5B-WIFI: a 95,422 s
-        # "duration" spanning a proved boot).
-        boots: dict[str, list[str]] = {}
+        # OS boots per host (lower-cased computer -> (earliest, latest) time
+        # the restart can have happened, second precision).  A connection
+        # cannot survive a restart, so a connect and a disconnect with a boot
+        # of the same host between them are not one session with a measurable
+        # length (Codex audit-5b A5B-WIFI: a 95,422 s "duration" spanning a
+        # proved boot).  A Kernel-General 12 record also carries the boot's
+        # StartTime and can be written later; on the corpus one StartTime sat
+        # exactly an hour before its record with nothing logged in between, so
+        # neither time alone proves the moment (Codex retest R17, ruling R19):
+        # the restart lies between the two.  4608 has only its record time.
+        boots: dict[str, list[tuple[str, str]]] = {}
 
         for ev in events:
             if _WifiHistoryDialog._is_boot(ev):
                 _bc = str(ev.get("computer") or ev.get("Computer") or "").lower()
                 _bt = _nts(ev.get("timestamp") or ev.get("Timestamp") or "")
                 if _bc and _bt:
-                    boots.setdefault(_bc, []).append(_bt)
+                    _st = ""
+                    _sted = (ev.get("event_data") or {}) if isinstance(ev.get("event_data"), dict) else {}
+                    _raw_st = _sted.get("StartTime")
+                    if isinstance(_raw_st, str) and _raw_st.strip():
+                        _cand = _nts(_raw_st)
+                        try:
+                            datetime.strptime(_cand, "%Y-%m-%d %H:%M:%S")
+                            _st = _cand
+                        except (TypeError, ValueError):
+                            _st = ""          # not a time: the record time alone
+                    boots.setdefault(_bc, []).append(
+                        (min(_bt, _st), max(_bt, _st)) if _st else (_bt, _bt))
                 continue
             ch = str(ev.get("channel") or ev.get("Channel") or "")
             # Low/Medium fix: use exact equality instead of substring containment.
@@ -3659,12 +3675,18 @@ class _WifiHistoryDialog(QDialog):
         for _bl in boots.values():
             _bl.sort()
 
-        def _boot_after(computer: str, start: str, end: str | None) -> bool:
-            """A boot of *computer* strictly after *start* (and before *end*)."""
-            for _b in boots.get(computer, ()):
-                if _b > start and (end is None or _b < end):
-                    return True
-            return False
+        def _boot_between(computer: str, start: str, end: str | None) -> str | None:
+            """"between" when a restart of *computer* certainly falls strictly
+            after *start* (and before *end*); "uncertain" when one may, its
+            possible times reaching across *start* or *end*; else None."""
+            found = None
+            for _lo, _hi in boots.get(computer, ()):
+                if _hi <= start or (end is not None and _lo >= end):
+                    continue                          # wholly before / after
+                if _lo > start and (end is None or _hi < end):
+                    return "between"
+                found = "uncertain"
+            return found
 
         # Pair connects with disconnects in chronological order per interface.
         # Key: (computer, iface) so events from different hosts in merged datasets
@@ -3793,9 +3815,14 @@ class _WifiHistoryDialog(QDialog):
                         reason_int = 0
                     reason_str = _WifiHistoryDialog._decode_reason(reason_int)
                     dur_label, dur_secs    = _WifiHistoryDialog._calc_duration(sess["connect_ts"], ts)
-                    if _boot_after(computer, sess["connect_ts"], ts):
+                    _rb = _boot_between(computer, sess["connect_ts"], ts)
+                    if _rb == "between":
                         dur_label, dur_secs = "Unavailable (host restarted in between)", -1.0
                         sess["anomaly_flags"].append("reboot_between")
+                    elif _rb == "uncertain":
+                        dur_label, dur_secs = ("Unavailable (host restarted near the session; "
+                                               "restart time uncertain)"), -1.0
+                        sess["anomaly_flags"].append("reboot_uncertain")
                     sess["disconnect_ts"]  = ts
                     sess["disconnect_ts_full"] = ts_full
                     sess["duration"]       = dur_label
@@ -3813,11 +3840,17 @@ class _WifiHistoryDialog(QDialog):
             for s in iface_list:
                 if s["connect_eid"] == 8004 and not s["disconnect_ts"]:
                     s["duration"] = "Failed (no close)"
-                elif not s["disconnect_ts"] and _boot_after(s["computer"], s["connect_ts"], None):
-                    # Not "Active": the host restarted after this connect.
-                    s["duration"] = "Unavailable (host restarted, no disconnect logged)"
+                elif not s["disconnect_ts"] and _boot_between(s["computer"], s["connect_ts"], None):
+                    # Not "Active": the host restarted after this connect, or
+                    # may have (its restart time reaches across the connect).
+                    if _boot_between(s["computer"], s["connect_ts"], None) == "between":
+                        s["duration"] = "Unavailable (host restarted, no disconnect logged)"
+                        s["anomaly_flags"].append("reboot_between")
+                    else:
+                        s["duration"] = ("Unavailable (host restarted near the connect; "
+                                         "restart time uncertain)")
+                        s["anomaly_flags"].append("reboot_uncertain")
                     s["duration_secs"] = -1.0
-                    s["anomaly_flags"].append("reboot_between")
             sessions.extend(iface_list)
 
         # Backfill channel / PHY from nearest EID 11001 on same interface (within 30 s).
