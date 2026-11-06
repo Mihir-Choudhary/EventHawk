@@ -42,7 +42,7 @@ def search(p, term, ready):
 
 def main() -> int:
     import evtx_tool.gui.main_window as mw
-    from evtx_tool.gui.models import COL_EID
+    from evtx_tool.gui.models import COL_EID, COL_COMPUTER
     evs = dataset()
     for jm in (False, True):
         tag = "Juggernaut" if jm else "Normal"
@@ -79,6 +79,38 @@ def main() -> int:
         shown, note = state(p)
         check(f"{tag}: clearing the search restores the 1,000-value list and its notice",
               shown == 1000 and "most common of 7,001" in note, f"{shown} / {note!r}")
+        p.close(); T.pump(100)
+        T.teardown(w, jm, m)
+
+    # Codex CK76-1: every value equal to the term ignoring case was put ahead
+    # of the 5,000 bound and never counted against it - 7,001 case spellings
+    # of one word rendered 7,001 checkboxes.  The literal value typed must
+    # still be offered, inside the bound.
+    from itertools import product
+    from datetime import timedelta
+    word = "syntheticvalue"
+    spellings = ["".join(c) for c in product(*[(ch, ch.upper()) for ch in word])]
+    spellings.remove(word)
+    names = spellings[:7000] + [word]                    # 7,001 distinct, the literal one last
+    cv = [T.ev(r"C:\c\Security.evtx", i + 1, n, T.T0 + timedelta(seconds=i)) for i, n in enumerate(names)]
+    for jm in (False, True):
+        tag = "Juggernaut" if jm else "Normal"
+        w = mw.MainWindow()
+        m = T.Mode(mw, jm)
+        m.load(w, cv)
+        if jm:
+            w._table.setModel(w._hw_model)
+        T.pump(300)
+        p = open_popup(w, COL_COMPUTER)
+        search(p, word, lambda p: "7,001 matching" in p._lbl_partial.text()
+               or sum(1 for cb in p._checkboxes if not cb.isHidden()) > 5000)
+        shown, note = state(p)
+        lit = [cb for cb in p._checkboxes if cb.property("filter_value") == word]
+        check(f"{tag}: 7,001 case spellings of one word: at most 5,000 shown", shown <= 5000, str(shown))
+        check(f"{tag}: the notice names exactly the matches shown, of 7,001",
+              f"{shown:,} of 7,001 matching values" in note, f"{shown} / {note!r}")
+        check(f"{tag}: the literal value typed is offered and checked",
+              len(lit) == 1 and not lit[0].isHidden() and lit[0].isChecked())
         p.close(); T.pump(100)
         T.teardown(w, jm, m)
 

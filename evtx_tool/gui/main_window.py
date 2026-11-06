@@ -1195,12 +1195,16 @@ class ColumnFilterPopup(QDialog):
         # anyway), then the most common others - and say how many matched.
         _matched = len(values)
         if _matched > self._SEARCH_SHOW:
+            # Every value shown counts against the bound (Codex CK76-1: all
+            # case spellings of the term were put first, uncounted - 7,001
+            # shown).  Order: the loaded matches (on screen anyway), then the
+            # literal value typed, other case spellings of it, the most common.
             low = term.lower()
             loaded = {chk.property("filter_value") for chk in self._checkboxes}
-            first = {k: v for k, v in values.items()
-                     if str(k).lower() == low or str(k) in loaded}
-            rest = sorted(((k, v) for k, v in values.items() if k not in first),
-                          key=lambda kv: (-kv[1], str(kv[0])))
+            first = {k: v for k, v in values.items() if str(k) in loaded}
+            rest = sorted(((k, v) for k, v in values.items() if str(k) not in loaded),
+                          key=lambda kv: (str(kv[0]) != term, str(kv[0]).lower() != low,
+                                          -kv[1], str(kv[0])))
             values = dict(list(first.items()) + rest[:max(0, self._SEARCH_SHOW - len(first))])
         existing = {chk.property("filter_value") for chk in self._checkboxes}
         added = False
