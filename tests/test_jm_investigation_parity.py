@@ -101,10 +101,13 @@ def main() -> int:
     # ── every cap Juggernaut applies must be DISCLOSED, not silent ───────
     src = open(os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "evtx_tool", "gui", "main_window.py"), encoding="utf-8").read()
-    check("session-browser 200k cap is shown in the UI",
-          "Results capped at 200,000 events" in src)
-    check("logon session-filter hard cap is shown in the UI, not just logged",
-          "Session Filter Truncated" in src and "INCOMPLETE" in src)
+    # User 2026-11-06: no limits in these tools ("look at everything"); large
+    # loads ask first, naming the memory (behaviour: test_jm_tools_no_limit,
+    # test_jm_session_filter).  These replace the old "cap is shown" checks.
+    check("JM WiFi / Remote Assistance fetch every event (no 200,000 limit)",
+          "LIMIT 200001" not in src and "count_only" in src)
+    check("logon session filter has no hard cap and its question names the memory",
+          "_JM_SESSION_ROW_LIMIT = None" in src and "JM_LOAD_KB_PER_EVENT // 1024" in src)
     check("column popups can search the whole dataset past the top-1000 cap",
           "_make_col_search_provider" in src)
 
