@@ -138,6 +138,7 @@ python -m sentinel.cli analyze --evtx C:\Target   --baseline baseline/ --sigma C
 | [PowerShell History Extraction](docs/10b-ps-extract.md) | PS session/command/script-block reconstruction — output files, ATT&CK detection, prerequisites |
 | [View Logon Sessions](docs/10c-logon-sessions.md) | Reconstruct Windows logon sessions, filter to a session, detect LUID reuse, linked UAC pairs |
 | [Inbound RDP intervals](docs/10d-inbound-rdp.md) | Separate reused SessionIDs, proved interval durations, and visible reconnect references |
+| [System Activity](docs/10f-system-activity.md) | When each computer was on, asleep, hibernating, shut down or crashed, screen on/off and locked, with the evidence for every period |
 
 ### Output
 

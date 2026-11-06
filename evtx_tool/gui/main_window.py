@@ -8272,6 +8272,13 @@ class MainWindow(QMainWindow):
         )
         a.triggered.connect(self._on_show_remote_assist)
 
+        a = tm.addAction("System Activity\u2026")
+        a.setToolTip(
+            "When each computer was on, screen on or off, asleep, hibernating, shut down "
+            "or locked, with the events that prove each period"
+        )
+        a.triggered.connect(self._on_show_system_activity)
+
         a = tm.addAction("Computer Normalisation\u2026")
         a.setToolTip(
             "Group the Computer names that belong to one machine (renames, FQDN and "
@@ -13626,6 +13633,77 @@ class MainWindow(QMainWindow):
         }
         title = _TITLES.get(kind, "WiFi History Error")
         self._warn_blocking(title, msg)
+
+    # ── System Activity ───────────────────────────────────────────────────────
+
+    def _on_show_system_activity(self) -> None:
+        """Open the System Activity tool (a fresh dialog every time, like WiFi History)."""
+        from evtx_tool.gui.system_activity_dialog import SystemActivityJMFetchWorker
+        old = getattr(self, "_system_activity_dlg", None)
+        if old is not None:
+            try:
+                old.close()
+            except RuntimeError:
+                pass
+            self._system_activity_dlg = None
+        if self._hw_model is not None:
+            parquet_dir = getattr(self, "_hw_db_path", None)
+            if not parquet_dir:
+                QMessageBox.information(self, "System Activity", "No Juggernaut dataset loaded.")
+                return
+            if not self._jm_confirm_load(SystemActivityJMFetchWorker, "System Activity", parquet_dir,
+                                         self._on_show_system_activity):
+                return
+            self._set_status("System Activity: loading power, screen and lock events…")
+            self._sysact_req = getattr(self, "_sysact_req", 0) + 1
+            req = self._sysact_req
+            worker = SystemActivityJMFetchWorker(parquet_dir, parent=self)
+
+            def _ready(events, _trunc, _r=req):
+                if getattr(self, "_sysact_req", None) == _r:
+                    self._set_status("")
+                    self._open_system_activity(events)
+
+            def _err(kind, msg, _r=req):
+                if getattr(self, "_sysact_req", None) == _r:
+                    self._set_status("")
+                    self._warn_blocking("System Activity", msg)
+
+            worker.finished.connect(_ready)
+            worker.fetch_error.connect(_err)
+            self._sysact_workers = self._reap_finished_workers(getattr(self, "_sysact_workers", []))
+            self._sysact_workers.append(worker)
+            worker.start()
+            return
+        events = self._active_events
+        if not events:
+            QMessageBox.information(self, "System Activity", "No events loaded.")
+            return
+        from evtx_tool.analysis.system_activity import relevant
+        self._open_system_activity([e for e in events if relevant(e)])
+
+    def _open_system_activity(self, events: list) -> None:
+        from evtx_tool.analysis.system_activity import build
+        from evtx_tool.gui.system_activity_dialog import SystemActivityDialog
+        try:
+            res = build(events)
+        except Exception as exc:                                   # noqa: BLE001
+            logger.exception("System Activity analysis failed")
+            self._warn_blocking("System Activity", f"The analysis failed:\n{exc}")
+            return
+        if not res["rows"] and not res["points"]:
+            self._warn_blocking("System Activity", "No power, screen or lock events found in the loaded logs.",
+                                icon=QMessageBox.Icon.Information)
+            return
+
+        def _around(ev, td):
+            self._open_around_tab(ev, td, td, "host")
+
+        dlg = SystemActivityDialog(res, parent=self, around=_around, digits=get_ts_precision())
+        self._system_activity_dlg = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _open_wifi_history_dialog(self, events: list, truncated: bool = False) -> None:
         """Create and show a fresh _WifiHistoryDialog from *events*.
