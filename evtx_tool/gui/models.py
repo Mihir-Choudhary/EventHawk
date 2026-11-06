@@ -998,6 +998,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._adv_eid_exclude: set[int] = set()
         self._adv_eid_exclude_mode: bool = False
         self._adv_eid_list: set[int] = set()          # profile event_ids
+        self._adv_profile_groups: list = []           # applied profiles (core.filters)
         self._adv_eid_list_exclude: set[int] = set()  # profile exclude_event_ids
         self._adv_task_cats: set[int] = set()         # profile task_categories
         self._adv_case_sensitive: bool = False
@@ -1102,6 +1103,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._adv_eid_exclude_mode = False
         self._adv_eid_list = set()
         self._adv_eid_list_exclude = set()
+        self._adv_profile_groups = []
         self._adv_task_cats = set()
         self._adv_case_sensitive = False
         self._adv_sources = []
@@ -1221,6 +1223,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             self._adv_eid_exclude_mode = False
             self._adv_eid_list = set()
             self._adv_eid_list_exclude = set()
+            self._adv_profile_groups = []
             self._adv_task_cats = set()
             self._adv_case_sensitive = False
             self._adv_sources = []
@@ -1276,6 +1279,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                     pass
             return out
         self._adv_eid_list = _ints("event_ids")
+        from evtx_tool.core.filters import norm_profile_groups
+        self._adv_profile_groups = norm_profile_groups(cfg.get("profile_groups"))
         self._adv_eid_list_exclude = _ints("exclude_event_ids")
         self._adv_task_cats = _ints("task_categories")
 
@@ -1879,6 +1884,17 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 if int(ev.get("task") or 0) not in self._adv_task_cats:
                     return False
             except (TypeError, ValueError):
+                return False
+
+        # ── Applied profiles: one must match as a whole (core.filters) ──────
+        if self._adv_profile_groups:
+            from evtx_tool.core.filters import profile_groups_match
+            try:
+                _eid = int(ev.get("event_id"))
+            except (TypeError, ValueError):
+                _eid = None
+            if not profile_groups_match(_eid, ev.get("provider", ""), ev.get("channel", ""),
+                                        self._adv_profile_groups):
                 return False
 
         # ── Source (provider + channel) — pre-lowered sets ──────────────────

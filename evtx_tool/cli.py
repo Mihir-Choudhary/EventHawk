@@ -372,8 +372,10 @@ def parse_cmd(
     if profile_names:
         fc = pm.build_filter(profile_names, base_filter=fc)
         console.print(f"[magenta]Profiles: {', '.join(profile_names)}[/magenta]")
-        if fc.get("event_ids"):
-            console.print(f"[dim]Profile event IDs: {len(fc['event_ids'])}[/dim]")
+        _pids = {e for g in fc.get("profile_groups") or [] for e in g.get("event_ids") or []}
+        if _pids:
+            console.print(f"[dim]Profile event IDs: {len(_pids)} "
+                          f"(an event must match one profile as a whole)[/dim]")
 
     if save_filter_path:
         save_filter(fc, save_filter_path)
@@ -387,6 +389,8 @@ def parse_cmd(
         sample = fc["event_ids"][:5]
         more   = f"+{len(fc['event_ids'])-5}" if len(fc["event_ids"]) > 5 else ""
         filter_parts.append(f"EventID: {','.join(map(str,sample))}{more}")
+    if fc.get("profile_groups"):
+        filter_parts.append(f"Profiles: {len(fc['profile_groups'])}")
     if fc.get("users"):
         filter_parts.append(f"User: {','.join(fc['users'])}")
     if fc.get("computers"):

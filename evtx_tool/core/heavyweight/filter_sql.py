@@ -495,6 +495,26 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
     def _lv(val: str) -> str:
         return val if cs else val.lower()
 
+    # ── applied profiles: one must match as a whole (core.filters) ───────
+    if fc.get("profile_groups"):
+        from evtx_tool.core.filters import norm_profile_groups
+        alts: list[str] = []
+        for ids, srcs, chans in norm_profile_groups(fc["profile_groups"]):
+            parts: list[str] = []
+            if ids:
+                parts.append(f"event_id IN ({', '.join('?' * len(ids))})")
+                params.extend(sorted(ids))
+            if srcs:
+                parts.append("(" + " OR ".join(
+                    "provider ILIKE ? ESCAPE '\\' OR channel ILIKE ? ESCAPE '\\'" for _ in srcs) + ")")
+                for s in srcs:
+                    params.extend([f"%{_escape_like(s)}%"] * 2)
+            if chans:
+                parts.append("(" + " OR ".join("channel ILIKE ? ESCAPE '\\'" for _ in chans) + ")")
+                params.extend(f"%{_escape_like(c)}%" for c in chans)
+            alts.append("(" + " AND ".join(parts) + ")" if parts else "(1=1)")
+        clauses.append("(" + " OR ".join(alts) + ")")
+
     # ── event_ids ─────────────────────────────────────────────────────────
     if fc.get("event_ids"):
         ph = ", ".join("?" * len(fc["event_ids"]))

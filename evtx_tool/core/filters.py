@@ -677,8 +677,50 @@ def _conditions_pass(event: dict, conditions: "list[dict]", cs: bool) -> bool:
     return True
 
 
+def norm_profile_groups(groups) -> "list[tuple[frozenset, tuple, tuple]]":
+    """Applied profiles as (event IDs, sources, channels), lower-cased.
+
+    build_combined_filter() stores one group per applied profile.  An event
+    passes when it matches ONE group as a whole - each non-empty part ANDed,
+    sources against provider or channel, channels against channel, both as
+    case-insensitive substrings like the "sources" / "categories" filters.
+    Pooling every profile's IDs and sources let one profile's ID pair with
+    another's source (2,866,916 Sysmon registry events under Boot + Process
+    Creation on the corpus) and could hide a profile's events altogether.
+    """
+    out = []
+    for g in groups or ():
+        ids = frozenset(int(e) for e in (g.get("event_ids") or ()))
+        srcs = tuple(str(s).lower() for s in (g.get("sources") or ()))
+        chans = tuple(str(c).lower() for c in (g.get("channels") or ()))
+        out.append((ids, srcs, chans))
+    return out
+
+
+def profile_groups_match(event_id, provider: str, channel: str, groups) -> bool:
+    """True if the event matches one normalised group (see norm_profile_groups)."""
+    prov = (provider or "").lower()
+    chan = (channel or "").lower()
+    for ids, srcs, chans in groups:
+        if ids and event_id not in ids:
+            continue
+        if srcs and not any(s in prov or s in chan for s in srcs):
+            continue
+        if chans and not any(c in chan for c in chans):
+            continue
+        return True
+    return False
+
+
 def passes_filter(event: dict, fc: dict) -> bool:
     """Return True if event passes all criteria in filter config fc."""
+
+    # Applied profiles: one of them must match as a whole.
+    if fc.get("profile_groups"):
+        if not profile_groups_match(event.get("event_id"), event.get("provider", ""),
+                                    event.get("channel", ""),
+                                    norm_profile_groups(fc["profile_groups"])):
+            return False
 
     # Event ID include list
     if fc.get("event_ids"):
@@ -1060,6 +1102,12 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
         fc = {}
     checks: list[Callable[[dict], bool]] = []
 
+    # Applied profiles: one of them must match as a whole.
+    if fc.get("profile_groups"):
+        _groups = norm_profile_groups(fc["profile_groups"])
+        checks.append(lambda ev, _g=_groups: profile_groups_match(
+            ev.get("event_id"), ev.get("provider", ""), ev.get("channel", ""), _g))
+
     # Event ID include
     if fc.get("event_ids"):
         _include_ids = set(fc["event_ids"])
@@ -1244,17 +1292,18 @@ def profile_to_filter(profile: dict) -> dict:
 
 def build_combined_filter(base_filter: dict, profiles: list[dict]) -> dict:
     """
-    Combine a base filter with multiple profiles.
-    Profile event_ids and sources are unioned. Base filter restrictions are applied on top.
-    Extended profile fields (channels, computers, users, levels, conditions) are merged in.
+    Combine a base filter with several profiles.
+
+    Each profile's event IDs, sources and channels stay together as one group
+    in ``profile_groups``: an event passes when it matches one profile as a
+    whole (see norm_profile_groups).  The base filter's own restrictions apply
+    on top (AND).  The other profile fields (computers, users, levels,
+    conditions) are merged as before and apply to every event.
     """
     if not profiles:
         return base_filter
 
-    # Union all profile event IDs and sources
-    all_event_ids: list[int] = []
-    all_sources: list[str] = []
-    all_channels: list[str] = []
+    groups: list[dict] = []
     all_computers: list[str] = []
     all_users: list[str] = []
     all_levels: list[str] = []
@@ -1262,9 +1311,11 @@ def build_combined_filter(base_filter: dict, profiles: list[dict]) -> dict:
     case_sensitive = False
 
     for p in profiles:
-        all_event_ids.extend(int(e) for e in p.get("event_ids", []))
-        all_sources.extend(p.get("sources", []))
-        all_channels.extend(p.get("channels", []))
+        groups.append({
+            "event_ids": [int(e) for e in (p.get("event_ids") or [])],
+            "sources":   list(p.get("sources") or []),
+            "channels":  list(p.get("channels") or []),
+        })
         all_computers.extend(p.get("computers", []))
         all_users.extend(p.get("users", []))
         all_levels.extend(p.get("levels", []))
@@ -1273,21 +1324,9 @@ def build_combined_filter(base_filter: dict, profiles: list[dict]) -> dict:
             case_sensitive = True
 
     combined = base_filter.copy()
-
-    # Profile event IDs: intersect with base filter if base has event_ids
-    if all_event_ids:
-        if base_filter.get("event_ids"):
-            base_set = set(base_filter["event_ids"])
-            combined["event_ids"] = [e for e in all_event_ids if e in base_set]
-        else:
-            combined["event_ids"] = list(set(all_event_ids))
-
-    if all_sources and not base_filter.get("sources"):
-        combined["sources"] = list(set(all_sources))
+    combined["profile_groups"] = groups
 
     # Extended fields — only set if not already constrained by base filter
-    if all_channels:
-        combined.setdefault("categories", list(set(all_channels)))
     if all_computers:
         combined.setdefault("computers", list(set(all_computers)))
     if all_users:

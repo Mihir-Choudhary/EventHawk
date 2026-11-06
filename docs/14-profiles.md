@@ -91,8 +91,10 @@ Profile fields sit at the top level of the JSON (this is the format of the built
 | `computers`, `users`, `levels` | string arrays | Further restrictions, each applied only when non-empty. |
 | `conditions` | array | Field conditions in the Advanced Filter format. |
 
-Non-empty fields combine with AND. When several profiles are applied together, their event IDs and
-sources are combined (an event matching any of the profiles passes).
+Non-empty fields combine with AND. When several profiles are applied together, each keeps its own event IDs,
+sources and channels: an event shows when it matches one of the applied profiles as a whole. One profile's
+event ID never pairs with another profile's source. `computers`, `users`, `levels` and `conditions` apply to
+every event.
 
 **Fields that do not filter:**
 
