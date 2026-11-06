@@ -23,6 +23,7 @@ import os
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,16 @@ _C_LOW        = (0.09, 0.38, 0.50)
 _C_WHITE      = (1, 1, 1)
 _C_LIGHT_BG   = (0.96, 0.96, 0.98)
 _C_ACCENT     = (0.06, 0.19, 0.38)   # #0f3460
+# Chain titles sit on the dark severity cards: the accent blue was unreadable
+# there (contrast 1.0); white contrasts with every card (Codex retest 2026-11-06).
+_C_CHAIN_TITLE = _C_WHITE
+
+
+def _x(v) -> str:
+    """Event text for a Paragraph: exact, never read as markup.  A "<" or "&"
+    in a rule name, user, description or IOC value stopped the whole export
+    (ReportLab parse error) or changed the text.  None reads as ""."""
+    return _xml_escape("" if v is None else str(v))
 
 _SEV_COLORS = {
     "critical": _C_CRITICAL,
@@ -125,6 +136,9 @@ def export_pdf(
                         borderPadding=(0,0,4,0))
     s_h2      = _style("H2", fontSize=12, textColor=colors.Color(*_C_ACCENT),
                         leading=16, spaceBefore=8, spaceAfter=4, fontName="Helvetica-Bold")
+    s_chain   = _style("ChainTitle", fontSize=12, textColor=colors.Color(*_C_CHAIN_TITLE),
+                        leading=16, spaceBefore=8, spaceAfter=4, fontName="Helvetica-Bold")
+    s_cell    = _style("Cell", fontSize=7, leading=8.5, textColor=colors.black)
     s_body    = _style("Body", fontSize=9, textColor=colors.Color(*_C_TEXT),
                         leading=13, spaceAfter=3)
     s_mono    = _style("Mono", fontSize=8, fontName="Courier",
@@ -140,7 +154,7 @@ def export_pdf(
 
     # ── Cover Page ─────────────────────────────────────────────────────────────
     story.append(Spacer(1, 3*cm))
-    story.append(Paragraph(title, s_title))
+    story.append(Paragraph(_x(title), s_title))
     story.append(Paragraph("EventHawk — DFIR Analysis Report", s_sub))
     story.append(Spacer(1, 0.5*cm))
     story.append(HRFlowable(width="100%", thickness=1,
@@ -187,7 +201,7 @@ def export_pdf(
     by_eid:   dict[int, int] = {}
     by_comp:  dict[str, int] = {}
     for ev in events:
-        lvl = ev.get("level_name", "Information")
+        lvl = ev.get("level_name", "Information") or ""
         by_level[lvl] = by_level.get(lvl, 0) + 1
         eid = ev.get("event_id", 0)
         by_eid[eid] = by_eid.get(eid, 0) + 1
@@ -351,16 +365,16 @@ def export_pdf(
             # BUG 24 fix: Table requires 2D list of rows×cols.
             # 4 paragraphs in 1 column = 4 rows, each with 1 cell.
             header_parts = [
-                [Paragraph(f"{i}. {chain['rule_name']}", s_h2)],
+                [Paragraph(f"{i}. {_x(chain['rule_name'])}", s_chain)],
                 [Paragraph(
-                    f"Severity: <b>{sev.upper()}</b>  |  "
-                    f"Tactic: {chain['tactic']}  |  "
+                    f"Severity: <b>{_x(sev.upper())}</b>  |  "
+                    f"Tactic: {_x(chain['tactic'])}  |  "
                     f"Events: {chain['event_count']}  |  "
-                    f"Time: {_fmt_ts(chain['first_ts'])} - {_fmt_ts(chain['last_ts'])}",
+                    f"Time: {_x(_fmt_ts(chain['first_ts']))} - {_x(_fmt_ts(chain['last_ts']))}",
                     s_meta
                 )],
-                [Paragraph(chain["description"], s_body)],
-                [Paragraph(f"Affected: {computers}  |  Users: {users}", s_meta)],
+                [Paragraph(_x(chain["description"]), s_body)],
+                [Paragraph(f"Affected: {_x(computers)}  |  Users: {_x(users)}", s_meta)],
             ]
             chain_table = Table(header_parts, colWidths=[17*cm])
             bg_color = rl_colors.Color(
@@ -388,22 +402,22 @@ def export_pdf(
         story.append(Spacer(1, 0.2*cm))
 
         ioc_sections = [
-            ("IPv4 Addresses",   "ipv4",  20),
-            ("SHA256 Hashes",    "sha256", 20),
-            ("MD5 Hashes",       "md5",   20),
-            ("Usernames",        "users", 30),
-            ("Computers",        "computers", 20),
-            ("Processes",        "processes", 20),
-            ("Domains",          "domains", 20),
+            ("IPv4 Addresses",   "ipv4"),
+            ("SHA256 Hashes",    "sha256"),
+            ("MD5 Hashes",       "md5"),
+            ("Usernames",        "users"),
+            ("Computers",        "computers"),
+            ("Processes",        "processes"),
+            ("Domains",          "domains"),
         ]
-        for label, key, limit in ioc_sections:
+        # Every value, whole (it listed 20-30 per kind and cut each at 80
+        # characters with no marker); long values wrap.
+        for label, key in ioc_sections:
             vals = iocs.get(key, [])
             if not vals:
                 continue
             story.append(Paragraph(f"{label} ({len(vals)} total)", s_h2))
-            ioc_data = [[Paragraph(str(v)[:80], s_mono)] for v in vals[:limit]]
-            if len(vals) > limit:
-                ioc_data.append([Paragraph(f"... and {len(vals)-limit} more", s_meta)])
+            ioc_data = [[Paragraph(_x(v), s_mono)] for v in vals]
             ioc_table = Table(ioc_data, colWidths=[17*cm])
             ioc_table.setStyle(TableStyle([
                 ("ROWBACKGROUNDS", (0,0), (-1,-1), [rl_colors.Color(0.05,0.08,0.12),
@@ -429,13 +443,13 @@ def export_pdf(
 
     event_data = [["Timestamp", "EventID", "Level", "Computer", "Channel", "Source"]]
     for ev in display_events:
-        ts      = _fmt_ts(ev.get("timestamp", ""))
+        # Whole values, wrapped (they were cut at 12-22 characters with no
+        # marker); a missing field (None, e.g. a record with no Channel) is "".
+        ts      = _fmt_ts(ev.get("timestamp") or "")
         eid     = str(ev.get("event_id", ""))
-        lvl     = ev.get("level_name", "")[:12]
-        comp    = ev.get("computer", "")[:20]
-        channel = ev.get("channel", "")[:22]
-        src     = os.path.basename(ev.get("source_file", ""))[:20]
-        event_data.append([ts, eid, lvl, comp, channel, src])
+        src     = os.path.basename(ev.get("source_file") or "")
+        event_data.append([Paragraph(_x(v), s_cell) for v in
+                           (ts, eid, ev.get("level_name"), ev.get("computer"), ev.get("channel"), src)])
 
     ev_table = Table(event_data, colWidths=[3.5*cm, 1.5*cm, 2*cm, 3.5*cm, 3.5*cm, 2.5*cm])
     ev_table.setStyle(TableStyle([

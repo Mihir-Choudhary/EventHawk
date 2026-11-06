@@ -100,10 +100,10 @@ The PDF report includes:
 - Cover page (investigation title, analyst name, date range)
 - Executive summary (event counts by category, key findings)
 - Timeline section (significant events in chronological order)
-- IOC table (all extracted indicators with scores)
+- IOC table (every extracted indicator, each value in full)
 - ATT&CK matrix summary (techniques detected)
 - Case notes section (any events added to the Case tab with annotations)
-- Appendix: raw event table
+- Appendix: event table of the first 500 events, labelled "first 500 of N" (the HTML export lists every event)
 
 > **Tip:** Add events to the [Case Tab](09-analysis-tabs.md#case-tab) with notes before exporting PDF to get the most meaningful report.
 
