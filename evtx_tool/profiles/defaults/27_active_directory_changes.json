@@ -1,0 +1,58 @@
+{
+  "name": "Active Directory Changes",
+  "description": "Directory object changes on domain controllers (5136-5141, needs directory service change auditing), directory object operations (4662, used to spot DCSync), trusts, domain and Kerberos policy, and computer accounts.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "active-directory",
+    "domain-controller",
+    "persistence",
+    "dfir"
+  ],
+  "event_ids": [
+    5136,
+    5137,
+    5138,
+    5139,
+    5141,
+    4662,
+    4706,
+    4707,
+    4713,
+    4716,
+    4739,
+    4741,
+    4742,
+    4743
+  ],
+  "sources": [
+    "Microsoft-Windows-Security-Auditing"
+  ],
+  "target_logs": [
+    "Security.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "4706": "high",
+    "4662": "medium",
+    "5136": "medium",
+    "4713": "high"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "5136": "Directory service object modified",
+    "5137": "Directory service object created",
+    "5138": "Directory service object undeleted",
+    "5139": "Directory service object moved",
+    "5141": "Directory service object deleted",
+    "4662": "Operation performed on an object",
+    "4706": "New trust created to a domain",
+    "4707": "Trust to a domain removed",
+    "4713": "Kerberos policy changed",
+    "4716": "Trusted domain information modified",
+    "4739": "Domain policy changed",
+    "4741": "Computer account created",
+    "4742": "Computer account changed",
+    "4743": "Computer account deleted"
+  }
+}

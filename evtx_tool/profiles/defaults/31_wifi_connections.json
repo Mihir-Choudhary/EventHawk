@@ -1,0 +1,47 @@
+{
+  "name": "WiFi Connections",
+  "description": "Wireless connection attempts, successes, failures and disconnects with the network name (SSID), and association and security steps (WLAN-AutoConfig/Operational). See also the WiFi Connection History tool.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "wifi",
+    "network",
+    "location",
+    "dfir"
+  ],
+  "event_ids": [
+    8000,
+    8001,
+    8002,
+    8003,
+    11000,
+    11001,
+    11002,
+    11004,
+    11005,
+    11006,
+    11010
+  ],
+  "sources": [
+    "Microsoft-Windows-WLAN-AutoConfig"
+  ],
+  "target_logs": [
+    "Microsoft-Windows-WLAN-AutoConfig%4Operational.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {},
+  "correlation_rules": [],
+  "event_descriptions": {
+    "8000": "Started a connection to a wireless network",
+    "8001": "Successfully connected to a wireless network",
+    "8002": "Failed to connect to a wireless network",
+    "8003": "Disconnected from a wireless network",
+    "11000": "Wireless network association started",
+    "11001": "Wireless network association succeeded",
+    "11002": "Wireless network association failed",
+    "11004": "Wireless security stopped",
+    "11005": "Wireless security succeeded",
+    "11006": "Wireless security failed",
+    "11010": "Wireless security started"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "name": "Driver and Code Integrity",
+  "description": "Code Integrity checks: unsigned or invalidly signed images and drivers, images not meeting the required signing level, and Windows Defender Application Control audit and block events; Sysmon driver loads.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "driver",
+    "code-integrity",
+    "defense-evasion",
+    "dfir"
+  ],
+  "event_ids": [
+    3001,
+    3002,
+    3003,
+    3004,
+    3033,
+    3034,
+    3076,
+    3077,
+    3089,
+    6
+  ],
+  "sources": [
+    "Microsoft-Windows-CodeIntegrity",
+    "Microsoft-Windows-Sysmon"
+  ],
+  "target_logs": [
+    "Microsoft-Windows-CodeIntegrity%4Operational.evtx",
+    "Microsoft-Windows-Sysmon%4Operational.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "3077": "high",
+    "3001": "medium",
+    "3033": "medium",
+    "6": "low"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "3001": "Unsigned driver load attempted",
+    "3002": "Code Integrity could not verify a boot image",
+    "3003": "Code Integrity could not verify an image",
+    "3004": "File image hash not valid",
+    "3033": "Image did not meet the Microsoft signing level requirements",
+    "3034": "Image would not have met signing requirements (audit)",
+    "3076": "WDAC: image would have been blocked (audit mode)",
+    "3077": "WDAC: image blocked",
+    "3089": "Signature information for a previous event",
+    "6": "Sysmon: driver loaded"
+  }
+}

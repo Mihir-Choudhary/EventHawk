@@ -1,0 +1,41 @@
+{
+  "name": "Log Clearing and Anti-Forensics",
+  "description": "Event logs cleared (Security 1102, other logs System 104), the event log service shutting down, the audit policy or CrashOnAuditFail being changed. Defender history deletion and Sysmon file deletions are in their own profiles.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "anti-forensics",
+    "defense-evasion",
+    "dfir"
+  ],
+  "event_ids": [
+    1102,
+    104,
+    1100,
+    4719,
+    4906
+  ],
+  "sources": [
+    "Microsoft-Windows-Eventlog",
+    "Microsoft-Windows-Security-Auditing"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "System.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "1102": "critical",
+    "104": "critical",
+    "1100": "medium",
+    "4719": "high"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "1102": "Security audit log cleared",
+    "104": "Event log cleared (System and other logs)",
+    "1100": "Event logging service shut down",
+    "4719": "System audit policy changed",
+    "4906": "CrashOnAuditFail value changed"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "System Time Changes",
+  "description": "System time changed (Security 4616 with the process that changed it, Kernel-General 1 with old and new time). A changed clock can make a timeline misleading or hide activity.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "time",
+    "anti-forensics",
+    "timeline",
+    "dfir"
+  ],
+  "event_ids": [
+    4616,
+    1
+  ],
+  "sources": [
+    "Microsoft-Windows-Security-Auditing",
+    "Microsoft-Windows-Kernel-General"
+  ],
+  "target_logs": [
+    "Security.evtx",
+    "System.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "4616": "high",
+    "1": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4616": "System time changed",
+    "1": "Kernel-General: system time changed"
+  }
+}

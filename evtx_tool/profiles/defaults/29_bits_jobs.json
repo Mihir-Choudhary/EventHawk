@@ -1,0 +1,43 @@
+{
+  "name": "BITS Jobs",
+  "description": "Background Intelligent Transfer Service jobs: created, transferred, cancelled, and transfer start, stop and error with the URL (59-61). BITS is used for downloads and persistence.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "bits",
+    "persistence",
+    "command-and-control",
+    "dfir"
+  ],
+  "event_ids": [
+    3,
+    4,
+    5,
+    59,
+    60,
+    61,
+    16403
+  ],
+  "sources": [
+    "Microsoft-Windows-Bits-Client"
+  ],
+  "target_logs": [
+    "Microsoft-Windows-Bits-Client%4Operational.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "3": "medium",
+    "59": "medium",
+    "16403": "high"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "3": "BITS job created",
+    "4": "BITS job transferred",
+    "5": "BITS job cancelled",
+    "59": "BITS transfer started (URL in data)",
+    "60": "BITS transfer stopped",
+    "61": "BITS transfer error",
+    "16403": "BITS job notification command line set"
+  }
+}

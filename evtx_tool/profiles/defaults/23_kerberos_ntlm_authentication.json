@@ -1,0 +1,47 @@
+{
+  "name": "Kerberos and NTLM Authentication",
+  "description": "Kerberos ticket requests and failures and NTLM credential validation, logged on domain controllers (and 4776 also on member servers for local accounts). Starting point for Kerberoasting, AS-REP roasting, password spraying and pass-the-hash.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "kerberos",
+    "ntlm",
+    "credential-access",
+    "dfir"
+  ],
+  "event_ids": [
+    4768,
+    4769,
+    4770,
+    4771,
+    4772,
+    4773,
+    4776,
+    4777,
+    4740
+  ],
+  "sources": [
+    "Microsoft-Windows-Security-Auditing"
+  ],
+  "target_logs": [
+    "Security.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "4771": "medium",
+    "4776": "low",
+    "4740": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "4768": "Kerberos TGT requested",
+    "4769": "Kerberos service ticket requested",
+    "4770": "Kerberos service ticket renewed",
+    "4771": "Kerberos pre-authentication failed",
+    "4772": "Kerberos TGT request failed",
+    "4773": "Kerberos service ticket request failed",
+    "4776": "Computer attempted to validate an account's credentials (NTLM)",
+    "4777": "Domain controller failed to validate an account's credentials",
+    "4740": "User account locked out"
+  }
+}

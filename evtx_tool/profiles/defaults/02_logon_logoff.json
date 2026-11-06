@@ -1,41 +1,73 @@
 {
   "name": "Logon/Logoff Activity",
-  "description": "Tracks all authentication events including successful/failed logons, logoff, session activity, and explicit credential use. Logon Type field is critical: 2=Interactive, 3=Network, 4=Batch, 5=Service, 7=Unlock, 8=NetworkCleartext, 9=NewCredentials, 10=RemoteInteractive, 11=CachedInteractive.",
-  "version": "1.0",
-  "author": "EventHawk (SANS/Microsoft/Sigma)",
-  "tags": ["authentication", "logon", "dfir", "sans-for508"],
-  "event_ids": [4624, 4625, 4626, 4627, 4634, 4646, 4647, 4648, 4649, 4650, 4651, 4675, 4778, 4779, 4800, 4801, 4802, 4803, 4804, 4820, 4821, 4822, 4823, 4824, 4825],
-  "sources": ["Security"],
-  "target_logs": ["Security.evtx"],
+  "description": "Successful and failed logons, logoffs, explicit-credential logons, session reconnects and disconnects, workstation lock and unlock, and logons denied by policy. Use the Logon type column to tell interactive, network, service and RDP logons apart.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "logon",
+    "authentication",
+    "dfir"
+  ],
+  "event_ids": [
+    4624,
+    4625,
+    4626,
+    4627,
+    4634,
+    4647,
+    4648,
+    4649,
+    4675,
+    4778,
+    4779,
+    4800,
+    4801,
+    4802,
+    4803,
+    4820,
+    4821,
+    4822,
+    4823,
+    4824,
+    4825,
+    4964
+  ],
+  "sources": [
+    "Microsoft-Windows-Security-Auditing"
+  ],
+  "target_logs": [
+    "Security.evtx"
+  ],
   "keywords": [],
   "severity_overrides": {
-    "4625": "warning",
-    "4648": "high",
+    "4625": "medium",
+    "4648": "medium",
     "4649": "high",
-    "4675": "medium"
+    "4964": "medium"
   },
-  "correlation_rules": [
-    {
-      "name": "Brute Force Detection",
-      "description": "5+ failed logons (4625) from same source within 5 minutes",
-      "event_ids": [4625],
-      "threshold": 5,
-      "window_seconds": 300,
-      "group_by": "IpAddress"
-    }
-  ],
+  "correlation_rules": [],
   "event_descriptions": {
-    "4624": "Successful account logon — check LogonType field",
-    "4625": "Failed account logon — check FailureReason and LogonType",
-    "4627": "Group membership enumerated at logon",
-    "4634": "Account logoff",
-    "4647": "User-initiated logoff",
-    "4648": "Logon with explicit credentials (runas/Pass-the-Hash indicator)",
-    "4778": "Session reconnected (RDP/Terminal Services)",
-    "4779": "Session disconnected (RDP/Terminal Services)",
+    "4624": "Account successfully logged on",
+    "4625": "Account failed to log on",
+    "4626": "User/device claims information",
+    "4627": "Group membership information",
+    "4634": "Account logged off",
+    "4647": "User initiated logoff",
+    "4648": "Logon attempted using explicit credentials",
+    "4649": "Replay attack detected",
+    "4675": "SIDs were filtered",
+    "4778": "Session reconnected to a Window Station",
+    "4779": "Session disconnected from a Window Station",
     "4800": "Workstation locked",
     "4801": "Workstation unlocked",
     "4802": "Screen saver invoked",
-    "4803": "Screen saver dismissed"
+    "4803": "Screen saver dismissed",
+    "4820": "Kerberos TGT denied: device does not meet access control restrictions",
+    "4821": "Kerberos service ticket denied: user, device or both do not meet access control restrictions",
+    "4822": "NTLM authentication failed: account is a member of the Protected User group",
+    "4823": "NTLM authentication failed: access control restrictions are required",
+    "4824": "Kerberos preauthentication using DES or RC4 failed: account is a member of the Protected User group",
+    "4825": "User denied access to Remote Desktop: not a member of Remote Desktop Users",
+    "4964": "Special groups assigned to a new logon"
   }
 }

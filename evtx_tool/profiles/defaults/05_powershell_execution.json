@@ -1,39 +1,74 @@
 {
   "name": "PowerShell Execution",
-  "description": "Detects PowerShell execution including script block logging (captures obfuscated/encoded scripts), module logging, and engine lifecycle events. Event 4104 is the most critical — captures full script content even when encoded.",
-  "version": "1.0",
-  "author": "EventHawk (SANS/Microsoft/Sigma)",
-  "tags": ["powershell", "execution", "dfir", "sans-for508"],
-  "event_ids": [400, 403, 500, 501, 600, 800, 4103, 4104, 4105, 4106, 4688, 53504],
+  "description": "PowerShell engine and pipeline events (Windows PowerShell log), module and script-block logging, remoting runspaces and named-pipe listeners (PowerShell/Operational and PowerShell 7). Every process creation (4688) is no longer included; use Process Creation and Termination for those.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "powershell",
+    "execution",
+    "dfir"
+  ],
+  "event_ids": [
+    400,
+    403,
+    500,
+    501,
+    600,
+    800,
+    4100,
+    4103,
+    4104,
+    4105,
+    4106,
+    8193,
+    8194,
+    8197,
+    40961,
+    40962,
+    53504
+  ],
   "sources": [
-    "Security",
-    "Microsoft-Windows-PowerShell",
     "PowerShell"
   ],
   "target_logs": [
-    "Microsoft-Windows-PowerShell%4Operational.evtx",
     "Windows PowerShell.evtx",
-    "Security.evtx"
+    "Microsoft-Windows-PowerShell%4Operational.evtx"
   ],
-  "keywords": ["powershell", "bypass", "encodedcommand", "invoke-expression", "iex", "downloadstring", "webclient", "amsi", "reflection"],
+  "keywords": [
+    "-enc",
+    "-EncodedCommand",
+    "IEX",
+    "Invoke-Expression",
+    "DownloadString",
+    "FromBase64String",
+    "bypass",
+    "-nop",
+    "hidden"
+  ],
   "severity_overrides": {
     "4104": "high",
     "4103": "medium",
-    "400": "low",
-    "600": "medium"
+    "800": "medium",
+    "53504": "medium"
   },
   "correlation_rules": [],
   "event_descriptions": {
-    "400": "Engine state changed to Running — contains HostApplication (calling process)",
+    "400": "Engine state changed to Available (engine started)",
     "403": "Engine state changed to Stopped",
     "500": "Command started",
     "501": "Command stopped",
-    "600": "Provider lifecycle — can detect AMSI bypass providers loaded",
+    "600": "Provider started",
     "800": "Pipeline execution details",
-    "4103": "Module logging — pipeline execution details with full output",
-    "4104": "Script block logging — FULL script content captured (critical: catches Base64/obfuscated)",
-    "4105": "Script block invocation start",
-    "4106": "Script block invocation stop",
-    "53504": "PowerShell transcript started"
+    "4100": "Error message",
+    "4103": "Module logging: pipeline execution",
+    "4104": "Script block logging: script block text",
+    "4105": "Script block invocation started",
+    "4106": "Script block invocation completed",
+    "8193": "Remoting: creating runspace object",
+    "8194": "Remoting: creating runspace pool object",
+    "8197": "Remoting: runspace state changed",
+    "40961": "PowerShell console is starting up",
+    "40962": "PowerShell console is ready for user input",
+    "53504": "PowerShell named pipe IPC listening"
   }
 }

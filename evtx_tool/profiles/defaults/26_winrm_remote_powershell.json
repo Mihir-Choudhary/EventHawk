@@ -1,0 +1,46 @@
+{
+  "name": "WinRM and Remote PowerShell",
+  "description": "WinRM sessions in and out (WinRM/Operational) and PowerShell remoting runspaces. Inbound sessions show on the target (91); outbound connections show on the source (6).",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "winrm",
+    "powershell",
+    "lateral-movement",
+    "dfir"
+  ],
+  "event_ids": [
+    6,
+    91,
+    142,
+    161,
+    169,
+    8193,
+    8194,
+    8197
+  ],
+  "sources": [
+    "Microsoft-Windows-WinRM",
+    "Microsoft-Windows-PowerShell"
+  ],
+  "target_logs": [
+    "Microsoft-Windows-WinRM%4Operational.evtx",
+    "Microsoft-Windows-PowerShell%4Operational.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "91": "medium",
+    "6": "medium"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "6": "WinRM: creating a WSMan session (outbound, destination in data)",
+    "91": "WinRM: session created (inbound)",
+    "142": "WinRM: operation failed",
+    "161": "WinRM: authentication error",
+    "169": "WinRM: user authenticated successfully",
+    "8193": "PowerShell: creating runspace object",
+    "8194": "PowerShell: creating runspace pool object",
+    "8197": "PowerShell: runspace state changed"
+  }
+}

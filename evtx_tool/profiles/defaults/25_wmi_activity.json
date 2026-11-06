@@ -1,0 +1,48 @@
+{
+  "name": "WMI Activity and Persistence",
+  "description": "WMI provider loads, errors and event subscriptions (WMI-Activity/Operational), including permanent event consumers (5861), a known persistence method, and Sysmon WMI filter, consumer and binding events (19-21).",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "wmi",
+    "persistence",
+    "execution",
+    "dfir"
+  ],
+  "event_ids": [
+    5857,
+    5858,
+    5859,
+    5860,
+    5861,
+    19,
+    20,
+    21
+  ],
+  "sources": [
+    "Microsoft-Windows-WMI-Activity",
+    "Microsoft-Windows-Sysmon"
+  ],
+  "target_logs": [
+    "Microsoft-Windows-WMI-Activity%4Operational.evtx",
+    "Microsoft-Windows-Sysmon%4Operational.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "5861": "high",
+    "19": "high",
+    "20": "high",
+    "21": "high"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "5857": "WMI provider started",
+    "5858": "WMI operation error",
+    "5859": "WMI event filter activated",
+    "5860": "WMI temporary event registration",
+    "5861": "WMI permanent event consumer binding",
+    "19": "Sysmon: WMI event filter registered",
+    "20": "Sysmon: WMI event consumer registered",
+    "21": "Sysmon: WMI consumer bound to filter"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "Printing",
+  "description": "Printed documents (PrintService/Operational 307, often off by default), printers added and deleted, printer driver installs and print spooler plug-in load failures (PrintNightmare-style abuse: 316, 808).",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "printing",
+    "exfiltration",
+    "privilege-escalation",
+    "dfir"
+  ],
+  "event_ids": [
+    307,
+    300,
+    301,
+    316,
+    808
+  ],
+  "sources": [
+    "Microsoft-Windows-PrintService"
+  ],
+  "target_logs": [
+    "Microsoft-Windows-PrintService%4Operational.evtx",
+    "Microsoft-Windows-PrintService%4Admin.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {
+    "316": "medium",
+    "808": "high"
+  },
+  "correlation_rules": [],
+  "event_descriptions": {
+    "307": "Document printed",
+    "300": "Printer added",
+    "301": "Printer deleted",
+    "316": "Printer driver added or updated",
+    "808": "Print spooler failed to load a plug-in module"
+  }
+}

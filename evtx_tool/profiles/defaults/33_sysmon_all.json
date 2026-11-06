@@ -1,0 +1,21 @@
+{
+  "name": "Sysmon (All Events)",
+  "description": "Every Sysmon event, whatever its ID. Sysmon logs can be very large.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "sysmon",
+    "dfir"
+  ],
+  "event_ids": [],
+  "sources": [
+    "Microsoft-Windows-Sysmon"
+  ],
+  "target_logs": [
+    "Microsoft-Windows-Sysmon%4Operational.evtx"
+  ],
+  "keywords": [],
+  "severity_overrides": {},
+  "correlation_rules": [],
+  "event_descriptions": {}
+}

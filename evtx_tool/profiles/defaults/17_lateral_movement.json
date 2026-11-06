@@ -1,61 +1,54 @@
 {
   "name": "Lateral Movement Indicators",
-  "description": "Composite profile for detecting lateral movement techniques: Pass-the-Hash (4624 Type 3 with NTLM), Pass-the-Ticket (4768/4769 with anomalous encryption), PSExec/WMI execution patterns, SMB share access, and explicit credential use. Correlate events across multiple logs.",
-  "version": "1.0",
-  "author": "EventHawk (SANS/Microsoft/Sigma)",
-  "tags": ["lateral-movement", "pass-the-hash", "kerberos", "dfir", "sans-for508"],
-  "event_ids": [4624, 4648, 4672, 4697, 4698, 4768, 4769, 4771, 4776, 4777, 5140, 5141, 5142, 5143, 5144, 5145, 7045, 1, 3],
+  "description": "Remote execution and access on the target: logons with explicit credentials, remotely installed services and scheduled tasks, admin-share access, RDP authentication and WinRM sessions. Narrower than before: every logon, every Sysmon process and network event, and Kerberos tickets are left to their own profiles.",
+  "version": "2.0",
+  "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
+  "tags": [
+    "lateral-movement",
+    "remote-execution",
+    "dfir"
+  ],
+  "event_ids": [
+    4648,
+    4697,
+    4698,
+    4702,
+    5140,
+    5145,
+    7045,
+    1149,
+    91
+  ],
   "sources": [
-    "Security",
-    "Microsoft-Windows-Sysmon"
+    "Microsoft-Windows-Security-Auditing",
+    "Service Control Manager",
+    "Microsoft-Windows-TerminalServices-RemoteConnectionManager",
+    "Microsoft-Windows-WinRM"
   ],
   "target_logs": [
     "Security.evtx",
-    "Microsoft-Windows-Sysmon%4Operational.evtx"
+    "System.evtx",
+    "Microsoft-Windows-WinRM%4Operational.evtx"
   ],
-  "keywords": ["psexec", "wmi", "dcom", "impacket", "smbexec", "wmiexec", "atexec", "winrm", "invoke-command", "pass-the-hash", "mimikatz", "sekurlsa"],
+  "keywords": [],
   "severity_overrides": {
-    "4648": "high",
-    "4768": "medium",
-    "4769": "medium",
-    "4776": "medium",
-    "5145": "medium",
+    "4648": "medium",
+    "4697": "high",
     "7045": "high",
-    "4624": "low"
+    "4698": "high",
+    "1149": "medium",
+    "91": "medium"
   },
-  "correlation_rules": [
-    {
-      "name": "Pass-the-Hash Indicator",
-      "description": "4624 Type 3 + NTLM auth + non-machine account from remote IP",
-      "event_ids": [4624],
-      "conditions": {"LogonType": "3", "AuthenticationPackageName": "NTLM"}
-    },
-    {
-      "name": "Kerberoasting",
-      "description": "4769 with RC4 (0x17) encryption type — weak ticket encryption indicates Kerberoasting",
-      "event_ids": [4769],
-      "conditions": {"TicketEncryptionType": "0x17"}
-    },
-    {
-      "name": "Golden Ticket Indicator",
-      "description": "4768 with anomalous encryption or non-DC source",
-      "event_ids": [4768]
-    }
-  ],
+  "correlation_rules": [],
   "event_descriptions": {
-    "4624": "Successful logon — LogonType=3 (Network) + NTLM = Pass-the-Hash candidate. LogonType=9 (NewCredentials) = runas /netonly.",
-    "4648": "Logon with explicit credentials — SubjectUserName, TargetUserName, TargetServerName. Indicates PSExec, WMI, or runas.",
-    "4672": "Special privileges assigned — check for SeTcbPrivilege, SeDebugPrivilege on unexpected accounts",
-    "4697": "Service installed — common PSExec/Impacket persistence mechanism",
-    "4768": "Kerberos TGT requested — check EncryptionType (0x17=RC4 may be golden ticket)",
-    "4769": "Kerberos service ticket requested — TicketEncryptionType 0x17 (RC4) on AES domain = Kerberoasting or silver ticket",
-    "4771": "Kerberos pre-authentication failed — brute force or password spray",
-    "4776": "NTLM authentication — Workstation field shows source. Empty/anomalous = PTH indicator.",
-    "4777": "Domain controller failed to validate credentials",
-    "5140": "Network share accessed — ShareName (C$, ADMIN$ = administrative share access)",
-    "5145": "Network share object access checked — ShareName, RelativeTargetName, AccessMask",
-    "7045": "Service installed — PSExec installs PSEXESVC; Impacket installs random-named services",
-    "1": "Sysmon: Process creation — look for cmd.exe/powershell.exe spawned by unusual parents (wmi, dllhost, svchost)",
-    "3": "Sysmon: Network connection — lateral tool outbound connections"
+    "4648": "Logon attempted using explicit credentials",
+    "4697": "A service was installed in the system",
+    "4698": "Scheduled task created",
+    "4702": "Scheduled task updated",
+    "5140": "Network share object accessed",
+    "5145": "Network share object checked for access",
+    "7045": "A service was installed in the system",
+    "1149": "RCM: RDP user authentication succeeded",
+    "91": "WinRM: session created (inbound)"
   }
 }
