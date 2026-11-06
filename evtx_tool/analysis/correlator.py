@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 def _ts(ts_str: str) -> datetime | None:
     if not ts_str:
         return None
-    s = ts_str.rstrip("Z").split(".")[0][:19]
+    # Both "YYYY-MM-DDTHH:MM:SS" and Juggernaut's stored "YYYY-MM-DD HH:MM:SS".
+    s = ts_str.rstrip("Z").split(".")[0][:19].replace(" ", "T", 1)
     try:
         return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
     except ValueError:

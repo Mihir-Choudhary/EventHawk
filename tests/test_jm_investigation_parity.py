@@ -60,6 +60,16 @@ def main() -> int:
         check("Juggernaut hands the analyser every event Normal Mode has",
               len(jm) == len(norm), f"jm={len(jm):,} normal={len(norm):,}")
 
+        # Codex CK91-5: Juggernaut handed "YYYY-MM-DD HH:MM:SS" and every
+        # correlation time window missed (13 chains vs 0).  A chain count can
+        # be 0 in both modes on a given corpus; the timestamp text cannot lie.
+        def _ts_bag(evs):
+            from collections import Counter
+            return Counter(e.get("timestamp") or "" for e in evs)
+        nb, jb = _ts_bag(norm), _ts_bag(jm)
+        check("Juggernaut hands the analysers Normal Mode's exact timestamp text",
+              nb == jb, f"normal-only {sum((nb - jb).values()):,}, jm-only {sum((jb - nb).values()):,}")
+
         # ── IOC extraction must find the SAME indicators ─────────────────
         ni, ji = extract_iocs(norm), extract_iocs(jm)
         differing = []

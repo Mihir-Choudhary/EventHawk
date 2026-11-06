@@ -6440,11 +6440,18 @@ class _JMAnalysisMaterializeWorker(QThread):
                         ed = _json.loads(r[11]) if r[11] else {}
                     except Exception:
                         ed = {}
+                    # Stored "YYYY-MM-DD HH:MM:SS.ffffff"; the analysers get
+                    # Normal Mode's exact text "YYYY-MM-DDTHH:MM:SS.ffffffZ"
+                    # (Codex CK91-5: the space form made every correlation
+                    # time window miss - 13 chains in Normal, 0 here).
+                    ts = r[3] or ""
+                    if ts and "T" not in ts:
+                        ts = ts.replace(" ", "T", 1) + "Z"
                     events.append({
                         "record_id":   r[0],
                         "event_id":    r[1],
                         "level_name":  r[2] or "",
-                        "timestamp":   r[3] or "",
+                        "timestamp":   ts,
                         "channel":     r[4] or "",
                         "provider":    r[5] or "",
                         "event_source_name": r[6] or "",
