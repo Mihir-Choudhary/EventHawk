@@ -697,6 +697,21 @@ def norm_profile_groups(groups) -> "list[tuple[frozenset, tuple, tuple]]":
     return out
 
 
+def profile_sets(fc: dict) -> "list[list[tuple]]":
+    """Every set of profile groups the event must match, normalised.
+
+    ``profile_groups`` holds the profiles applied last; ``profile_groups_also``
+    the sets a loaded filter already held (a saved filter built from profiles,
+    then more profiles applied: both restrict, Codex CK7E-1).  The event must
+    match one group of EVERY set.
+    """
+    out = []
+    for groups in [fc.get("profile_groups")] + list(fc.get("profile_groups_also") or []):
+        if groups:
+            out.append(norm_profile_groups(groups))
+    return out
+
+
 def profile_groups_match(event_id, provider: str, channel: str, groups) -> bool:
     """True if the event matches one normalised group (see norm_profile_groups)."""
     prov = (provider or "").lower()
@@ -716,10 +731,9 @@ def passes_filter(event: dict, fc: dict) -> bool:
     """Return True if event passes all criteria in filter config fc."""
 
     # Applied profiles: one of them must match as a whole.
-    if fc.get("profile_groups"):
+    for _groups in profile_sets(fc):
         if not profile_groups_match(event.get("event_id"), event.get("provider", ""),
-                                    event.get("channel", ""),
-                                    norm_profile_groups(fc["profile_groups"])):
+                                    event.get("channel", ""), _groups):
             return False
 
     # Event ID include list
@@ -1103,8 +1117,7 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
     checks: list[Callable[[dict], bool]] = []
 
     # Applied profiles: one of them must match as a whole.
-    if fc.get("profile_groups"):
-        _groups = norm_profile_groups(fc["profile_groups"])
+    for _groups in profile_sets(fc):
         checks.append(lambda ev, _g=_groups: profile_groups_match(
             ev.get("event_id"), ev.get("provider", ""), ev.get("channel", ""), _g))
 
@@ -1324,6 +1337,13 @@ def build_combined_filter(base_filter: dict, profiles: list[dict]) -> dict:
             case_sensitive = True
 
     combined = base_filter.copy()
+    # Profiles the base filter already held (a loaded saved filter) keep
+    # restricting: they move to profile_groups_also (Codex CK7E-1).
+    also = list(base_filter.get("profile_groups_also") or [])
+    if base_filter.get("profile_groups"):
+        also.append(base_filter["profile_groups"])
+    if also:
+        combined["profile_groups_also"] = also
     combined["profile_groups"] = groups
 
     # Extended fields — only set if not already constrained by base filter

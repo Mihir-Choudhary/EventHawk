@@ -496,10 +496,10 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
         return val if cs else val.lower()
 
     # ── applied profiles: one must match as a whole (core.filters) ───────
-    if fc.get("profile_groups"):
-        from evtx_tool.core.filters import norm_profile_groups
+    from evtx_tool.core.filters import profile_sets
+    for _set in profile_sets(fc):        # one group of every set (core.filters)
         alts: list[str] = []
-        for ids, srcs, chans in norm_profile_groups(fc["profile_groups"]):
+        for ids, srcs, chans in _set:
             parts: list[str] = []
             if ids:
                 parts.append(f"event_id IN ({', '.join('?' * len(ids))})")

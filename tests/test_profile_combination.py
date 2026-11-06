@@ -127,6 +127,31 @@ def main() -> int:
             check(f"{label}: {path}", got == want,
                   f"{len(got)} vs {len(want)} expected; extra {len(got - want)}, missing {len(want - got)}")
 
+    # Codex CK7E-1: a filter that already holds profiles (a CLI --save-filter
+    # file, loaded with --filter-file) plus another profile: the saved profile
+    # restriction must still apply (AND), not be replaced.
+    import json as _json
+    from evtx_tool.core.filters import filter_from_dict
+    saved = filter_from_dict(_json.loads(_json.dumps(build_combined_filter(empty_filter(), [PROC]))))
+    for label, base, add, oracle in (
+            ("saved Process filter + Boot profile", saved, [BOOT], lambda e: one(e, PROC) and one(e, BOOT)),
+            ("saved Process filter + Process profile again", saved, [PROC], lambda e: one(e, PROC)),
+            ("saved Process filter + saved again + Chan", build_combined_filter(saved, [PROC]), [CHAN],
+             lambda e: one(e, PROC) and one(e, CHAN))):
+        fc = build_combined_filter(base, add)
+        want = {e["record_id"] for e in evs if oracle(e)}
+        for path, got in evaluate(fc).items():
+            check(f"{label}: {path}", got == want,
+                  f"{len(got)} vs {len(want)} expected; extra {len(got - want)}, missing {len(want - got)}")
+    # A non-vacuous intersection: one saved profile AND another that overlaps it.
+    P12 = {"event_ids": [1, 12], "sources": ["Microsoft-Windows-Sysmon"]}
+    P13 = {"event_ids": [12, 13], "sources": ["Microsoft-Windows-Sysmon"]}
+    fc = build_combined_filter(build_combined_filter(empty_filter(), [P12]), [P13])
+    want = {e["record_id"] for e in evs if one(e, P12) and one(e, P13)}
+    for path, got in evaluate(fc).items():
+        check(f"saved (1, 12) + profile (12, 13) keeps only 12: {path}", got == want and len(want) == 1,
+              f"{len(got)} vs {len(want)} expected")
+
     proxy.set_advanced_filter(None)
     ok = sum(1 for _n, c, _d in CHECKS if c)
     print(f"\n{'=' * 62}\n{ok}/{len(CHECKS)} checks passed")

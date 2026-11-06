@@ -1279,8 +1279,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                     pass
             return out
         self._adv_eid_list = _ints("event_ids")
-        from evtx_tool.core.filters import norm_profile_groups
-        self._adv_profile_groups = norm_profile_groups(cfg.get("profile_groups"))
+        from evtx_tool.core.filters import profile_sets
+        self._adv_profile_groups = profile_sets(cfg)          # one group of each set must match
         self._adv_eid_list_exclude = _ints("exclude_event_ids")
         self._adv_task_cats = _ints("task_categories")
 
@@ -1893,9 +1893,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 _eid = int(ev.get("event_id"))
             except (TypeError, ValueError):
                 _eid = None
-            if not profile_groups_match(_eid, ev.get("provider", ""), ev.get("channel", ""),
-                                        self._adv_profile_groups):
-                return False
+            for _groups in self._adv_profile_groups:
+                if not profile_groups_match(_eid, ev.get("provider", ""), ev.get("channel", ""), _groups):
+                    return False
 
         # ── Source (provider + channel) — pre-lowered sets ──────────────────
         if self._adv_sources:
