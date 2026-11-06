@@ -42,7 +42,7 @@ A connect logged deep inside a sleep contradicts itself: no duration.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # A window wider than this is not a usable moment for subtracting downtime.
 _MAX_WINDOW_SECS = 60.0
@@ -153,14 +153,29 @@ def classify(ev) -> "tuple | None":
     return None
 
 
-def fmt_secs(total: float) -> str:
-    h, rem = divmod(int(total), 3600)
-    m, s = divmod(rem, 60)
-    return f"{h}h {m:02d}m {s:02d}s" if h else f"{m}m {s:02d}s" if m else f"{s}s"
+def _frac(us: int) -> str:
+    """".25" for 250,000 microseconds, "" for none: exact, trailing zeros dropped."""
+    return f".{us:06d}".rstrip("0") if us else ""
+
+
+def fmt_secs(total) -> str:
+    """A duration (seconds or a timedelta), exact to the microsecond.  The
+    fraction shows only when there is one, so whole seconds read as before.
+    Never rounded: Notes add these parts up as an equation (R30)."""
+    if isinstance(total, timedelta):
+        us = (total.days * 86400 + total.seconds) * 1_000_000 + total.microseconds
+    else:
+        us = round(total * 1_000_000)
+    sign, us = ("-", -us) if us < 0 else ("", us)
+    whole, frac = divmod(us, 1_000_000)
+    h, rem = divmod(whole, 3600)
+    m, sec = divmod(rem, 60)
+    f = _frac(frac)
+    return sign + (f"{h}h {m:02d}m {sec:02d}{f}s" if h else f"{m}m {sec:02d}{f}s" if m else f"{sec}{f}s")
 
 
 def _ts(d: datetime) -> str:
-    return d.strftime("%Y-%m-%d %H:%M:%S") + " UTC"
+    return d.strftime("%Y-%m-%d %H:%M:%S") + _frac(d.microsecond) + " UTC"
 
 
 class HostPower:
@@ -308,32 +323,34 @@ class HostPower:
                               q[4] if q[4] == p[4] else "down")
             else:
                 merged.append(p)
-        total = (e - s).total_seconds()
-        down = sum((b - a).total_seconds() for a, b, *_ in merged)
+        # timedelta arithmetic: exact microseconds, so the Notes' parts add up
+        # to the span exactly (RT6-2: whole-second parts were 1 s short).
+        total = e - s
+        down = sum((b - a for a, b, *_ in merged), timedelta(0))
         connected = total - down
-        if connected <= 0:
+        if connected <= timedelta(0):
             return {"kind": "restarted",
                     "note": "The host was down or asleep for the whole session: no duration."}
         what = {"down": ("the shutdown", "the restart", "down"), "asleep": ("the sleep", "waking", "asleep"),
                 "asleep_end": ("the sleep", "waking", "asleep until the disconnect was logged")}
-        parts = [f"{fmt_secs((merged[0][0] - s).total_seconds())} before {what[merged[0][4]][0]} "
+        parts = [f"{fmt_secs(merged[0][0] - s)} before {what[merged[0][4]][0]} "
                  f"(until then at the latest)"]
         for i, (a, b, _sa, _sb, k) in enumerate(merged):
-            parts.append(f"{fmt_secs((b - a).total_seconds())} {what[k][2]} (subtracted)")
+            parts.append(f"{fmt_secs(b - a)} {what[k][2]} (subtracted)")
             if i + 1 < len(merged):
-                parts.append(f"{fmt_secs((merged[i + 1][0] - b).total_seconds())} between them "
+                parts.append(f"{fmt_secs(merged[i + 1][0] - b)} between them "
                              f"(not proven: no reconnect was logged)")
         last = merged[-1][4]
         if last == "asleep_end":
             parts[-1] += (f"; the disconnect was logged at {_ts(e)} while the host was asleep or waking, "
                           f"so the connection ended by the sleep at the latest")
         else:
-            parts.append(f"{fmt_secs((e - merged[-1][1]).total_seconds())} after {what[last][1]} "
+            parts.append(f"{fmt_secs(e - merged[-1][1])} after {what[last][1]} "
                          f"(not proven: no reconnect was logged after {what[last][1]})")
         downs = "; ".join(f"{'down' if k == 'down' else 'asleep'} {_ts(a)} ({sa}) to {_ts(b)} ({sb})"
                           for a, b, sa, sb, k in merged if k != "asleep_end")
         downs += "".join(f"{'; ' if downs else ''}asleep from {_ts(a)} ({sa}) until the disconnect was logged"
                          for a, b, sa, sb, k in merged if k == "asleep_end")
-        return {"kind": "subtracted", "seconds": connected, "downtime": down,
+        return {"kind": "subtracted", "seconds": connected.total_seconds(), "downtime": down.total_seconds(),
                 "note": (f"{fmt_secs(down)} subtracted: host was {downs}. "
                          f"Span {fmt_secs(total)} = " + " + ".join(parts) + ".")}

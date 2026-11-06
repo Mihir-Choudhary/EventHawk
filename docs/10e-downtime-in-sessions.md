@@ -27,7 +27,9 @@ connected in it. Copies of the same log count each event once.
   down or asleep with its times and the events that prove them, and the time
   after the restart or wake. That last part is **not proven**: no new connection
   was logged after the computer came back, so EventHawk cannot show that the same
-  connection resumed.
+  connection resumed. Every duration here is exact to the microsecond the log
+  records (a fraction shows only when there is one), so the parts in Notes add
+  up exactly to the span and to the duration shown; nothing is rounded.
 - **A disconnect logged while the computer was asleep or waking** (Windows often
   logs the lost connection when it wakes): the connection ended by the sleep at
   the latest, so the time asleep is not counted, and Notes say so.
