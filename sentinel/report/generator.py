@@ -87,7 +87,9 @@ def generate_csv_report(
     events_to_export.sort(key=lambda e: (e.tier, -e.composite))
 
     with open(output_path, "w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        # Formula-safe like every EventHawk CSV (user rule; Codex CK91-1).
+        from evtx_tool.output.exporters import SafeDictWriter
+        writer = SafeDictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for ev in events_to_export:
             raw = ev.raw
