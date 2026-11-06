@@ -1,6 +1,6 @@
 {
   "name": "Registry Modifications",
-  "description": "Registry value changes from Security auditing (4657), object-access events on registry keys, and Sysmon registry create/delete, value set and rename (12/13/14). Sysmon registry events can number in the millions.",
+  "description": "Registry value changes from Security auditing (4657), object-access events, and Sysmon registry create/delete, value set and rename (12/13/14). The Security object-access events (4656, 4658-4660, 4663, 4670) cover files and other objects as well as registry keys: check their Object Type. Sysmon registry events can number in the millions.",
   "version": "2.0",
   "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
   "tags": [

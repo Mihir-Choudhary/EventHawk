@@ -69,7 +69,7 @@ never mixes in unrelated logs. The full ID list and a description of every ID ar
 | 27 | **Active Directory Changes** | 5136, 5137, 5138, 5139, 5141, 4662, 4706, 4707 … (14 IDs) | Directory object changes, DCSync, trusts (domain controllers) |
 | 28 | **Driver and Code Integrity** | 3001, 3002, 3003, 3004, 3033, 3034, 3076, 3077 … (10 IDs) | Unsigned or blocked drivers and images, WDAC |
 | 29 | **BITS Jobs** | 3, 4, 5, 59, 60, 61, 16403 | BITS downloads and persistence, with URLs |
-| 30 | **AppLocker and WDAC Blocks** | 8003, 8004, 8006, 8007, 8021, 8022, 8024, 8025 … (10 IDs) | AppLocker and WDAC blocks and audits |
+| 30 | **AppLocker and WDAC Blocks** | 8003, 8004, 8006, 8007, 8021, 8022, 8024, 8025 … (12 IDs) | AppLocker and WDAC blocks and audits |
 | 31 | **WiFi Connections** | 8000, 8001, 8002, 8003, 11000, 11001, 11002, 11004 … (11 IDs) | Wireless networks joined and left (SSID) |
 | 32 | **Printing** | 307, 300, 301, 316, 808 | Printed documents, printer drivers, spooler abuse |
 | 33 | **Sysmon (All Events)** | all | Every Sysmon event |

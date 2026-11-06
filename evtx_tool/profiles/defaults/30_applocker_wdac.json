@@ -1,6 +1,6 @@
 {
   "name": "AppLocker and WDAC Blocks",
-  "description": "Application control: AppLocker executables, DLLs, scripts, installers and packaged apps that were blocked or would have been blocked (audit), and Windows Defender Application Control audit and block events.",
+  "description": "Application control: AppLocker executables, DLLs, scripts, installers and packaged apps that were blocked or would have been blocked (audit), and Windows Defender Application Control (App Control) audit and block events for images (CodeIntegrity 3076/3077) and for scripts and MSI files (AppLocker log 8028/8029).",
   "version": "2.0",
   "author": "EventHawk (Microsoft documentation, SANS, Sigma)",
   "tags": [
@@ -18,6 +18,8 @@
     8022,
     8024,
     8025,
+    8028,
+    8029,
     3076,
     3077
   ],
@@ -34,7 +36,8 @@
   "severity_overrides": {
     "8004": "high",
     "8007": "high",
-    "3077": "high"
+    "3077": "high",
+    "8029": "high"
   },
   "correlation_rules": [],
   "event_descriptions": {
@@ -46,6 +49,8 @@
     "8022": "AppLocker: packaged app blocked",
     "8024": "AppLocker: packaged app installation would have been blocked (audit)",
     "8025": "AppLocker: packaged app installation blocked",
+    "8028": "WDAC: script or MSI would have been blocked (audit mode)",
+    "8029": "WDAC: script or MSI blocked (enforced policy)",
     "3076": "WDAC: image would have been blocked (audit mode)",
     "3077": "WDAC: image blocked"
   }

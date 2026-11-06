@@ -44,6 +44,11 @@ def main() -> int:
     check("no source is a bare log name (Security, System, ...)", not broad, f"{len(broad)}: {broad[:4]}")
     dup = [f for f, p in profiles if len(set(p["event_ids"])) != len(p["event_ids"])]
     check("no profile lists an Event ID twice", not dup, str(dup))
+    by_name = {p["name"]: p for _, p in profiles}
+    ap = by_name.get("AppLocker and WDAC Blocks")
+    if ap is not None:                    # the shipped defaults (not an old folder given as argument)
+        check("AppLocker and WDAC Blocks covers WDAC script/MSI audit and block 8028/8029 (Codex CK7E-2)",
+              {8028, 8029} <= set(ap["event_ids"]), str(ap["event_ids"]))
     n = sum(ok for _, ok in CHECKS)
     print(f"{n}/{len(CHECKS)} checks passed")
     return 0 if n == len(CHECKS) else 1
