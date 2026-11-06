@@ -526,6 +526,9 @@ class ColumnFilterPopup(QDialog):
         root.addLayout(btn_row)
 
         self._checkboxes: list = []
+        # Checkboxes the current full-dataset search added (flat list only);
+        # they belong to that search and go when the term changes (CK91-4).
+        self._search_added: list = []
         if self._is_date_tree:
             self._build_date_tree(root)
         else:
@@ -1125,11 +1128,15 @@ class ColumnFilterPopup(QDialog):
            is queried once the user pauses — surfacing values outside the
            initial top-1000.
         """
-        self._filter_list(text)
         if not text.strip():
-            # Back to the list as it opened: its own notice, if any.
-            self._lbl_partial.setText(self._partial_text)
-            self._lbl_partial.setVisible(bool(self._partial_text))
+            # Back to the list as it opened (Codex CK91-4: a cleared search
+            # left its added values under the "1,000 most common" notice).
+            self._drop_search_added()
+        self._filter_list(text)
+        # Until a search reports, the list holds the loaded values only: the
+        # list's own notice, never the previous search's count.
+        self._lbl_partial.setText(self._partial_text)
+        self._lbl_partial.setVisible(bool(self._partial_text))
         if not self._search_provider:
             return
         term = text.strip()
@@ -1170,24 +1177,31 @@ class ColumnFilterPopup(QDialog):
         """
         if self._inp_search.text().strip() != term:
             return
-        if not values:
+        values = values or {}
+        if self._is_date_tree:
+            # Dates are never capped: every match is in the tree.
+            self._lbl_partial.hide()
+            if values:
+                self._merge_search_results_tree(values)
             return
+        # This search's matches replace the previous search's (Codex CK91-4:
+        # they piled up, 5,001-5,952 shown under "5,000 of 7,000", and the
+        # notice outlived the search).
+        self._drop_search_added()
         # The search queries EVERY value.  Each match becomes a checkbox, so a
         # broad term (one digit over 200,000 record numbers) could not be drawn
-        # in reasonable time: add the value typed (exact match) plus the most
-        # common other matches up to _SEARCH_SHOW, and say how many matched.
+        # in reasonable time: show at most _SEARCH_SHOW matches - the value
+        # typed (exact match), the loaded ones that match (they are shown
+        # anyway), then the most common others - and say how many matched.
         _matched = len(values)
-        if _matched > self._SEARCH_SHOW and not self._is_date_tree:
+        if _matched > self._SEARCH_SHOW:
             low = term.lower()
-            exact = {k: v for k, v in values.items() if str(k).lower() == low}
-            rest = sorted(((k, v) for k, v in values.items() if k not in exact), key=lambda kv: -kv[1])
-            values = dict(list(exact.items()) + rest[:self._SEARCH_SHOW - len(exact)])
-            self._lbl_partial.setText(
-                f"{len(values):,} of {_matched:,} matching values shown; type more to narrow the search.")
-            self._lbl_partial.show()
-        if self._is_date_tree:
-            self._merge_search_results_tree(values)
-            return
+            loaded = {chk.property("filter_value") for chk in self._checkboxes}
+            first = {k: v for k, v in values.items()
+                     if str(k).lower() == low or str(k) in loaded}
+            rest = sorted(((k, v) for k, v in values.items() if k not in first),
+                          key=lambda kv: (-kv[1], str(kv[0])))
+            values = dict(list(first.items()) + rest[:max(0, self._SEARCH_SHOW - len(first))])
         existing = {chk.property("filter_value") for chk in self._checkboxes}
         added = False
         for val, count in sorted(values.items(), key=lambda kv: (-kv[1], str(kv[0]))):
@@ -1199,16 +1213,34 @@ class ColumnFilterPopup(QDialog):
             chk.setChecked(False)
             chk.setProperty("filter_value", sval)
             self._checkboxes.append(chk)
+            self._search_added.append(chk)
             # Insert before the trailing stretch item added in _build_ui.
             self._list_layout.insertWidget(self._list_layout.count() - 1, chk)
             existing.add(sval)
             added = True
-        if added:
-            # Re-apply visibility + auto-check so a newly-merged exact match
-            # becomes checked, ready for the user to click OK.  _apply() keys
-            # off the LIVE search text (not a merge flag) to decide include vs
-            # exclude, so nothing extra needs to be recorded here.
-            self._filter_list(self._inp_search.text())
+        # Re-apply visibility + auto-check so a newly-merged exact match
+        # becomes checked, ready for the user to click OK.  _apply() keys
+        # off the LIVE search text (not a merge flag) to decide include vs
+        # exclude, so nothing extra needs to be recorded here.
+        self._filter_list(self._inp_search.text())
+        shown = sum(1 for chk in self._checkboxes if not chk.isHidden())
+        if _matched > shown:
+            self._lbl_partial.setText(
+                f"{shown:,} of {_matched:,} matching values shown; type more to narrow the search.")
+            self._lbl_partial.show()
+        else:
+            self._lbl_partial.hide()          # every match is shown
+
+    def _drop_search_added(self) -> None:
+        """Remove the checkboxes the previous full-dataset search added."""
+        if not self._search_added:
+            return
+        gone = set(map(id, self._search_added))
+        self._checkboxes[:] = [c for c in self._checkboxes if id(c) not in gone]
+        for chk in self._search_added:
+            self._list_layout.removeWidget(chk)
+            chk.deleteLater()
+        self._search_added = []
 
     def _merge_search_results_tree(self, values: dict) -> None:
         """Merge full-dataset search hits into the date tree.
