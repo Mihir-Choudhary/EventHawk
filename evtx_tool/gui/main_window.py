@@ -1355,7 +1355,12 @@ class ColumnFilterPopup(QDialog):
             self.filterApplied.emit(self._col, "exclude", unchecked)
             self.accept()
             return
-        if total == 0 or not unchecked:
+        # During a search the flat list holds only the matches, so "every
+        # value ticked" means "these values", never "no filter" (Codex CK88-1:
+        # All + OK on "1" showed all 14,001 events, not the 10,000 chosen).
+        # The date tree lists every date, so all ticked there is still clear.
+        searching = bool(self._inp_search.text().strip()) and not self._is_date_tree
+        if total == 0 or (not unchecked and not searching):
             # Empty popup, or every value still checked → no filter on this column
             self.filterApplied.emit(self._col, "clear", [])
         elif not checked:
