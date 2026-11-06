@@ -401,32 +401,36 @@ def export_pdf(
                                 color=rl_colors.Color(*_C_HEADER)))
         story.append(Spacer(1, 0.2*cm))
 
-        ioc_sections = [
-            ("IPv4 Addresses",   "ipv4"),
-            ("SHA256 Hashes",    "sha256"),
-            ("MD5 Hashes",       "md5"),
-            ("Usernames",        "users"),
-            ("Computers",        "computers"),
-            ("Processes",        "processes"),
-            ("Domains",          "domains"),
-        ]
-        # Every value, whole (it listed 20-30 per kind and cut each at 80
-        # characters with no marker); long values wrap.
-        for label, key in ioc_sections:
-            vals = iocs.get(key, [])
-            if not vals:
+        # Every category the extractor returns, every value, whole (Codex
+        # CK91-2/CK91-3).  It listed 7 of the 18 categories, and printed each
+        # extract_iocs() entry - a dict - whole as the "value"; inside a table
+        # row a long entry or value was taller than a page (LayoutError).
+        # Each value is now its own Paragraph: long text wraps and splits
+        # across pages.  Order and names as in the IOC tab; an unknown list
+        # category still appears, under its key.
+        ioc_labels = {
+            "ipv4": "IPv4", "ipv6": "IPv6", "domains": "Domains", "urls": "URLs",
+            "sha256": "SHA-256", "sha1": "SHA-1", "md5": "MD5",
+            "processes": "Processes", "commandlines": "CmdLines",
+            "registry": "Registry", "filepaths": "Paths", "services": "Services",
+            "tasks": "Tasks", "named_pipes": "Named Pipes", "shares": "Shares",
+            "dlls": "DLLs", "users": "Users", "computers": "Computers",
+        }
+        s_ioc = (ParagraphStyle("IocA", parent=s_mono, backColor=colors.Color(0.05, 0.08, 0.12),
+                        borderPadding=(2, 4, 2, 4), spaceAfter=2),
+                 ParagraphStyle("IocB", parent=s_mono, backColor=colors.Color(0.08, 0.11, 0.16),
+                        borderPadding=(2, 4, 2, 4), spaceAfter=2))
+        for key in list(ioc_labels) + [k for k in iocs if k not in ioc_labels]:
+            vals = iocs.get(key)
+            if not isinstance(vals, list) or not vals:
                 continue
-            story.append(Paragraph(f"{label} ({len(vals)} total)", s_h2))
-            ioc_data = [[Paragraph(_x(v), s_mono)] for v in vals]
-            ioc_table = Table(ioc_data, colWidths=[17*cm])
-            ioc_table.setStyle(TableStyle([
-                ("ROWBACKGROUNDS", (0,0), (-1,-1), [rl_colors.Color(0.05,0.08,0.12),
-                                                     rl_colors.Color(0.08,0.11,0.16)]),
-                ("TOPPADDING",  (0,0), (-1,-1), 3),
-                ("BOTTOMPADDING",(0,0),(-1,-1),3),
-                ("LEFTPADDING", (0,0), (-1,-1), 8),
-            ]))
-            story.append(ioc_table)
+            story.append(Paragraph(f"{_x(ioc_labels.get(key, key))} ({len(vals):,} total)", s_h2))
+            for i, v in enumerate(vals):
+                val, cnt = (v.get("value"), v.get("count")) if isinstance(v, dict) else (v, None)
+                txt = _x(val)
+                if cnt is not None:
+                    txt += f'  <font color="#8a9bb0">(count {_x(cnt)})</font>'
+                story.append(Paragraph(txt, s_ioc[i % 2]))
             story.append(Spacer(1, 0.2*cm))
 
         story.append(PageBreak())
