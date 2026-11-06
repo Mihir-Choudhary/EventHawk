@@ -501,7 +501,9 @@ class EventTableModel(QAbstractTableModel):
         if col == COL_COMPUTER:
             return ev.get("computer", "")
         if col == COL_CHANNEL:
-            ch = ev.get("channel", "")
+            # A record with no Channel is stored as None (RT6-1): an empty
+            # cell, as Juggernaut's _v shows it, never an exception mid-paint.
+            ch = ev.get("channel") or ""
             return ch.removeprefix("Microsoft-Windows-")
         if col == COL_USER:
             return ev.get("user_id", "")
@@ -652,13 +654,13 @@ class EventTableModel(QAbstractTableModel):
     _SORT_KEY_FUNCS = {
         0: lambda ev: 0,  # row number — identity order
         1: lambda ev: ev.get("event_id", 0),
-        2: lambda ev: ev.get("level_name", ""),
+        2: lambda ev: ev.get("level_name") or "",       # None: a missing field
         3: lambda ev: ev.get("timestamp", ""),
-        4: lambda ev: ev.get("computer", ""),
-        5: lambda ev: ev.get("channel", ""),
+        4: lambda ev: ev.get("computer") or "",
+        5: lambda ev: ev.get("channel") or "",
         6: lambda ev: ev.get("user_id", "") or "",
         7: lambda ev: (ev.get("attack_tags") or [{}])[0].get("tid", "") if ev.get("attack_tags") else "",
-        8: lambda ev: _os.path.basename(ev.get("source_file", "")),
+        8: lambda ev: _os.path.basename(ev.get("source_file") or ""),
         20: lambda ev: ev.get("record_id", 0),   # Record Number — numeric
         22: lambda ev: (ev.get("event_record_id") is None, ev.get("event_record_id") or 0),
         # ── Extended columns ──────────────────────────────────────────────

@@ -1170,7 +1170,7 @@ def export_html(
         )
 
         # ── Filter toolbar ─────────────────────────────────────────────
-        levels_set   = sorted(set(ev.get('level_name', 'Information') for ev in events))
+        levels_set   = sorted(set(ev.get('level_name', 'Information') or '' for ev in events))
         channels_set = sorted(set((ev.get('channel', '') or '')[:40] for ev in events if ev.get('channel')))
         comps_set    = sorted(set((ev.get('computer', '') or '')[:30] for ev in events if ev.get('computer')))
         eids_set     = sorted(set(str(ev.get('event_id', '')) for ev in events))
