@@ -43,12 +43,20 @@ def main() -> int:
     type(w)._active_table = property(lambda self: SimpleNamespace(model=lambda: front["model"]))
     w._hw_model = SimpleNamespace(_full_table=table)
 
-    front["model"] = SimpleNamespace(_fixed_where_sql="source_file = ?", _fixed_params=["a.evtx"])
+    front["model"] = SimpleNamespace(_full_table=table, _fixed_where_sql="source_file = ?", _fixed_params=["a.evtx"])
     w._on_identify_missing_record_ids()
     secs = got.get("sections", [])
     check("Juggernaut, file tab a.evtx: only that file is analysed",
           len(secs) == 1 and "a.evtx" in secs[0] and "b.evtx" not in "".join(secs), str(secs)[:200])
-    front["model"] = SimpleNamespace(_fixed_where_sql="1=1", _fixed_params=[])
+    # Codex C3-R1: an Around tab (a fixed time/host filter on the same table)
+    # is its own scope too: here the window holds a.evtx records 1 and 2 only.
+    front["model"] = SimpleNamespace(_full_table=table, _fixed_where_sql="record_id BETWEEN ? AND ?",
+                                     _fixed_params=[1, 2])
+    w._on_identify_missing_record_ids()
+    secs = got.get("sections", [])
+    check("Juggernaut, an Around tab: only the files and records in its window",
+          len(secs) == 1 and "a.evtx" in secs[0] and "Events: 2" in secs[0], str(secs)[:200])
+    front["model"] = w._hw_model
     w._on_identify_missing_record_ids()
     secs = got.get("sections", [])
     check("Juggernaut, All Events: every file", len(secs) == 2, str(len(secs)))

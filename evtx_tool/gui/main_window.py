@@ -17662,21 +17662,35 @@ class MainWindow(QMainWindow):
             if full_table is None or len(full_table) == 0:
                 QMessageBox.information(self, "Missing Record IDs", "No events loaded.")
                 return
-            # A file tab in front: that file only, as in Normal mode, where the
-            # tab's own events are read (Codex C3-2: Juggernaut read every file).
-            _scope = None
+            # The tab in front is the scope, as in Normal mode (which reads the
+            # tab's own events): a file tab or an Around tab is the table under
+            # that tab's fixed filter (source file; time window and hosts),
+            # unaffected by its view filters, so they cannot hide gaps.  All
+            # Events is every loaded file.  Juggernaut read every file from any
+            # tab (Codex C3-2, C3-R1).
+            _where, _params, _tbl = None, [], full_table
             try:
                 _m = self._active_table.model()
-                if getattr(_m, "_fixed_where_sql", "") == "source_file = ?" and getattr(_m, "_fixed_params", None):
-                    _scope = _m._fixed_params[0]
+                if _m is not None and _m is not self._hw_model and getattr(_m, "_full_table", None) is not None:
+                    _tbl = _m._full_table
+                    if getattr(_m, "_fixed_where_sql", "1=1") not in ("", "1=1"):
+                        _where, _params = _m._fixed_where_sql, list(getattr(_m, "_fixed_params", []) or [])
             except Exception:
-                _scope = None
+                _where, _params, _tbl = None, [], full_table
             try:
-                rids = full_table.column(field).to_pylist()
-                srcs = full_table.column("source_file").to_pylist()
-                for rid, src in zip(rids, srcs, strict=True):   # equal-length by construction
-                    if _scope is not None and src != _scope:
-                        continue
+                if _where:
+                    import duckdb as _duckdb
+                    _con = _duckdb.connect()
+                    try:
+                        _con.register("mid_scope", _tbl)
+                        _pairs = _con.execute(f"SELECT {field}, source_file FROM mid_scope WHERE {_where}",
+                                              _params).fetchall()
+                    finally:
+                        _con.close()
+                else:
+                    _pairs = zip(_tbl.column(field).to_pylist(), _tbl.column("source_file").to_pylist(),
+                                 strict=True)   # equal-length by construction
+                for rid, src in _pairs:
                     if rid is not None:
                         by_file[src or "<unknown>"].append(int(rid))
             except Exception as exc:
