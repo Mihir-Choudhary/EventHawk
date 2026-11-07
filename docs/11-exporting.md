@@ -111,7 +111,7 @@ The PDF report includes:
 
 **Best for:** Threat intelligence sharing with other organisations or security tools that support the STIX standard.
 
-Exports all extracted IOCs as a [STIX 2.1](https://oasis-open.github.io/cti-documentation/stix/intro) bundle. IOC types map to STIX objects:
+Exports the extracted IOCs as a [STIX 2.1](https://oasis-open.github.io/cti-documentation/stix/intro) bundle. IOC types map to STIX objects:
 
 | EventHawk IOC type | STIX Object |
 |---|---|
@@ -120,7 +120,12 @@ Exports all extracted IOCs as a [STIX 2.1](https://oasis-open.github.io/cti-docu
 | File hash | `file` with hashes |
 | File path | `file` with name/path |
 | URL | `url` |
-| User account | `user-account` |
+| User account | `user-account` (account login) |
+| Registry key | `windows-registry-key` |
+| Command line | `process` command line |
+| Process image, DLL | `process` image name, `file` name |
+
+STIX 2.1 has no standard object for named pipes, services, scheduled tasks or shares: they are not in the STIX file, and the export message says how many of each were left out (use CSV, MISP or the bulk copy for them). Timestamps have millisecond precision, as STIX 2.1 requires. MISP attribute timestamps are Unix epoch seconds.
 
 ### OpenIOC
 

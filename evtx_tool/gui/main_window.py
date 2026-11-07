@@ -15601,8 +15601,14 @@ class MainWindow(QMainWindow):
             )
 
             if is_stix:
-                count = export_stix(self._iocs, path)
+                _skipped: dict = {}
+                count = export_stix(self._iocs, path, skipped=_skipped)
                 msg   = f"Exported {count:,} STIX indicator objects to:\n{path}"
+                if _skipped:
+                    # No standard STIX 2.1 object for these: say so (Codex C4-4).
+                    msg += ("\n\nNot in the STIX file (STIX 2.1 has no standard object for them): "
+                            + ", ".join(f"{k.replace('_', ' ')} {v:,}" for k, v in sorted(_skipped.items()))
+                            + ". Use CSV, MISP or the bulk copy for these.")
 
             elif is_misp:
                 count = export_misp(self._iocs, path)

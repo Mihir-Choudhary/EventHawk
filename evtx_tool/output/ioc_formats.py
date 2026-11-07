@@ -30,7 +30,30 @@ def _get_value(entry: object) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """UTC now with millisecond precision: STIX 2.1 requires at least that for
+    created / modified (Codex C4-1)."""
+    d = datetime.now(timezone.utc)
+    return d.strftime("%Y-%m-%dT%H:%M:%S.") + f"{d.microsecond // 1000:03d}Z"
+
+
+def _yara_str(s: str) -> str:
+    """A YARA text-string body: backslash, quote, newline, tab and other
+    control characters escaped, so a literal never spans lines (Codex C4-3)."""
+    out = []
+    for ch in s:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ord(ch) < 0x20 or ord(ch) == 0x7f:
+            out.append(f"\\x{ord(ch):02x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 # ── STIX 2.1 ─────────────────────────────────────────────────────────────────
@@ -54,9 +77,34 @@ _STIX_HASH_KEY = {
 }
 
 
+def _stix_lit(value: str) -> str:
+    """A STIX pattern string literal body: backslash and quote escaped."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+# Categories with no standard STIX 2.1 object: counted and reported, not dropped silently.
+STIX_UNSUPPORTED = ("named_pipes", "services", "tasks", "shares")
+
+
 def _stix_pattern(ioc_type: str, value: str) -> str | None:
     """Build a STIX 2.1 pattern string for the given IOC type and value."""
-    v = value.replace("'", "\\'")
+    v = _stix_lit(value)
+    if ioc_type == "users":
+        return f"[user-account:account_login = '{v}']"
+    if ioc_type == "filepaths":
+        d, sep, name = value.replace("/", "\\").rpartition("\\")
+        if sep and d and name:
+            return (f"[file:name = '{_stix_lit(name)}' AND "
+                    f"file:parent_directory_ref.path = '{_stix_lit(d)}']")
+        return f"[file:name = '{v}']"
+    if ioc_type == "registry":
+        return f"[windows-registry-key:key = '{v}']"
+    if ioc_type == "commandlines":
+        return f"[process:command_line = '{v}']"
+    if ioc_type == "processes":
+        return f"[process:image_ref.name = '{v}']"
+    if ioc_type == "dlls":
+        return f"[file:name = '{v}']"
     if ioc_type == "ipv4":
         return f"[ipv4-addr:value = '{v}']"
     if ioc_type == "ipv6":
@@ -71,11 +119,13 @@ def _stix_pattern(ioc_type: str, value: str) -> str | None:
     return None
 
 
-def export_stix(iocs: dict, filepath: str) -> int:
+def export_stix(iocs: dict, filepath: str, skipped: "dict | None" = None) -> int:
     """
     Export IOCs as a STIX 2.1 bundle (pure stdlib JSON).
 
-    Returns the count of STIX indicator objects written.
+    Returns the count of STIX indicator objects written.  *skipped*, when
+    given, receives {category: number of values} for categories STIX 2.1 has
+    no standard object for (STIX_UNSUPPORTED), so the caller can say so.
     """
     ts      = _now_iso()
     objects = []
@@ -93,6 +143,8 @@ def export_stix(iocs: dict, filepath: str) -> int:
                 continue
             pattern = _stix_pattern(ioc_type, value)
             if pattern is None:
+                if skipped is not None:
+                    skipped[ioc_type] = skipped.get(ioc_type, 0) + 1
                 continue
 
             score = entry.get("score", 0) if isinstance(entry, dict) else 0
@@ -166,7 +218,7 @@ def export_misp(iocs: dict, filepath: str) -> int:
 
     Returns the count of MISP attributes written.
     """
-    ts    = _now_iso()
+    ts    = str(int(datetime.now(timezone.utc).timestamp()))   # Unix epoch seconds (Codex C4-2)
     attrs = []
     attr_id = 1
 
@@ -254,57 +306,38 @@ def export_yara(iocs: dict, filepath: str) -> int:
         conditions.append("        (\n" + " or\n".join(hash_conds) + "\n        )")
 
     # Domains → string search
+    def _family(prefix: str, values) -> None:
+        # Reference $prefix_* only when at least one string was written: YARA
+        # rejects a set that matches no definition (Codex C4-3).
+        nonlocal count
+        n = 0
+        for i, s in values:
+            strings.append(f'        ${prefix}_{i} = "{_yara_str(s)}" nocase wide ascii')
+            count += 1
+            n += 1
+        if n:
+            conditions.append(f"        any of (${prefix}_*)")
+
     domains = iocs.get("domains") or []
-    for i, entry in enumerate(domains[:100]):
-        value = _get_value(entry)
-        if not value:
-            continue
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        strings.append(f'        $dom_{i} = "{escaped}" nocase wide ascii')
-        count += 1
-    if domains:
-        conditions.append("        any of ($dom_*)")
+    _family("dom", [(i, _get_value(en)) for i, en in enumerate(domains[:100]) if _get_value(en)])
 
     # URLs → string search (first 100)
     urls = iocs.get("urls") or []
-    for i, entry in enumerate(urls[:100]):
-        value = _get_value(entry)
-        if not value or len(value) > 200:
-            continue
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        strings.append(f'        $url_{i} = "{escaped}" nocase wide ascii')
-        count += 1
-    if urls:
-        conditions.append("        any of ($url_*)")
+    _family("url", [(i, _get_value(en)) for i, en in enumerate(urls[:100])
+                    if _get_value(en) and len(_get_value(en)) <= 200])
 
     # High-scoring commandlines (score > 50, first 50)
     cmdlines = iocs.get("commandlines") or []
     high_cmds = [e for e in cmdlines
                  if isinstance(e, dict) and e.get("score", 0) > 50][:50]
-    for i, entry in enumerate(high_cmds):
-        value = _get_value(entry)
-        if not value:
-            continue
-        # Take a distinctive 60-char substring
-        snippet = value[:60].replace("\\", "\\\\").replace('"', '\\"')
-        strings.append(f'        $cmd_{i} = "{snippet}" nocase wide ascii')
-        count += 1
-    if high_cmds:
-        conditions.append("        any of ($cmd_*)")
+    # A distinctive 60-character substring of each
+    _family("cmd", [(i, _get_value(en)[:60]) for i, en in enumerate(high_cmds) if _get_value(en)])
 
     # High-scoring processes (score > 60, first 50)
     procs = iocs.get("processes") or []
     high_procs = [e for e in procs
                   if isinstance(e, dict) and e.get("score", 0) > 60][:50]
-    for i, entry in enumerate(high_procs):
-        value = _get_value(entry)
-        if not value:
-            continue
-        snippet = value[:80].replace("\\", "\\\\").replace('"', '\\"')
-        strings.append(f'        $proc_{i} = "{snippet}" nocase wide ascii')
-        count += 1
-    if high_procs:
-        conditions.append("        any of ($proc_*)")
+    _family("proc", [(i, _get_value(en)[:80]) for i, en in enumerate(high_procs) if _get_value(en)])
 
     # Render rule
     ts        = _now_iso()[:10]
