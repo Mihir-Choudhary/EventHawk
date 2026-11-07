@@ -158,6 +158,15 @@ def main() -> int:
     check("a clock correction stamped inside a sleep (the resume) does not void its length",
           hib2["duration"] is not None and "length Unavailable" not in hib2["notes"], hib2["notes"])
 
+    # Codex SA-2: two records of the SAME log with identical content are two
+    # pieces of evidence (both kept); a copy of the log still counts once.
+    twin = [ev("2025-11-13T10:00:00.000000Z", KG, 1, OldTime="2025-11-13T10:00:00.000000Z",
+               NewTime="2025-11-13T10:00:00.500000Z") for _ in range(2)]
+    twin_copy = [dict(e, source_file=r"C:\logs\System - Copy.evtx", record_id=e["record_id"] + 5000) for e in twin]
+    n_twin = sum(1 for p in SA.build(twin + twin_copy)["points"] if p["what"] == "System time changed")
+    check("two identical records in one log are both kept; their copy in another file is not added",
+          n_twin == 2, str(n_twin))
+
     copy = [dict(e, source_file="C:\\logs\\System - Copy.evtx", record_id=e["record_id"] + 1000) for e in evs]
     res2 = SA.build(evs + copy)
     check("a copy of the same log counts once", len(res2["rows"]) == len(res["rows"])

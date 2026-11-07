@@ -154,7 +154,8 @@ def _code(mapping, v) -> str:
 
 
 def _key(ev) -> tuple:
-    """Content identity, so copies of the same log count once."""
+    """Content identity (with build()'s per-file occurrence number, so copies
+    of a log count once but two identical records of one log count twice)."""
     return (str(ev.get("computer") or "").strip().lower(), _prov(ev), _int(ev.get("event_id")),
             str(_dt(ev.get("timestamp"))), json.dumps(_data(ev), sort_keys=True, default=str))
 
@@ -176,13 +177,20 @@ def build(events) -> dict:
     """
     hosts: dict[str, _Host] = {}
     seen = set()
+    nth: dict = {}                       # (source file, content) -> occurrences so far
     for ev in events:
         if not relevant(ev):
             continue
         t = _dt(ev.get("timestamp"))
         if t is None:
             continue
-        k = _key(ev)
+        c = _key(ev)
+        f = str(ev.get("source_file") or "")
+        n = nth.get((f, c), 0)
+        nth[(f, c)] = n + 1
+        # Codex SA-2: the n-th identical record of a file is the n-th of every
+        # copy of it; identical records within one file are distinct evidence.
+        k = (c, n)
         if k in seen:
             continue
         seen.add(k)
