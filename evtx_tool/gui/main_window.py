@@ -14258,10 +14258,17 @@ class MainWindow(QMainWindow):
         # that are unique across multi-file loads (record_id alone is not unique per file).
         try:
             _con = _duckdb.connect()
+            # The starts too (Security 4608, Kernel-General 12), with channel and
+            # provider: a logon ID is unique only within a boot, and the
+            # builder's boot boundary needs them (Codex C3-1: Juggernaut
+            # sessions ran across reboots).
             _rows = _con.execute(
-                f"SELECT source_file, record_id, event_id, computer, timestamp_utc, event_data_json "
+                f"SELECT source_file, record_id, event_id, computer, timestamp_utc, event_data_json, "
+                f"       channel, provider "
                 f"FROM parquet_scan({shard_list}) "
                 f"WHERE event_id IN (4624, 4634, 4672, 4688) "
+                f"   OR (event_id = 4608 AND lower(channel) = 'security') "
+                f"   OR (event_id = 12 AND provider = 'Microsoft-Windows-Kernel-General') "
                 f"ORDER BY timestamp_utc"
             ).fetchall()
             _con.close()
@@ -14272,7 +14279,7 @@ class MainWindow(QMainWindow):
                                 f"Failed to query Parquet shards:\n{exc}")
             return
 
-        if not _rows:
+        if not any(r[2] in (4624, 4634, 4672, 4688) for r in _rows):
             if busy:
                 busy.dismiss()
             QMessageBox.information(
@@ -14289,7 +14296,7 @@ class MainWindow(QMainWindow):
         events: list[dict] = []
         _lid_to_keys: dict[tuple[str, str], set] = {}   # (computer, lid) → set of (source_file, record_id)
 
-        for src_file, rec_id, ev_id, computer, ts_utc, ed_json in _rows:
+        for src_file, rec_id, ev_id, computer, ts_utc, ed_json, channel, provider in _rows:
             try:
                 ed = _json.loads(ed_json) if ed_json else {}
             except Exception:
@@ -14299,9 +14306,13 @@ class MainWindow(QMainWindow):
                 "computer":    computer or "",
                 "timestamp":   str(ts_utc or ""),
                 "event_data":  ed,
+                "channel":     channel or "",
+                "provider":    provider or "",
                 "_record_id":  rec_id,
                 "_source_file": src_file or "",
             })
+            if ev_id not in (4624, 4634, 4672, 4688):
+                continue                     # a start: a boundary, not a session event
             # Collect logon_id → composite key mapping
             if ev_id in (4624, 4634):
                 lid = str(ed.get("TargetLogonId", "")).strip()
