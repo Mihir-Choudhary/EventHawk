@@ -166,11 +166,13 @@ def export_pdf(
     meta_rows = [
         ("Generated",    generated),
         ("Total Events", f"{len(events):,}"),
-        ("Chains Found", f"{len(chains):,}" if chains else "n/a (--correlate not used)"),
-        # BUG 23 fix: use .get() with defaults to avoid KeyError if summary keys are missing
+        # None = not run; an empty result is 0 (an empty list read as "not used").
+        ("Chains Found", f"{len(chains):,}" if chains is not None else "n/a (--correlate not used)"),
+        # Every value of every category, as the IOC section lists them (it
+        # counted only IPv4 + SHA-256 + MD5).
         ("IOCs Found",   (
-            f"{iocs.get('summary',{}).get('ipv4',0) + iocs.get('summary',{}).get('sha256',0) + iocs.get('summary',{}).get('md5',0)} indicators"
-            if iocs else "n/a (--ioc not used)"
+            f"{sum(len(v) for v in iocs.values() if isinstance(v, list)):,} indicators"
+            if iocs is not None else "n/a (--ioc not used)"
         )),
     ]
 

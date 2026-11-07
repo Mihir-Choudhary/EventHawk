@@ -97,15 +97,14 @@ The HTML file is self-contained and can be emailed or shared without any depende
 **Best for:** Formal investigation reports for management, legal, or legal proceedings.
 
 The PDF report includes:
-- Cover page (investigation title, analyst name, date range)
-- Executive summary (event counts by category, key findings)
-- Timeline section (significant events in chronological order)
-- IOC table (every extracted indicator, each value in full)
-- ATT&CK matrix summary (techniques detected)
-- Case notes section (any events added to the Case tab with annotations)
+- Cover: report title, when it was generated (UTC), total events, the number of attack chains and the number of IOC values. "n/a" means the correlation engine or IOC extraction was not run for the exported events (for the current view or selected files they are not); 0 means they ran and found nothing
+- Executive summary: events by level, top Event IDs, most active computers
+- MITRE ATT&CK coverage and top techniques (when ATT&CK tagging ran)
+- Attack chain findings: every chain with its severity, tactic, time span, description, computers and users
+- IOCs: every category and every value in full, with counts
 - Appendix: event table of the first 500 events, labelled "first 500 of N" (the HTML export lists every event)
 
-> **Tip:** Add events to the [Case Tab](09-analysis-tabs.md#case-tab) with notes before exporting PDF to get the most meaningful report.
+The PDF has no analyst name, date-range page, separate timeline or case notes; add those to your own report.
 
 ### STIX 2.1
 

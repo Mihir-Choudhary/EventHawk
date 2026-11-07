@@ -252,7 +252,7 @@ class AnalysisWorker(QThread):
             sys.path.insert(0, pkg_root)
 
         iocs:     dict | None = None
-        chains:   list        = []
+        chains:   list | None = None     # None = correlation not run (the PDF says n/a)
         metadata: dict        = {}
 
         # ── Metadata (fast, needed for column filter dropdowns) ───────────────

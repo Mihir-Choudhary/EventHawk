@@ -12661,6 +12661,7 @@ class MainWindow(QMainWindow):
     def _on_analysis_finished(self, iocs, chains, metadata) -> None:
         self._iocs     = iocs
         self._chains   = chains or []
+        self._chains_ran = chains is not None   # 0 chains found vs correlation not run
         # In Juggernaut Mode the analysis subprocess runs with events=[] so
         # build_metadata() returns all-empty dicts.  _load_jm_metadata() has
         # already populated self._metadata from DuckDB — don't overwrite it.
@@ -16432,7 +16433,7 @@ class MainWindow(QMainWindow):
             )
             export_attack = self._derive_attack_summary(export_events)
             export_iocs   = None
-            export_chains = []
+            export_chains = None          # not correlated for this subset: the PDF says n/a
         elif scope == "specific":
             export_events = []
             for fp in specific_files:
@@ -16443,13 +16444,13 @@ class MainWindow(QMainWindow):
             export_label  = f"Selected Files ({len(specific_files)})"
             export_attack = self._derive_attack_summary(export_events)
             export_iocs   = None
-            export_chains = []
+            export_chains = None
         else:  # combined
             export_events = self._events
             export_label  = f"All Files ({len(self._events):,} events)"
             export_attack = self._attack_summary
             export_iocs   = self._iocs
-            export_chains = self._chains
+            export_chains = self._chains if getattr(self, "_chains_ran", False) else None
 
         if not export_events:
             QMessageBox.information(self, "Nothing to Export",

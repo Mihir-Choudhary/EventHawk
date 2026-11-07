@@ -75,6 +75,16 @@ def main() -> int:
               and "'value'" not in text)
         check("a ~16,000-character spaced value appears whole", squash(LONG_SPACED) in flat)
         check("a 16,000-character unbroken value appears whole", squash(LONG_SOLID) in flat)
+        # The cover counted only IPv4 + SHA-256 + MD5 from a summary: every value counts.
+        total = sum(len(v) for v in iocs.values() if isinstance(v, list))
+        check("the cover's IOC count is every value in every category",
+              squash(f"IOCs Found{total} indicators") in flat, f"expected {total}")
+        p0 = os.path.join(tmp, "r0.pdf")
+        X.export_pdf([ev], p0, iocs={k: [] for k in cats}, chains=[])
+        flat0 = squash("".join(pg.get_text() for pg in fitz.open(p0)))
+        check("correlation and IOC extraction that found nothing say 0, not 'not used'",
+              squash("Chains Found0") in flat0 and squash("IOCs Found0 indicators") in flat0
+              and "notused" not in flat0, flat0[:300])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return finish()
