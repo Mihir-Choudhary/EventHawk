@@ -124,8 +124,22 @@ def main() -> int:
             check(f"{tag}: CSV export has the header and every shown period", len(rows) == n_all + 1
                   and rows[0][2] == "Activity", f"{len(rows) - 1} rows")
             hib = next(r for r in dlg._res["rows"] if r["state"] == "Hibernate")
+            # Codex SA-1: "around this start/end" anchors on the displayed
+            # boundary, not on the evidence event's own time (a wake record).
+            seen = []
+            real = w._open_around_tab
+            w._open_around_tab = lambda a, b_, a_, sc, *x, **k: seen.append(a)
+            for what, e_, at_ in dlg.around_targets(hib, timeline=True):
+                dlg.go_around(e_, timedelta(minutes=5), at_)
+            w._open_around_tab = real
+            from evtx_tool.core.time_window import parse_event_ts
+            got_t = [parse_event_ts(a["timestamp"]).replace(tzinfo=None) for a in seen]
+            check(f"{tag}: Around anchors on the displayed start and end, keeping the evidence record",
+                  got_t == [hib["start"], hib["end"]]
+                  and all(a.get("record_id") == hib["start_ev"]["record_id"] for a in seen[:1]),
+                  f"{got_t} vs {[hib['start'], hib['end']]}")
             before = set(k for k in w._file_tabs if k.startswith("__around__"))
-            dlg._around(hib["start_ev"], timedelta(minutes=5))
+            dlg.go_around(hib["start_ev"], timedelta(minutes=5), hib["start"])
             T.pump(300)
             new = [k for k in w._file_tabs if k.startswith("__around__") and k not in before]
             if new:

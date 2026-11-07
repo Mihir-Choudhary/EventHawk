@@ -13696,8 +13696,13 @@ class MainWindow(QMainWindow):
                                 icon=QMessageBox.Icon.Information)
             return
 
-        def _around(ev, td):
-            self._open_around_tab(ev, td, td, "host")
+        def _around(ev, td, at=None):
+            # Centre on the time the tool shows (at), keeping the evidence
+            # record as the anchor row (Codex SA-1).
+            anchor = dict(ev)
+            if at is not None:
+                anchor["timestamp"] = at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            self._open_around_tab(anchor, td, td, "host")
 
         dlg = SystemActivityDialog(res, parent=self, around=_around, digits=get_ts_precision())
         self._system_activity_dlg = dlg

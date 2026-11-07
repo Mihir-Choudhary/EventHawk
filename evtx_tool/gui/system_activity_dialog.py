@@ -248,16 +248,25 @@ class SystemActivityDialog(QDialog):
         a = m.addAction("Copy row")
         a.triggered.connect(lambda: QGuiApplication.clipboard().setText("\t".join(map(str, cells))))
         if self._around is not None:
-            targets = ([("start", it.get("start_ev")), ("end", it.get("end_ev"))] if tbl is self._tbl
-                       else [("moment", it.get("ev"))])
-            for what, ev in targets:
-                if ev is None:
-                    continue
+            for what, ev, at in self.around_targets(it, timeline=tbl is self._tbl):
                 m.addSeparator()
                 for label, td in (("±5 minutes", timedelta(minutes=5)), ("±30 minutes", timedelta(minutes=30))):
                     act = m.addAction(f"Events around this {what} ({label})")
-                    act.triggered.connect(lambda _=False, e=ev, d=td: self._around(e, d))
+                    act.triggered.connect(lambda _=False, e=ev, d=td, a=at: self.go_around(e, d, a))
         m.exec(tbl.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def around_targets(it, timeline: bool):
+        """(what, evidence event, time) for each "Events around" action.  The
+        window is centred on the time shown - a sleep's start is its SleepTime,
+        not the time of the wake record that carries it (Codex SA-1)."""
+        cand = ([("start", it.get("start_ev"), it.get("start")), ("end", it.get("end_ev"), it.get("end"))]
+                if timeline else [("moment", it.get("ev"), it.get("time"))])
+        return [c for c in cand if c[1] is not None and c[2] is not None]
+
+    def go_around(self, ev, td, at):
+        if self._around is not None:
+            self._around(ev, td, at)
 
     # ── export ──────────────────────────────────────────────────────────────
     def visible_order(self, tbl):
