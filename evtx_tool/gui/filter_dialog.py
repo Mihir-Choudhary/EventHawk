@@ -240,6 +240,11 @@ class FilterDialog(QDialog):
         self.setMinimumSize(580, 550)
         self._metadata = metadata
         self._current = current_filter or {}
+        # Restrictions a loaded filter file holds that have no field here
+        # (CLI --save-filter: applied profiles, Event ID lists).  Kept through
+        # Load / Save / OK and shown; Clear removes them (Codex C2-1: they were
+        # silently dropped).
+        self._hidden: dict = {}
         # Retained for callers/back-compat; no longer gates any control.
         self._juggernaut_mode = bool(juggernaut_mode)
         self._build_ui()
@@ -544,6 +549,12 @@ class FilterDialog(QDialog):
 
         bottom.addStretch()
 
+        self._lbl_hidden = QLabel("")
+        self._lbl_hidden.setWordWrap(True)
+        self._lbl_hidden.setStyleSheet("color:#8a4800;")
+        self._lbl_hidden.hide()
+        root.addWidget(self._lbl_hidden)
+
         self._chk_case_sensitive = QCheckBox("Case sensitive")
         bottom.addWidget(self._chk_case_sensitive)
 
@@ -797,8 +808,28 @@ class FilterDialog(QDialog):
     def _clear_conditions(self) -> None:
         self._tbl_conditions.setRowCount(0)
 
+    _PASSTHROUGH = ("profile_groups", "profile_groups_also", "event_ids", "exclude_event_ids", "task_categories")
+
+    def _show_hidden(self) -> None:
+        h = self._hidden
+        parts = []
+        n = (1 if h.get("profile_groups") else 0) + len(h.get("profile_groups_also") or [])
+        if n:
+            parts.append(f"{n} set(s) of profiles ({sum(len(s) for s in [h.get('profile_groups') or []] + list(h.get('profile_groups_also') or []))} profile(s))")
+        if h.get("event_ids"):
+            parts.append(f"Event IDs {', '.join(map(str, h['event_ids'][:12]))}" + (" ..." if len(h["event_ids"]) > 12 else ""))
+        if h.get("exclude_event_ids"):
+            parts.append(f"excluded Event IDs {', '.join(map(str, h['exclude_event_ids'][:12]))}")
+        if h.get("task_categories"):
+            parts.append(f"task categories {', '.join(map(str, h['task_categories'][:12]))}")
+        self._lbl_hidden.setText("This filter also applies, from a loaded filter file (no field here): "
+                                 + "; ".join(parts) + ". Clear removes them.")
+        self._lbl_hidden.setVisible(bool(parts))
+
     def _clear_all(self) -> None:
         """Reset every filter field to default."""
+        self._hidden = {}
+        self._show_hidden()
         for chk in self._level_checks.values():
             chk.setChecked(True)
 
@@ -896,6 +927,11 @@ class FilterDialog(QDialog):
         """Populate dialog widgets from a filter config dict."""
         if not cfg:
             return
+        # A CLI-saved filter writes null for every list it does not set; those
+        # failed the whole Load ("can only join an iterable").
+        cfg = {k: v for k, v in cfg.items() if v is not None}
+        self._hidden = {k: cfg[k] for k in self._PASSTHROUGH if cfg.get(k)}
+        self._show_hidden()
 
         # Levels — empty list means "all checked = no filter"; treat as check-all.
         levels = cfg.get("levels")
@@ -1022,7 +1058,9 @@ class FilterDialog(QDialog):
                     "value":    value_text,
                 })
 
+        hidden = {k: v for k, v in getattr(self, "_hidden", {}).items() if v}
         return {
+            **hidden,
             # Levels
             "levels": levels,
             # Source / Category / User / Computer
