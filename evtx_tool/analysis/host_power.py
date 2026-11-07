@@ -218,8 +218,8 @@ class HostPower:
         self.sleeps: dict[str, list[tuple]] = {}
         # Kernel-Power 42 with no logged wake time, per host.
         self.unknown_sleeps: dict[str, list] = {}
-        # {(sleep start, end): Kernel-Power 566's different start}, per host.
-        self.sleep_conflicts: dict[str, dict] = {}
+        # [(PT start, PT end, 566 start, 566 end)] that disagree, per host.
+        self.sleep_conflicts: dict[str, list] = {}
         for h, ms in marks.items():
             downs = [m for m in ms if m[0] == "shutdown"]
             # One startup can be several records: copies of the same log, and
@@ -262,48 +262,61 @@ class HostPower:
             # subtracted): Power-Troubleshooter 1's times win; a Kernel-Power
             # 566 sleep session counts only where no Power-Troubleshooter 1
             # overlaps it (its start is derived from the clock).
-            pts = sorted({(m[1], m[2], m[3]) for m in ms if m[0] == "sleep" and m[3] == "Power-Troubleshooter 1"})
-            k566 = sorted({(m[1], m[2], m[3]) for m in ms if m[0] == "sleep" and m[3] == "Kernel-Power 566"})
-            exact = sorted(pts + [x for x in k566 if not any(x[0] < b and a < x[1] for a, b, _l in pts)])
+            pts = sorted({(m[1], m[2]) for m in ms if m[0] == "sleep" and m[3] == "Power-Troubleshooter 1"})
+            k566 = sorted({(m[1], m[2]) for m in ms if m[0] == "sleep" and m[3] == "Kernel-Power 566"})
+            exact = sorted([(a, b, "Power-Troubleshooter 1") for a, b in pts]
+                           + [(a, b, "Kernel-Power 566") for a, b in k566
+                              if not any(a < pb and pa < b for pa, pb in pts)])
             periods = list(exact)
-            # A sleep that became hibernation with no doze record: a 566 that
-            # starts earlier than Power-Troubleshooter 1 and ends at the same
-            # wake, with a Kernel-Power 42 at its start, proves the sleep part
-            # from that 42 to the hibernation (three records agree).
-            starts42 = sorted({m[1] for m in ms if m[0] == "sleep_start"})
-            for a5, b5, _l in k566:
-                for a, b, _p in pts:
-                    if a5 < a - timedelta(seconds=_TRANSITION_SECS / 2) and abs((b5 - b).total_seconds()) <= 5:
-                        k42 = next((x for x in starts42 if abs((x - a5).total_seconds()) <= _TRANSITION_SECS), None)
-                        if k42 is not None and k42 < a:
-                            periods.append((k42, a, "Kernel-Power 42 to Power-Troubleshooter 1 (sleep before "
-                                                    "hibernation; Kernel-Power 566 agrees)"))
-                            exact.append((k42, a, "Kernel-Power 42"))
+            # A Kernel-Power 42 no exact record covers: the sleep part of a
+            # sleep that became hibernation.  It ends at the doze record when
+            # there is one (Codex SA3-R1: the fallback below once overrode it
+            # and swallowed the time awake between doze and hibernation);
+            # only with no doze, at the hibernation's start when a 566 for the
+            # same sleep starts at that 42 and ends at the same wake.
+            # Otherwise its wake time is not known.
             starts = sorted({m[1] for m in ms if m[0] == "sleep_start"})
             dozes = sorted({m[1] for m in ms if m[0] == "doze"})
             boot_los = sorted(m[1] for m in ms if m[0] == "boot")
+            win = timedelta(seconds=_TRANSITION_SECS)
             unknown = []
             for i, a in enumerate(starts):
-                if any(lo - timedelta(seconds=_TRANSITION_SECS) <= a <= hi for lo, hi, _l in exact):
+                if any(lo - win <= a <= hi for lo, hi, _l in exact):
                     continue                     # an exact record covers this sleep
                 nxt = starts[i + 1] if i + 1 < len(starts) else None
                 nb = next((x for x in boot_los if x > a), None)
-                d = next((x for x in dozes if x > a and (nxt is None or x < nxt) and (nb is None or x < nb)), None)
+
+                def _before_next(x):
+                    return x > a and (nxt is None or x < nxt) and (nb is None or x < nb)
+                d = next((x for x in dozes if _before_next(x)), None)
                 if d is not None:
                     periods.append((a, d, "Kernel-Power 42 to Power-Troubleshooter 1 (doze to hibernate)"))
-                else:
-                    unknown.append(a)
+                    continue
+                pa = next((pa for pa, pb in pts if _before_next(pa) and pa - a > win / 2 and any(
+                    abs(a5 - a) <= win and abs((b5 - pb).total_seconds()) <= 5 for a5, b5 in k566)), None)
+                if pa is not None:
+                    periods.append((a, pa, "Kernel-Power 42 to Power-Troubleshooter 1 (sleep before "
+                                           "hibernation; Kernel-Power 566 agrees)"))
+                    continue
+                unknown.append(a)
             self.sleeps[h] = sorted(periods)
             self.unknown_sleeps[h] = unknown
-            # A 566 that starts the same sleep earlier than Power-Troubleshooter 1,
-            # not explained by a sleep part before a doze to hibernate: say so.
-            conf = {}
-            for a5, b5, _l in k566:
-                for a, b, _p in pts:
-                    if a5 < b and a < b5 and (a - a5).total_seconds() > _TRANSITION_SECS / 2 and not any(
-                            lbl.startswith("Kernel-Power 42 to") and abs((pe - a).total_seconds()) <= 2
-                            for _pa, pe, lbl in periods):
-                        conf[(a, b)] = a5
+            # Every 566 that disagrees with the Power-Troubleshooter 1 it
+            # overlaps, judged pair by pair (Codex SA3-R2: one explained 566
+            # hid another, and later starts or different wakes were never
+            # reported): a start more than 30 s off that no sleep part from a
+            # 42 at that 566's start explains, or a wake more than 5 s off.
+            conf = []
+            for a5, b5 in k566:
+                for pa, pb in pts:
+                    if not (a5 < pb and pa < b5):
+                        continue
+                    start_ok = abs((pa - a5).total_seconds()) <= _TRANSITION_SECS / 2 or (
+                        a5 < pa and any(lbl.startswith("Kernel-Power 42 to") and abs(p0 - a5) <= win
+                                        and p1 <= pa + timedelta(seconds=2) for p0, p1, lbl in periods))
+                    end_ok = abs((b5 - pb).total_seconds()) <= 5
+                    if not (start_ok and end_ok):
+                        conf.append((pa, pb, a5, b5))
             self.sleep_conflicts[h] = conf
 
     def assess(self, host: str, start, end) -> "dict | None":
@@ -426,12 +439,11 @@ class HostPower:
                           for a, b, sa, sb, k in merged if k != "asleep_end")
         downs += "".join(f"{'; ' if downs else ''}asleep from {_ts(a)} ({sa}) until the disconnect was logged"
                          for a, b, sa, sb, k in merged if k == "asleep_end")
-        conf = self.sleep_conflicts.get(str(host or "").strip().lower(), {})
-        extra = "".join(f" Kernel-Power 566 places the sleep that ended {_ts(b)} from {_ts(conf[(a, b)])}; "
-                        f"Power-Troubleshooter 1 gives {_ts(a)}: the two disagree, and the "
-                        f"Power-Troubleshooter 1 times are used."
-                        for a, b, _l in self.sleeps.get(str(host or "").strip().lower(), ())
-                        if (a, b) in conf and any(p[0] <= a and b <= p[1] for p in merged))
+        conf = self.sleep_conflicts.get(str(host or "").strip().lower(), [])
+        extra = "".join(f" Kernel-Power 566 places a sleep from {_ts(a5)} to {_ts(b5)}; Power-Troubleshooter 1 "
+                        f"gives {_ts(pa)} to {_ts(pb)}: the two disagree, and the Power-Troubleshooter 1 "
+                        f"times are used."
+                        for pa, pb, a5, b5 in conf if any(p[0] <= pa and pb <= p[1] for p in merged))
         return {"kind": "subtracted", "seconds": connected.total_seconds(), "downtime": down.total_seconds(),
                 "note": (f"{fmt_secs(down)} subtracted: host was {downs}. "
                          f"Span {fmt_secs(total)} = " + " + ".join(parts) + "." + extra)}

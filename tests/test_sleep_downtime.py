@@ -81,6 +81,34 @@ def dataset():
             sysev("HOST-SB", 12, 1600, 566, KP, {"PreviousSessionType": "3", "NextSessionType": "1",
                                                "PreviousSessionDurationInUs": "600000000", "Reason": "20"}),
             wlan("HOST-SB", 2, 2000, 8003, "NetSB")]
+    # Codex SA3-R1: 42 at 1000, doze at 1300, PT hibernation 1330 -> 1600, a 566 sleep
+    # session 1000 -> 1600; session 900 -> 1700.  The doze closes the sleep part, so
+    # 1300 -> 1330 was awake: down 300 + 270, connected 800 - 570 = 230 s.
+    evs += [wlan("HOST-SG", 1, 900, 8001, "NetSG"), sysev("HOST-SG", 10, 1000, 42, KP, {"TargetState": "4"}),
+            sysev("HOST-SG", 11, 1301, 1, PT, {"SleepTime": at(1300), "WakeTime": at(1300), "TargetState": "0",
+                                              "WakeSourceType": "3"}),
+            sysev("HOST-SG", 12, 1601, 1, PT, {"SleepTime": at(1330), "WakeTime": at(1600), "TargetState": "5",
+                                              "WakeSourceType": "1"}),
+            sysev("HOST-SG", 13, 1600, 566, KP, {"PreviousSessionType": "3", "NextSessionType": "1",
+                                               "PreviousSessionDurationInUs": "600000000", "Reason": "20"}),
+            wlan("HOST-SG", 2, 1700, 8003, "NetSG")]
+    # Codex SA3-R2: 42 at 1000, PT 1330 -> 1600, a 566 1000 -> 1600 (explained by the 42)
+    # and a second 566 880 -> 1600 that nothing explains: 200 s, and the Notes disclose it.
+    evs += [wlan("HOST-SX", 1, 900, 8001, "NetSX"), sysev("HOST-SX", 10, 1000, 42, KP, {"TargetState": "4"}),
+            sysev("HOST-SX", 11, 1601, 1, PT, {"SleepTime": at(1330), "WakeTime": at(1600), "TargetState": "5",
+                                              "WakeSourceType": "1"}),
+            sysev("HOST-SX", 12, 1600, 566, KP, {"PreviousSessionType": "3", "NextSessionType": "1",
+                                               "PreviousSessionDurationInUs": "600000000", "Reason": "20"}),
+            sysev("HOST-SX", 13, 1600, 566, KP, {"PreviousSessionType": "3", "NextSessionType": "1",
+                                               "PreviousSessionDurationInUs": "720000000", "Reason": "1"}),
+            wlan("HOST-SX", 2, 1700, 8003, "NetSX")]
+    # Codex SA3-R2 (wake): PT 1000 -> 1600, a 566 for it ends 20 s later: PT used (200 s), disclosed.
+    evs += [wlan("HOST-SW", 1, 900, 8001, "NetSW"),
+            sysev("HOST-SW", 10, 1601, 1, PT, {"SleepTime": at(1000), "WakeTime": at(1600), "TargetState": "4",
+                                              "WakeSourceType": "1"}),
+            sysev("HOST-SW", 11, 1620, 566, KP, {"PreviousSessionType": "3", "NextSessionType": "1",
+                                               "PreviousSessionDurationInUs": "620000000", "Reason": "20"}),
+            wlan("HOST-SW", 2, 1700, 8003, "NetSW")]
     # SD: sleep at 1000 (42), doze to hibernate at 1300, hibernated 1300 -> 1600: 1400 s.
     evs += [wlan("HOST-SD", 1, 0, 8001, "NetSD"), sysev("HOST-SD", 10, 1000, 42, KP, {"TargetState": "4"}),
             sysev("HOST-SD", 11, 1301, 1, PT, {"SleepTime": at(1300), "WakeTime": at(1300), "TargetState": "0",
@@ -132,6 +160,15 @@ def grade(tag, wifi, ra):
     b_ = s.get("NetSB")
     check(f"{tag}: sleep then hibernation with no doze record, 42 and 566 agree: 1400 s, no conflict",
           b_ is not None and b_["duration_secs"] == 1400.0 and "disagree" not in b_.get("notes", ""), show(b_))
+    g = s.get("NetSG")
+    check(f"{tag}: a doze before the hibernation closes the sleep part (230 s, the awake 30 s kept)",
+          g is not None and g["duration_secs"] == 230.0, show(g))
+    x = s.get("NetSX")
+    check(f"{tag}: one 566 explained by the 42, another unexplained: 200 s and the disagreement disclosed",
+          x is not None and x["duration_secs"] == 200.0 and "disagree" in x.get("notes", ""), show(x))
+    wk = s.get("NetSW")
+    check(f"{tag}: a 566 whose wake differs from Power-Troubleshooter's: PT used (200 s), disclosed",
+          wk is not None and wk["duration_secs"] == 200.0 and "disagree" in wk.get("notes", ""), show(wk))
     d = s.get("NetSD")
     check(f"{tag}: sleep then hibernation (42 to the doze, then Power-Troubleshooter): 1400 s",
           d is not None and d["duration_secs"] == 1400.0 and "doze to hibernate" in d.get("notes", ""), show(d))
