@@ -56,6 +56,15 @@ def main() -> int:
     secs = got.get("sections", [])
     check("Juggernaut, an Around tab: only the files and records in its window",
           len(secs) == 1 and "a.evtx" in secs[0] and "Events: 2" in secs[0], str(secs)[:200])
+    # Codex C3-R2: a chain tab is a proxy over event dicts even in Juggernaut:
+    # its own events (74 from 1 source on the real logs), not the global table.
+    chain = [{"record_id": i, "source_file": "b.evtx"} for i in (10, 12)]
+    front["model"] = SimpleNamespace()                      # no Arrow table
+    type(w)._active_events = property(lambda self: chain)
+    w._on_identify_missing_record_ids()
+    secs = got.get("sections", [])
+    check("Juggernaut, a chain tab (event dicts): its own events only",
+          len(secs) == 1 and "b.evtx" in secs[0] and "Events: 2" in secs[0], str(secs)[:200])
     front["model"] = w._hw_model
     w._on_identify_missing_record_ids()
     secs = got.get("sections", [])

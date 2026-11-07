@@ -17657,7 +17657,16 @@ class MainWindow(QMainWindow):
         by_file: dict[str, list[int]] = defaultdict(list)
 
         # Juggernaut mode: read directly from Arrow table (full unfiltered table)
-        if self._hw_model is not None:
+        # -- unless the tab in front holds event dicts (a chain tab): then its
+        # own events, as in Normal mode (Codex C3-R2: it read the global table).
+        _front = None
+        try:
+            _front = self._active_table.model()
+        except Exception:
+            _front = None
+        _arrow_tab = (_front is None or _front is self._hw_model
+                      or getattr(_front, "_full_table", None) is not None)
+        if self._hw_model is not None and _arrow_tab:
             full_table = getattr(self._hw_model, "_full_table", None)
             if full_table is None or len(full_table) == 0:
                 QMessageBox.information(self, "Missing Record IDs", "No events loaded.")
