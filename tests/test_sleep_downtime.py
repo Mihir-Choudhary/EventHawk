@@ -5,7 +5,8 @@ for Wi-Fi and remote assistance ... it should be mentioned in the notes properly
 
 Expected, both modes (Normal builder; Juggernaut fetch + builder):
   * a sleep wholly inside a session (Power-Troubleshooter 1 SleepTime -> WakeTime,
-    or Kernel-Power 42 -> 107 when no 1 covers it) is subtracted, marked
+    or Kernel-Power 566's sleep session, or Kernel-Power 42 to a "doze to
+    hibernate") is subtracted, marked
     "(downtime subtracted)", and Notes name the sleep, its times and source, and
     say the time after waking is not proven;
   * a disconnect logged as the host goes to sleep (overlap <= 60 s) changes nothing;
@@ -52,9 +53,23 @@ def dataset():
     # SL: connect 0, asleep 1000 -> 1600 (Power-Troubleshooter 1), disconnect 2000: 1400 s.
     evs += [wlan("HOST-SL", 1, 0, 8001, "NetSL"), sleep_pt("HOST-SL", 10, 1000, 1600),
             wlan("HOST-SL", 2, 2000, 8003, "NetSL")]
-    # SK: Kernel-Power 42 at 1000, 107 at 1600, no Power-Troubleshooter 1: 1400 s.
+    # SK: Kernel-Power 42 at 1000, 107 at 1002 (written with the pre-sleep clock,
+    # as on the test logs), nothing else: the wake time is unknown, so no duration
+    # (it used to subtract the 2 s from 42 to 107).
     evs += [wlan("HOST-SK", 1, 0, 8001, "NetSK"), sysev("HOST-SK", 10, 1000, 42, KP, {"TargetState": "4"}),
-            sysev("HOST-SK", 11, 1600, 107, KP, {"TargetState": "4"}), wlan("HOST-SK", 2, 2000, 8003, "NetSK")]
+            sysev("HOST-SK", 11, 1002, 107, KP, {"TargetState": "4"}), wlan("HOST-SK", 2, 2000, 8003, "NetSK")]
+    # SM: Kernel-Power 566 says a sleep session of 600 s ended at 1600: 1400 s.
+    evs += [wlan("HOST-SM", 1, 0, 8001, "NetSM"), sysev("HOST-SM", 10, 1000, 42, KP, {"TargetState": "4"}),
+            sysev("HOST-SM", 11, 1600, 566, KP, {"PreviousSessionType": "3", "NextSessionType": "1",
+                                               "PreviousSessionDurationInUs": "600000000", "Reason": "20"}),
+            wlan("HOST-SM", 2, 2000, 8003, "NetSM")]
+    # SD: sleep at 1000 (42), doze to hibernate at 1300, hibernated 1300 -> 1600: 1400 s.
+    evs += [wlan("HOST-SD", 1, 0, 8001, "NetSD"), sysev("HOST-SD", 10, 1000, 42, KP, {"TargetState": "4"}),
+            sysev("HOST-SD", 11, 1301, 1, PT, {"SleepTime": at(1300), "WakeTime": at(1300), "TargetState": "0",
+                                              "WakeSourceType": "3"}),
+            sysev("HOST-SD", 12, 1601, 1, PT, {"SleepTime": at(1300), "WakeTime": at(1600), "TargetState": "5",
+                                              "WakeSourceType": "1"}),
+            wlan("HOST-SD", 2, 2000, 8003, "NetSD")]
     # ST: disconnect logged 1 s after going to sleep: unchanged (1001 s), no note.
     evs += [wlan("HOST-ST", 1, 0, 8001, "NetST"), sleep_pt("HOST-ST", 10, 1000, 1600),
             wlan("HOST-ST", 2, 1001, 8003, "NetST")]
@@ -87,8 +102,15 @@ def grade(tag, wifi, ra):
           "10m 00s subtracted" in n and "asleep" in n and "Power-Troubleshooter 1" in n
           and "10m 00s asleep (subtracted)" in n and "after waking (not proven" in n, n[:300])
     k = s.get("NetSK")
-    check(f"{tag}: sleep from Kernel-Power 42 -> 107: 1400 s, source named",
-          k is not None and k["duration_secs"] == 1400.0 and "Kernel-Power 42 to 107" in k.get("notes", ""), show(k))
+    check(f"{tag}: a sleep with no logged wake time (only 42, 107): no duration, Notes say why",
+          k is not None and k["duration_secs"] < 0 and "wake time is not logged" in k.get("notes", "")
+          and "107" in k.get("notes", ""), show(k))
+    m = s.get("NetSM")
+    check(f"{tag}: sleep from Kernel-Power 566's sleep session: 1400 s, source named",
+          m is not None and m["duration_secs"] == 1400.0 and "Kernel-Power 566" in m.get("notes", ""), show(m))
+    d = s.get("NetSD")
+    check(f"{tag}: sleep then hibernation (42 to the doze, then Power-Troubleshooter): 1400 s",
+          d is not None and d["duration_secs"] == 1400.0 and "doze to hibernate" in d.get("notes", ""), show(d))
     t = s.get("NetST")
     check(f"{tag}: disconnect logged as the host goes to sleep: unchanged, no note",
           t is not None and t["duration_secs"] == 1001.0 and not t.get("notes"), show(t))

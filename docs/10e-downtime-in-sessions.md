@@ -13,7 +13,7 @@ Sessions** take that time out of the session's duration and explain it in the
 | Shutdown | Kernel-General 13 (with the exact stop time), EventLog 6006, Kernel-Power 109, Security 1100 / 4609, User32 1074 (shutdown started) |
 | Startup | Kernel-General 12 (with the exact start time), Security 4608 |
 | Unexpected shutdown | EventLog 6008, Kernel-Power 41 (written at the next startup; the moment of the crash is not logged) |
-| Sleep | Power-Troubleshooter 1 (exact sleep and wake times); otherwise Kernel-Power 42 (going to sleep) to the next Kernel-Power 107 (resumed) |
+| Sleep | Power-Troubleshooter 1 (exact sleep and wake times); otherwise Kernel-Power 566 (a sleep session with its exact length, Windows 10 2004 and later); otherwise Kernel-Power 42 (going to sleep) to a Power-Troubleshooter "doze to hibernate" (a sleep that became hibernation). Kernel-Power 107 (resumed) is not used: it is written with the clock from before the sleep. A sleep whose wake time none of these give leaves a session across it with no duration, and the Notes say why |
 
 Modern Standby (Kernel-Power 506/507) is not counted: the network can stay
 connected in it. Copies of the same log count each event once.

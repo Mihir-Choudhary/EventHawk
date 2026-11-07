@@ -8,7 +8,15 @@ Windows logs both ends of a clean restart:
   startup   Kernel-General 12 (with StartTime), Security 4608
   unexpected shutdown (logged at the next startup): EventLog 6008, Kernel-Power 41
   sleep     Power-Troubleshooter 1 (exact SleepTime and WakeTime); otherwise
-            Kernel-Power 42 (going to sleep) to the next Kernel-Power 107 (resumed).
+            Kernel-Power 566 (a sleep session and its exact length, Windows 10
+            2004+ / 11); otherwise Kernel-Power 42 (going to sleep) to a
+            Power-Troubleshooter "doze to hibernate" (the sleep part of a sleep
+            that became hibernation).  A Kernel-Power 42 none of these closes has
+            no known wake time: a session across it gets no duration.
+            Kernel-Power 107 ("resumed") is NOT used: it is written with the
+            clock from before the sleep (test logs: a sleep from 14:03 to 14:18
+            has its 107 at 14:03:09; all 27 sleeps the old "42 to next 107"
+            fallback built on the test logs were 10 s or shorter).
             Modern Standby (Kernel-Power 506/507) is NOT counted: the network can
             stay connected in it.
 
@@ -52,12 +60,12 @@ _MERGE_SECS = 300.0
 # the sleep / wake transition, not time spent asleep while connected.
 _TRANSITION_SECS = 60.0
 
-_POWER_EIDS = frozenset({1, 12, 13, 41, 42, 107, 109, 1074, 1100, 4608, 4609, 6006, 6008})
+_POWER_EIDS = frozenset({1, 12, 13, 41, 42, 109, 566, 1074, 1100, 4608, 4609, 6006, 6008})
 
 # The Juggernaut WHERE that loads exactly the events classify() can use.
 POWER_SQL = (
     "((event_id IN (12, 13) AND provider = 'Microsoft-Windows-Kernel-General')"
-    " OR (event_id IN (41, 42, 107, 109) AND provider = 'Microsoft-Windows-Kernel-Power')"
+    " OR (event_id IN (41, 42, 109, 566) AND provider = 'Microsoft-Windows-Kernel-Power')"
     " OR (event_id = 1 AND provider = 'Microsoft-Windows-Power-Troubleshooter')"
     " OR (event_id IN (6006, 6008) AND lower(provider) = 'eventlog')"
     " OR (event_id = 1074 AND lower(provider) = 'user32')"
@@ -142,14 +150,29 @@ def classify(ev) -> "tuple | None":
     if eid == 41 and prov == _KP:
         return ("unexpected", t, t, "Kernel-Power 41")
     if eid == 1 and prov == _PT:
-        a, b = _dt(_data(ev).get("SleepTime")), _dt(_data(ev).get("WakeTime"))
+        d = _data(ev)
+        a, b = _dt(d.get("SleepTime")), _dt(d.get("WakeTime"))
         if a is not None and b is not None and a < b:
             return ("sleep", a, b, "Power-Troubleshooter 1")
+        # Zero length with wake source "S4 Doze to Hibernate": a sleep turning
+        # into hibernation at that moment.
+        if a is not None and b is not None and a == b and (
+                str(d.get("WakeSourceType", "")).strip() == "3"
+                or "doze" in str(d.get("WakeSourceText") or "").lower()):
+            return ("doze", a, a, "Power-Troubleshooter 1 (doze to hibernate)")
+        return None
+    if eid == 566 and prov == _KP:
+        d = _data(ev)
+        if str(d.get("PreviousSessionType", "")).strip() == "3":
+            try:
+                us = int(str(d.get("PreviousSessionDurationInUs", "")).strip())
+            except ValueError:
+                return None
+            if us > 0:
+                return ("sleep", t - timedelta(microseconds=us), t, "Kernel-Power 566")
         return None
     if eid == 42 and prov == _KP:
         return ("sleep_start", t, t, "Kernel-Power 42")
-    if eid == 107 and prov == _KP:
-        return ("sleep_end", t, t, "Kernel-Power 107")
     return None
 
 
@@ -193,6 +216,8 @@ class HostPower:
                 marks.setdefault(h, []).append(c)
         self.restarts: dict[str, list[dict]] = {}
         self.sleeps: dict[str, list[tuple]] = {}
+        # Kernel-Power 42 with no logged wake time, per host.
+        self.unknown_sleeps: dict[str, list] = {}
         for h, ms in marks.items():
             downs = [m for m in ms if m[0] == "shutdown"]
             # One startup can be several records: copies of the same log, and
@@ -226,19 +251,29 @@ class HostPower:
                             "unexpected": ux[3] if ux else None})
                 prev_hi = b[2]
             self.restarts[h] = out
-            # Sleep periods: Power-Troubleshooter 1 (exact); for a sleep it does
-            # not cover, Kernel-Power 42 to the next 107.  Copies count once.
-            exact = sorted({(m[1], m[2]) for m in ms if m[0] == "sleep"})
-            periods = [(a, b, "Power-Troubleshooter 1") for a, b in exact]
+            # Sleep periods: Power-Troubleshooter 1 and Kernel-Power 566 (exact;
+            # overlapping ones are merged when subtracted).  A Kernel-Power 42
+            # neither covers ends at a later "doze to hibernate" if one comes
+            # before the next sleep or start; otherwise its wake time is not
+            # logged (never Kernel-Power 107: see the module doc).  Copies count once.
+            exact = sorted({(m[1], m[2], m[3]) for m in ms if m[0] == "sleep"})
+            periods = list(exact)
             starts = sorted({m[1] for m in ms if m[0] == "sleep_start"})
-            ends = sorted({m[1] for m in ms if m[0] == "sleep_end"})
+            dozes = sorted({m[1] for m in ms if m[0] == "doze"})
+            boot_los = sorted(m[1] for m in ms if m[0] == "boot")
+            unknown = []
             for i, a in enumerate(starts):
+                if any(lo - timedelta(seconds=_TRANSITION_SECS) <= a <= hi for lo, hi, _l in exact):
+                    continue                     # an exact record covers this sleep
                 nxt = starts[i + 1] if i + 1 < len(starts) else None
-                b = next((x for x in ends if x > a and (nxt is None or x <= nxt)), None)
-                if b is None or any(lo <= b and a <= hi for lo, hi in exact):
-                    continue
-                periods.append((a, b, "Kernel-Power 42 to 107"))
+                nb = next((x for x in boot_los if x > a), None)
+                d = next((x for x in dozes if x > a and (nxt is None or x < nxt) and (nb is None or x < nb)), None)
+                if d is not None:
+                    periods.append((a, d, "Kernel-Power 42 to Power-Troubleshooter 1 (doze to hibernate)"))
+                else:
+                    unknown.append(a)
             self.sleeps[h] = sorted(periods)
+            self.unknown_sleeps[h] = unknown
 
     def assess(self, host: str, start, end) -> "dict | None":
         s, e = _dt(start), _dt(end)
@@ -293,6 +328,15 @@ class HostPower:
                         "note": f"Host restarted during the session (started {_ts(bhi)}), but {why}: "
                                 f"no duration."}
             periods.append((sd[0], bhi, sd[2], blabel, "down"))
+        # A sleep inside the session whose wake time is not logged: the time
+        # asleep cannot be measured, so neither can the session.
+        for a in self.unknown_sleeps.get(str(host or "").strip().lower(), ()):
+            if s + timedelta(seconds=_TRANSITION_SECS) < a < e - timedelta(seconds=_TRANSITION_SECS):
+                return {"kind": "uncertain_sleep",
+                        "note": (f"Host went to sleep at {_ts(a)} (Kernel-Power 42) during the session, and its "
+                                 f"wake time is not logged (no Power-Troubleshooter 1 or Kernel-Power 566; "
+                                 f"Kernel-Power 107 is written with the clock from before the sleep): "
+                                 f"no duration.")}
         # Sleeps.
         for lo, hi, lbl in self.sleeps.get(str(host or "").strip().lower(), ()):
             if hi <= s or lo >= e:
