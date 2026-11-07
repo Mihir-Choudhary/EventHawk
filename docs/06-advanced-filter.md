@@ -46,7 +46,7 @@ Two date+time pickers: **From** and **To**. Events outside the selected range ar
 - Leave **From** blank to include everything before the **To** date.
 - Leave **To** blank to include everything after the **From** date.
 
-> **Tip:** Use the timeline feature in the CLI (`evtx_tool.py diff --anchor`) to pre-calculate a window around a known event timestamp.
+> **Tip:** Use the CLI's `parse --timeline-anchor` (with `--timeline-before` / `--timeline-after`) to pre-calculate a window around a known event timestamp.
 
 ### Computer
 

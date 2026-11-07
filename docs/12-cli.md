@@ -117,38 +117,26 @@ py -3 evtx_tool.py parse C:\Logs ^
 
 ---
 
-### `diff` — Compare two captures or time windows
+### `diff` — Compare two sets of logs
 
-Compares two parse results or defines a time window around a known event.
-
-**Compare two JSON outputs:**
+Parses a baseline set and an incident set of EVTX files (files or folders) and lists the event types that are NEW in the incident, the ones MISSING from it, and VOLUME SPIKES and DROPS.
 
 ```bat
-py -3 evtx_tool.py diff baseline.json incident.json
+py -3 evtx_tool.py diff C:\Baseline C:\Incident --output diff.html
 ```
 
-**Timeline window around a specific timestamp:**
-
-Shows all events in a time window centred on a known event (useful for investigation pivoting):
-
-```bat
-py -3 evtx_tool.py diff ^
-    --anchor "2025-05-10T18:08:16.313420Z" ^
-    --before 30 ^
-    --after 60 ^
-    C:\Logs
-```
-
-This shows events from 30 minutes before to 60 minutes after the anchor timestamp.
-
-**Options reference:**
+**Options reference** (`py -3 evtx_tool.py diff --help`):
 
 | Option | Description |
 |---|---|
-| `--anchor TIMESTAMP` | Central event timestamp (ISO 8601, microseconds and Z suffix supported) |
-| `--before N` | Minutes before the anchor to include (default: 30) |
-| `--after N` | Minutes after the anchor to include (default: 30) |
-| `--output FILE` | Save diff output to a file |
+| `-p, --profile NAME` | Profiles applied to both sets (name or `.json` path, or `all`); an unknown one stops the run |
+| `-o, --output FILE` | Output file (`.html`, `.json`, `.csv`) |
+| `--format` | `csv`, `json`, `xml`, `html`, `pdf` |
+| `--spike-factor X` | Incident/baseline ratio counted as a spike (default 3.0) |
+| `--max-threads N` | Maximum worker processes |
+| `-v, --verbose` | More logging |
+
+To look at a time window around one moment, use `parse` with `--timeline-anchor`, `--timeline-before` and `--timeline-after`.
 
 ---
 

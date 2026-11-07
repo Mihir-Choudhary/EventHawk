@@ -20,13 +20,12 @@ The TUI (Terminal User Interface) is a live Rich-based dashboard that runs insid
 
 ## How to Enable
 
-Add `--tui` to any `parse` command:
+The dashboard shows during every `parse` run; add `--no-tui` to turn it off (for scripts and logs):
 
 ```bat
 py -3 evtx_tool.py parse C:\Logs ^
-    --profile "Process Creation" ^
-    --output results.json ^
-    --tui
+    --profile "Process Creation and Termination" ^
+    --output results.json
 ```
 
 ---
