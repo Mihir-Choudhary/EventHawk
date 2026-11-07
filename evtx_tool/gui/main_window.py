@@ -4307,13 +4307,6 @@ class _WifiHistoryDialog(QDialog):
             parts.append(
                 f"<span style='color:#a01800;'>⚠ {open_n} open network(s) (no encryption)</span>"
             )
-        # Provenance: surface incomplete-dataset state directly in the summary bar
-        # so the user never has to remember the earlier pop-up warning.
-        if self._truncated:
-            parts.append(
-                "<span style='color:#8a4800;'>⚠ Results capped at 200,000 events — "
-                "later sessions may be missing</span>"
-            )
         self._lbl_summary.setText(" &nbsp;│&nbsp; ".join(parts))
 
     # ── Context menu ──────────────────────────────────────────────────────
@@ -4376,13 +4369,6 @@ class _WifiHistoryDialog(QDialog):
         try:
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = _safe_csv_writer(f)
-                # Provenance: note truncation in the file itself so the exported
-                # CSV is self-describing even when the dialog is long closed.
-                if self._truncated:
-                    writer.writerow([
-                        "NOTE: Dataset was capped at 200,000 events — "
-                        "sessions from later in the time range may be missing."
-                    ])
                 writer.writerow(self._HEADERS)
                 # Low fix: rebuild row order from the table's current visual state
                 # so an interactive column sort is reflected in the exported file.
@@ -6054,11 +6040,6 @@ class _RemoteAssistanceDialog(QDialog):
         )
         if type_parts:
             html += f"&ensp;—&ensp;<span style='color:#5a4030;'>{type_parts}</span>"
-        if self._truncated:
-            html += (
-                "&ensp;<span style='color:#8a4800;'>⚠ Results capped at 200,000 events — "
-                "later sessions may be missing</span>"
-            )
         if hasattr(self, "_lbl_summary"):
             self._lbl_summary.setText(html)
 
@@ -6138,11 +6119,6 @@ class _RemoteAssistanceDialog(QDialog):
 
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 writer = _safe_csv_writer(f)
-                if self._truncated:
-                    writer.writerow([
-                        "NOTE: Dataset was capped at 200,000 events — "
-                        "sessions from later in the time range may be missing."
-                    ])
                 # L2 fix: extractors are ordered to match _HEADERS exactly.
                 # Adding a new column to _HEADERS must be accompanied by a
                 # corresponding entry here; the assertion below catches the mismatch
@@ -6178,16 +6154,9 @@ class _RemoteAssistanceDialog(QDialog):
         except Exception as exc:
             QMessageBox.critical(self, "Export Failed", f"Could not write CSV:\n{exc}")
             return
-        # L4: echo the truncation caveat in the success dialog so users
-        # are not surprised by missing sessions in the exported CSV.
-        _trunc_note = (
-            "\n\n⚠ Note: the source dataset was capped at 200,000 events;\n"
-            "sessions from later in the time range may be incomplete."
-            if self._truncated else ""
-        )
         QMessageBox.information(
             self, "Export Complete",
-            f"Saved {len(ordered)} session(s) to:\n{path}{_trunc_note}"
+            f"Saved {len(ordered)} session(s) to:\n{path}"
         )
 
 
@@ -13604,15 +13573,6 @@ class MainWindow(QMainWindow):
                                 "No WLAN-AutoConfig events found in the dataset.",
                                 icon=QMessageBox.Icon.Information)
             return
-        # Medium fix: warn only when the worker confirmed truncation (fetched > 200 000
-        # rows), not merely when the result count equals the cap exactly.
-        if truncated:
-            self._warn_blocking(
-                "WiFi History — Results Truncated",
-                "The dataset contains more than 200,000 WLAN-AutoConfig events.\n"
-                "Results are limited to the first 200,000 (chronological order).\n"
-                "Some sessions near the end of the time range may be missing.",
-            )
         self._open_wifi_history_dialog(events, truncated=truncated)
 
     def _on_wifi_jm_fetch_error(self, kind: str, msg: str) -> None:
@@ -13805,13 +13765,6 @@ class MainWindow(QMainWindow):
                 icon=QMessageBox.Icon.Information,
             )
             return
-        if truncated:
-            self._warn_blocking(
-                "Remote Assistance — Results Truncated",
-                "The dataset contains more than 200,000 relevant events.\n"
-                "Results are limited to the first 200,000 (chronological order).\n"
-                "Some sessions near the end of the time range may be missing.",
-            )
         self._open_remote_assist_dialog(events, truncated=truncated)
 
     def _on_remote_assist_jm_error(self, kind: str, msg: str) -> None:
