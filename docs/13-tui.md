@@ -81,7 +81,7 @@ The TUI refreshes at 4 frames per second. This is sufficient to see live progres
 ## Limitations
 
 - TUI does not show individual event details — it is a progress monitor only.
-- `--tui` and `--juggernaut` cannot be used simultaneously in this version. Juggernaut Mode has its own two-phase progress output in the terminal.
+- The CLI has no Juggernaut switch: Juggernaut Mode is a GUI mode.
 - TUI requires a terminal that supports ANSI escape codes. Standard Windows `cmd.exe`, PowerShell, and Windows Terminal all support this. Very old SSH clients may not render the progress bars correctly.
 - The time estimate is a rolling average based on current throughput — it can fluctuate significantly when file sizes vary widely.
 

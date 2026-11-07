@@ -51,14 +51,16 @@ py -3 evtx_tool.py parse C:\Logs ^
     --format csv
 ```
 
-**Juggernaut Mode (large dataset):**
+**Large dataset (fewer worker processes, lower memory pressure):**
 
 ```bat
 py -3 evtx_tool.py parse C:\LargeCapture ^
-    --juggernaut ^
-    --workers 8 ^
+    --max-threads 8 ^
+    --no-tui ^
     --output results.json
 ```
+
+Juggernaut Mode (the columnar engine) is a GUI mode; the CLI has no switch for it.
 
 **With text search:**
 
@@ -68,41 +70,50 @@ py -3 evtx_tool.py parse C:\Logs ^
     --output suspicious.json
 ```
 
-**Full example with all options:**
+**Full example:**
 
 ```bat
 py -3 evtx_tool.py parse C:\Logs ^
-    --profile "Process Creation" ^
+    --profile "Process Creation and Termination" ^
     --event-id 4688,1 ^
     --level warning,error,critical ^
     --computer DC01 ^
-    --from "2025-05-10T00:00:00" ^
-    --to "2025-05-10T23:59:59" ^
+    --date-from "2025-05-10T00:00:00" ^
+    --date-to "2025-05-10T23:59:59" ^
     --search "powershell" ^
+    --ioc --correlate ^
     --output results.json ^
-    --format json ^
-    --workers 6 ^
-    --tui
+    --max-threads 6
 ```
 
-**Options reference:**
+**Options reference** (`py -3 evtx_tool.py parse --help` lists the same):
 
 | Option | Description |
 |---|---|
-| `--profile NAME` | Apply a DFIR profile by name or path to a `.json` profile file |
-| `--event-id LIST` | Comma-separated event IDs or range (e.g. `4624,4625` or `4600-4700`) |
-| `--level LIST` | Comma-separated levels: `critical,error,warning,information,verbose` |
-| `--computer TEXT` | Filter by computer name (substring) |
-| `--from TIMESTAMP` | Start of time range (ISO 8601, e.g. `2025-05-10T14:30:00`) |
-| `--to TIMESTAMP` | End of time range |
-| `--search TEXT` | Full-text search across all event fields |
-| `--search-mode` | `contains` (default) or `regex` |
-| `--output FILE` | Save results to a file |
-| `--format` | Output format: `json` (default), `csv`, `xml`, `html`, `pdf` |
-| `--juggernaut` | Enable Juggernaut Mode (columnar engine for large datasets) |
-| `--workers N` | Number of parse worker processes (default: CPU count − 1) |
-| `--tui` | Show the Rich terminal dashboard during parsing |
-| `--no-analysis` | Skip ATT&CK/IOC/chain analysis (faster) |
+| `-p, --profile NAME` | Apply a DFIR profile by name or by the path of a `.json` profile file; repeat for several, or `all`. A name or file that does not exist stops the run with an error (exit 2) |
+| `-F, --filter-file FILE` | Load a filter saved with `--save-filter` (or from the GUI's Advanced Filter) |
+| `-e, --event-id LIST` | Event IDs or ranges, e.g. `4624,4625` or `4600-4650` |
+| `--exclude-id LIST` | Event IDs to leave out |
+| `-l, --level LIST` | `critical,error,warning,info,verbose` |
+| `--date-from`, `--date-to` | Time range (ISO 8601, e.g. `2025-05-10T14:30:00`) |
+| `-u, --user TEXT` | Username or SID |
+| `-c, --computer TEXT` | Computer name |
+| `-s, --source TEXT` | Source / provider |
+| `-q, --search TEXT` | Free-text search terms |
+| `--search-mode` | `and` (default), `or`, `not` |
+| `--timeline-anchor`, `--timeline-before`, `--timeline-after` | A time window around a moment (minutes before / after; defaults 5 / 30) |
+| `-o, --output FILE` | Output file (`.html`, `.csv`, `.json`, `.xml`, `.pdf`) |
+| `--format` | Override the output format: `csv`, `json`, `xml`, `html`, `pdf` |
+| `--save-filter FILE` | Save the active filter (including applied profiles) to a JSON file |
+| `--attack / --no-attack` | ATT&CK tagging (on by default) |
+| `--ioc` | Extract IOCs |
+| `--correlate` | Run the attack-chain correlation engine |
+| `--max-threads N` | Maximum worker processes (default: CPU count - 1) |
+| `--cpu-limit`, `--ram-limit`, `--priority` | Resource limits and process priority |
+| `--no-recursive` | Do not search sub-folders |
+| `--limit N` | Write at most N events |
+| `--no-tui` | No terminal dashboard |
+| `-v, --verbose` | More logging |
 
 ---
 
@@ -180,7 +191,7 @@ py -3 evtx_tool.py profiles validate my_profile.json
 Parses a folder and reports throughput statistics without saving output. Useful for sizing hardware or comparing configurations.
 
 ```bat
-py -3 evtx_tool.py benchmark C:\Logs --workers 4
+py -3 evtx_tool.py benchmark C:\Logs --threads 4
 ```
 
 Sample output:
@@ -233,9 +244,8 @@ Launches the full PySide6 desktop application. Equivalent to double-clicking `Ev
 
 - The CLI does not support all GUI filter combinations (e.g. the layered filter stack is simplified in CLI mode to single-pass filtering).
 - Interactive mode does not persist between runs.
-- `--tui` and `--juggernaut` cannot be used simultaneously in this version.
-- PDF export from CLI requires all analysis modules to have run — use without `--no-analysis`.
-- Timestamp parsing for `--from`, `--to`, and `--anchor` supports: ISO 8601 with or without microseconds, with or without trailing `Z`, and space-separated formats (`2025-05-10 14:30:00`).
+- PDF export from the CLI includes ATT&CK, IOC and chain sections only when `--attack`, `--ioc` and `--correlate` ran.
+- Timestamp parsing for `--date-from`, `--date-to` and `--timeline-anchor` supports: ISO 8601 with or without microseconds, with or without trailing `Z`, and space-separated formats (`2025-05-10 14:30:00`).
 
 ---
 

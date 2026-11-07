@@ -52,7 +52,7 @@ It parses Windows Event Logs in parallel using a Rust-backed engine, loads resul
 
 ### For output and reporting
 
-✅ **Export in 8 formats** — JSON, CSV, XML, self-contained HTML, PDF investigation report, STIX 2.1, OpenIOC, YARA rules generated from observed IOCs.
+✅ **Export in 8 formats** — JSON, CSV, XML, self-contained HTML, PDF investigation report, STIX 2.1, MISP, YARA rules generated from observed IOCs.
 
 ✅ **Full CLI + TUI** — every GUI feature is accessible headlessly for scripting, automation, and server environments.
 
@@ -69,8 +69,8 @@ py -3 evtx_tool.py gui
 REM Parse a folder, apply a DFIR profile, export to JSON
 py -3 evtx_tool.py parse C:\Logs --profile "Logon/Logoff Activity" --output results.json
 
-REM Large dataset — Juggernaut Mode keeps RAM flat regardless of event count
-py -3 evtx_tool.py parse C:\LargeCapture --juggernaut --workers 8
+REM Large dataset — more worker processes (Juggernaut Mode, which keeps RAM flat, is in the GUI)
+py -3 evtx_tool.py parse C:\LargeCapture --max-threads 8
 
 REM Sentinel — build a behaviour baseline, then score a suspect capture
 python -m sentinel.cli build   --evtx C:\Baseline --output baseline/ --sigma C:\sigma\rules\windows
@@ -91,7 +91,7 @@ python -m sentinel.cli analyze --evtx C:\Target   --baseline baseline/ --sigma C
 | **Hayabusa integration** | Point EventHawk at your Hayabusa binary and it runs ~3,000 community Sigma rules against the loaded files, merging results into the ATT&CK tab. |
 | **PowerShell History extraction** | Reconstructs PS sessions, commands, and script blocks (EID 400/403/600/800/4103/4104). Reassembles multi-fragment script blocks, maps ATT&CK techniques, and exports a session timeline, individual script files, JSON, and an Excel workbook with clickable hyperlinks. |
 | **Sentinel anomaly engine** | Builds a frequency model + process ancestry trie + fuse filter from a known-good corpus. Scores every process-create event in a suspect capture and classifies findings into 4 tiers (T1 normal → T4 critical). |
-| **Export everywhere** | JSON, CSV, XML, HTML, PDF report, STIX 2.1, OpenIOC, YARA. |
+| **Export everywhere** | JSON, CSV, XML, HTML, PDF report, STIX 2.1, MISP, YARA. |
 | **CLI + TUI** | Full headless CLI for scripting and automation. Rich terminal dashboard for live parse progress. |
 
 ---
@@ -144,7 +144,7 @@ python -m sentinel.cli analyze --evtx C:\Target   --baseline baseline/ --sigma C
 
 | | |
 |---|---|
-| [Exporting](docs/11-exporting.md) | JSON, CSV, XML, HTML, PDF, STIX 2.1, OpenIOC, YARA — format guide and limitations |
+| [Exporting](docs/11-exporting.md) | JSON, CSV, XML, HTML, PDF, STIX 2.1, MISP, YARA — format guide and limitations |
 
 ### Command Line
 
@@ -228,7 +228,7 @@ A: No admin rights are required to run EventHawk or parse EVTX files you already
 
 **Q: Why is my parse slow on a large folder?**
 
-A: The most common causes are: (1) too few workers — increase with `--workers N` up to your physical core count; (2) spinning disk — EVTX parsing is I/O-heavy at high worker counts and HDDs are significantly slower than SSDs; (3) resource throttling — the built-in resource monitor reduces worker throughput if CPU exceeds 85% to keep the system usable. Check the TUI dashboard (`--tui`) to see live CPU, RAM, and per-file progress.
+A: The most common causes are: (1) too few workers — increase with `--max-threads N` up to your physical core count; (2) spinning disk — EVTX parsing is I/O-heavy at high worker counts and HDDs are significantly slower than SSDs; (3) resource throttling — the built-in resource monitor reduces worker throughput if CPU exceeds 85% to keep the system usable. Check the TUI dashboard (shown unless `--no-tui`) to see live CPU, RAM, and per-file progress.
 
 ---
 

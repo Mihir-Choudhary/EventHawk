@@ -15619,7 +15619,7 @@ class MainWindow(QMainWindow):
                     # No standard STIX 2.1 object for these: say so (Codex C4-4).
                     msg += ("\n\nNot in the STIX file (STIX 2.1 has no standard object for them): "
                             + ", ".join(f"{k.replace('_', ' ')} {v:,}" for k, v in sorted(_skipped.items()))
-                            + ". Use CSV, MISP or the bulk copy for these.")
+                            + ". The CSV export and the bulk copy contain every value.")
 
             elif is_misp:
                 count = export_misp(self._iocs, path)

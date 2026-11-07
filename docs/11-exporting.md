@@ -125,13 +125,13 @@ Exports the extracted IOCs as a [STIX 2.1](https://oasis-open.github.io/cti-docu
 | Command line | `process` command line |
 | Process image, DLL | `process` image name, `file` name |
 
-STIX 2.1 has no standard object for named pipes, services, scheduled tasks or shares: they are not in the STIX file, and the export message says how many of each were left out (use CSV, MISP or the bulk copy for them). Timestamps have millisecond precision, as STIX 2.1 requires. MISP attribute timestamps are Unix epoch seconds.
+STIX 2.1 has no standard object for named pipes, services, scheduled tasks or shares: they are not in the STIX file, and the export message says how many of each were left out (use the CSV export or the bulk copy for them). Timestamps have millisecond precision, as STIX 2.1 requires. MISP attribute timestamps are Unix epoch seconds.
 
-### OpenIOC
+### MISP
 
-**Best for:** Sharing IOCs with tools that use the Mandiant OpenIOC format (e.g. Redline, GRR Rapid Response).
+**Best for:** Importing IOCs into a MISP instance.
 
-Exports all extracted IOCs as an OpenIOC XML document with appropriate indicator terms for each IOC type.
+Exports the extracted IOCs as a MISP event (JSON) with one attribute per value: IP addresses, domains, URLs, hashes, process and file names, command lines, registry keys, users, services, scheduled tasks, named pipes and shares. Computer names are not exported to MISP. Attribute timestamps are Unix epoch seconds.
 
 ### YARA
 
