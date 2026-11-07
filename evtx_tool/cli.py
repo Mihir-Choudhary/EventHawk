@@ -370,7 +370,12 @@ def parse_cmd(
     if any(p.lower() == "all" for p in profile_names):
         profile_names = pm.list_names()
     if profile_names:
-        fc = pm.build_filter(profile_names, base_filter=fc)
+        try:
+            fc = pm.build_filter(profile_names, base_filter=fc, strict=True)
+        except ValueError as exc:
+            # Never parse on with no profile when one was asked for (Codex C6-1).
+            console.print(f"[red]{exc}[/red]  (use a profile name from 'profiles list' or a profile .json file)")
+            sys.exit(2)
         console.print(f"[magenta]Profiles: {', '.join(profile_names)}[/magenta]")
         _pids = {e for g in fc.get("profile_groups") or [] for e in g.get("event_ids") or []}
         if _pids:
@@ -510,7 +515,11 @@ def diff_cmd(baseline, incident, profile, output, fmt, spike_factor, max_threads
     if any(p.lower() == "all" for p in profile_names):
         profile_names = pm.list_names()
     if profile_names:
-        fc = pm.build_filter(profile_names, base_filter=fc)
+        try:
+            fc = pm.build_filter(profile_names, base_filter=fc, strict=True)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]  (use a profile name from 'profiles list' or a profile .json file)")
+            sys.exit(2)
 
     # Parse both sets sequentially (each uses full thread pool)
     console.print("[dim]Parsing baseline...[/dim]")

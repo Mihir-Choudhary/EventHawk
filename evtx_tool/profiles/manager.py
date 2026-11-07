@@ -38,6 +38,14 @@ DEFAULTS_DIR = _HERE / "defaults"
 DEFAULT_USER_DIR = Path("profiles")
 
 
+class ProfileNotFoundError(ValueError):
+    """Profiles asked for by name or path that do not exist (or cannot be read)."""
+
+    def __init__(self, missing):
+        self.missing = list(missing)
+        super().__init__("Profile not found: " + ", ".join(self.missing))
+
+
 class ProfileManager:
     """
     Manages DFIR profiles: load, save, create, delete, import, export.
@@ -252,16 +260,28 @@ class ProfileManager:
 
     # ── Filter generation ──────────────────────────────────────────────────────
 
-    def build_filter(self, profile_names: list[str], base_filter: dict | None = None) -> dict:
+    def build_filter(self, profile_names: list[str], base_filter: dict | None = None,
+                     strict: bool = False) -> dict:
         """
-        Build a combined filter dict for the given profile names.
-        Unions all event_ids and sources. base_filter restrictions applied on top.
+        Build a combined filter dict for the given profiles (see
+        core.filters.build_combined_filter).  Each entry is a profile name or
+        the path of a profile JSON file.  With *strict*, an entry that is
+        neither raises ProfileNotFoundError instead of being left out (the CLI:
+        a missing profile silently meant no profile, Codex C6-1).
         """
         from evtx_tool.core.filters import empty_filter, build_combined_filter
 
         profiles = []
         missing = []
         for name in profile_names:
+            if str(name).lower().endswith(".json") and os.path.isfile(name):
+                try:
+                    profiles.append(self._load_file(Path(name)))
+                except Exception as exc:                       # noqa: BLE001
+                    if strict:
+                        raise ProfileNotFoundError([f"{name} ({exc})"]) from exc
+                    missing.append(name)
+                continue
             p = self._cache.get(name)
             if p is None:
                 # Try partial match
@@ -275,6 +295,8 @@ class ProfileManager:
 
         if missing:
             logger.warning("Profiles not found: %s", ", ".join(missing))
+            if strict:
+                raise ProfileNotFoundError(missing)
 
         bf = base_filter if base_filter is not None else empty_filter()
         return build_combined_filter(bf, profiles)
