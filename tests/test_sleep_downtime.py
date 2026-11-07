@@ -63,6 +63,24 @@ def dataset():
             sysev("HOST-SM", 11, 1600, 566, KP, {"PreviousSessionType": "3", "NextSessionType": "1",
                                                "PreviousSessionDurationInUs": "600000000", "Reason": "20"}),
             wlan("HOST-SM", 2, 2000, 8003, "NetSM")]
+    # SP (Codex SA-3): Power-Troubleshooter 1 says asleep 1300 -> 1600; a Kernel-Power 566
+    # for the same sleep says it began at 1000 (its start is derived from the clock).
+    # One physical sleep: the Power-Troubleshooter times win (2000 - 300 = 1700 s),
+    # and the Notes say the two disagree.  The union subtracted 600 s.
+    evs += [wlan("HOST-SP", 1, 0, 8001, "NetSP"),
+            sysev("HOST-SP", 10, 1601, 1, PT, {"SleepTime": at(1300), "WakeTime": at(1600), "TargetState": "4",
+                                              "WakeSourceType": "1"}),
+            sysev("HOST-SP", 11, 1600, 566, KP, {"PreviousSessionType": "3", "NextSessionType": "1",
+                                               "PreviousSessionDurationInUs": "600000000", "Reason": "20"}),
+            wlan("HOST-SP", 2, 2000, 8003, "NetSP")]
+    # SB: sleep at 1000 (42), hibernated 1300 -> 1600 (Power-Troubleshooter 1), no doze record,
+    # and Kernel-Power 566 confirms one sleep session 1000 -> 1600: 1400 s, no conflict.
+    evs += [wlan("HOST-SB", 1, 0, 8001, "NetSB"), sysev("HOST-SB", 10, 1000, 42, KP, {"TargetState": "4"}),
+            sysev("HOST-SB", 11, 1601, 1, PT, {"SleepTime": at(1300), "WakeTime": at(1600), "TargetState": "5",
+                                              "WakeSourceType": "1"}),
+            sysev("HOST-SB", 12, 1600, 566, KP, {"PreviousSessionType": "3", "NextSessionType": "1",
+                                               "PreviousSessionDurationInUs": "600000000", "Reason": "20"}),
+            wlan("HOST-SB", 2, 2000, 8003, "NetSB")]
     # SD: sleep at 1000 (42), doze to hibernate at 1300, hibernated 1300 -> 1600: 1400 s.
     evs += [wlan("HOST-SD", 1, 0, 8001, "NetSD"), sysev("HOST-SD", 10, 1000, 42, KP, {"TargetState": "4"}),
             sysev("HOST-SD", 11, 1301, 1, PT, {"SleepTime": at(1300), "WakeTime": at(1300), "TargetState": "0",
@@ -108,6 +126,12 @@ def grade(tag, wifi, ra):
     m = s.get("NetSM")
     check(f"{tag}: sleep from Kernel-Power 566's sleep session: 1400 s, source named",
           m is not None and m["duration_secs"] == 1400.0 and "Kernel-Power 566" in m.get("notes", ""), show(m))
+    p_ = s.get("NetSP")
+    check(f"{tag}: Power-Troubleshooter and a disagreeing 566 for one sleep: PT wins (1700 s), Notes say so",
+          p_ is not None and p_["duration_secs"] == 1700.0 and "disagree" in p_.get("notes", ""), show(p_))
+    b_ = s.get("NetSB")
+    check(f"{tag}: sleep then hibernation with no doze record, 42 and 566 agree: 1400 s, no conflict",
+          b_ is not None and b_["duration_secs"] == 1400.0 and "disagree" not in b_.get("notes", ""), show(b_))
     d = s.get("NetSD")
     check(f"{tag}: sleep then hibernation (42 to the doze, then Power-Troubleshooter): 1400 s",
           d is not None and d["duration_secs"] == 1400.0 and "doze to hibernate" in d.get("notes", ""), show(d))
