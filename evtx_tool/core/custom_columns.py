@@ -104,7 +104,12 @@ def data_items(event_data, need: "int | None" = None) -> list:
     """
     if not isinstance(event_data, dict):
         return []
-    if "Data" in event_data:
+    # The Data branch only when Data is the content (EventData).  UserData can
+    # hold named fields AND a <Data> child: then every leaf, in document order
+    # ({Data[1]} took the Data child and skipped an earlier field: Codex C2-2).
+    if "Data" in event_data and (len(event_data) == 1 or not any(
+            isinstance(k, str) and k not in ("Data", "Binary") and k[:1] not in ("#", "@")
+            for k in event_data)):
         v = event_data["Data"]
         if isinstance(v, dict) and "#text" in v:
             v = v["#text"]
