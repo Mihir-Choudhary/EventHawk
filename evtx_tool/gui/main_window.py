@@ -17662,10 +17662,21 @@ class MainWindow(QMainWindow):
             if full_table is None or len(full_table) == 0:
                 QMessageBox.information(self, "Missing Record IDs", "No events loaded.")
                 return
+            # A file tab in front: that file only, as in Normal mode, where the
+            # tab's own events are read (Codex C3-2: Juggernaut read every file).
+            _scope = None
+            try:
+                _m = self._active_table.model()
+                if getattr(_m, "_fixed_where_sql", "") == "source_file = ?" and getattr(_m, "_fixed_params", None):
+                    _scope = _m._fixed_params[0]
+            except Exception:
+                _scope = None
             try:
                 rids = full_table.column(field).to_pylist()
                 srcs = full_table.column("source_file").to_pylist()
                 for rid, src in zip(rids, srcs, strict=True):   # equal-length by construction
+                    if _scope is not None and src != _scope:
+                        continue
                     if rid is not None:
                         by_file[src or "<unknown>"].append(int(rid))
             except Exception as exc:
