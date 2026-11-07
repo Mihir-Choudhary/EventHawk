@@ -1,116 +1,40 @@
 # Installation
 
-## What It Is
+## Source checkout
 
-EventHawk can be installed in two ways: as a **pre-built Windows executable** (no Python required by the user) or **from source** using Python. Both result in an identical application.
+Use a Python environment with the dependencies in `requirements.txt`. Python 3.12 is the environment used for these source instructions; this guide does not establish compatibility with every Python or operating-system version. Run from the repository root in PowerShell:
 
----
-
-## Option A — Standalone (recommended for most users)
-
-### When to use
-You just want to run EventHawk. **No Python, no setup, nothing to configure.**
-
-### Steps
-
-1. Go to the [Releases page](../../releases) on GitHub.
-2. Download **one** of these:
-
-   | File | What it does |
-   |---|---|
-   | `EventHawk-1.3.0-Setup.exe` | **Installer.** Creates a Desktop / Start-Menu shortcut. Run it as a normal user (installs to your account, no admin needed) or as admin (installs for all users). |
-   | `EventHawk-portable.exe` | **Portable.** Double-click — it unpacks and runs. Nothing is installed. |
-   | `EventHawk-portable.7z` | Same as portable but smaller; extract with 7-Zip, then run `EventHawk.cmd`. |
-
-3. Launch it — the GUI opens maximized.
-
-Everything (Python 3.14, PySide6/Qt, DuckDB, PyArrow, the Rust EVTX parser and
-all 20 DFIR profiles) is bundled inside — about 57 MB. To analyze a `.evtx`
-file, open it from within the app.
-
-> **Uninstall:** installer → Settings → Apps → *EventHawk* → Uninstall.
-> Portable → just delete the folder; it leaves nothing behind.
-
----
-
-## Option B — From Source (Developers / advanced users)
-
-### When to use
-You want to modify the code, contribute, or run on a system where compiling to EXE is not desired.
-
-### Requirements
-
-| Requirement | Minimum version |
-|---|---|
-| Python | 3.10 |
-| pip | 22.0+ |
-| Git | Any |
-| RAM | 4 GB (8 GB+ for large datasets) |
-| OS | Windows 10/11 64-bit |
-
-### Steps
-
-**1. Clone the repository**
-
-```bat
-git clone https://github.com/Mihir-Choudhary/EventHawk.git
+```powershell
+git clone --branch beta https://github.com/Mihir-Choudhary/EventHawk.git
 cd EventHawk
+py -3.12 -m pip install -r requirements.txt
+py -3.12 evtx_tool.py --help
+py -3.12 evtx_tool.py gui
 ```
 
-**2. Install dependencies**
+For an existing checkout, omit clone/cd. To queue inputs at startup:
 
-```bat
-install.bat
+```powershell
+py -3.12 evtx_tool.py gui .\logs
 ```
 
-Or manually:
+Inputs are `.evtx` files or folders containing them. This is not a reader for legacy `.evt` files. `evtx` is the Rust-backed parser dependency; `python-evtx` is a different package. PySide6 supplies the GUI; Arrow and DuckDB supply Juggernaut. Sentinel's optional Sigma dependency is described in [its guide](18-sentinel-sigma.md).
 
-```bat
-py -3 -m pip install -r requirements.txt
-```
+## Windows packages
 
-**3. Launch the GUI**
+There are two build paths in this repository. Check the package you actually received rather than assuming every file called `EventHawk.exe` contains the application and Python.
 
-```bat
-py -3 evtx_tool.py gui
-```
+| Build path | Runtime requirement |
+|---|---|
+| `EventHawk.spec` / `launcher.py` | Thin launcher. Requires system Python, installed application dependencies, and `evtx_tool.py` with the application packages beside the launcher. |
+| `build_standalone.ps1` / `EventHawk.iss` | Stages an embeddable Python runtime and the application; generates portable/installer outputs according to installed build tools. |
 
-**4. Or run the CLI**
+See [thin launcher](20-building-release.md) and [standalone build](21-building-standalone.md). These guides describe source build behavior, not a guarantee that a particular release asset is available or tested on your machine.
 
-```bat
-py -3 evtx_tool.py --help
-```
+## Troubleshooting
 
----
+Run from a terminal to see startup errors. Use **Help > Open Log Folder** for GUI logs; the normal Windows location is `%LOCALAPPDATA%\EventHawk\logs`, with fallback locations when unavailable. CLI logging uses `evtx_tool_logs` in its working directory.
 
-## GPU Acceleration (Linux / WSL2 only)
+If parsing or an optional analysis fails, retain the reported error and identify which operation failed. An empty result can mean no matches; it is not by itself proof that all inputs were read successfully. No fixed RAM requirement or input-size ceiling is established here.
 
-EventHawk runs CPU-only on Windows. On Linux or WSL2 with an NVIDIA GPU, you can enable RAPIDS cuDF for GPU-accelerated dataframe operations:
-
-```bash
-# CUDA 12.x
-pip install cudf-cu12 --extra-index-url=https://pypi.nvidia.com
-
-# CUDA 11.x
-pip install cudf-cu11 --extra-index-url=https://pypi.nvidia.com
-```
-
-cuDF is detected automatically at startup. If absent, the tool silently falls back to CPU mode.
-
----
-
-## Limitations
-
-- Windows only for the compiled EXE. Source mode works on any OS where PySide6 and pyevtx-rs are available.
-- The `evtx` package (`pyevtx-rs`) uses a compiled Rust extension. On rare systems with unusual Python builds, the wheel may fail — in that case install Rust and build from source: `pip install evtx --no-binary evtx`.
-- GPU acceleration is not available on Windows regardless of hardware.
-
----
-
-## Related Docs
-
-- [GUI Overview](02-gui-overview.md)
-- [Normal Mode](03-normal-mode.md)
-- [CLI Mode](12-cli.md)
-- [Building a Release](20-building-release.md)
-- [Building the Standalone](21-building-standalone.md)
+Next: [GUI overview](02-gui-overview.md) or [CLI](12-cli.md).

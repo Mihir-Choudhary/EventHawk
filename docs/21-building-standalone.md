@@ -1,106 +1,31 @@
-# Building the Standalone (no-Python-required) Build
+# Building an embedded-runtime Windows package
 
-## What this covers
+`build_standalone.ps1` stages an embeddable Windows Python runtime and the application. This is separate from the [thin launcher](20-building-release.md). These are source-verified build instructions, not a claim that a new installer has been built or clean-machine tested.
 
-How to build the **fully self-contained** EventHawk distribution — the one end
-users can run with **no Python and no pip installed**. This is different from the
-launcher build in [20-building-release.md](20-building-release.md), which needs a
-system Python.
+## Inputs and operation
 
-It produces three artifacts in `dist\`:
+The script accepts **PyVersion**, **WorkDir**, **OutDir** and **ISCC**. Its current PyVersion default is 3.14.4; that is a script setting, not a guarantee of remote availability or compatible dependency wheels. It downloads Python and pip bootstrap content and installs requirements, so building needs network access and the appropriate build environment.
 
-| Artifact | Size | For |
-|---|---|---|
-| `EventHawk-1.3.0-Setup.exe` | ~57 MB | **Installer.** Admin → Program Files (all users); non-admin → LocalAppData (current user). Creates Desktop + Start-Menu shortcuts. |
-| `EventHawk-portable.exe` | ~56 MB | **Portable self-extractor.** Double-click → unpacks and runs `EventHawk.cmd`. No 7-Zip needed. |
-| `EventHawk-portable.7z` | ~56 MB | **Portable, smallest.** Extract with 7-Zip / WinRAR, then run `EventHawk.cmd`. |
+**WorkDir is disposable:** the script recursively removes an existing WorkDir before staging. Choose a dedicated build directory containing nothing you need. Read the script before running it. OutDir receives generated artifacts. Inno Setup 6 is needed for the installer; ISCC can name its compiler explicitly.
 
----
-
-## The scripts (what to touch for future fixes)
-
-| File | Role |
-|---|---|
-| [`build_standalone.ps1`](../build_standalone.ps1) | The whole build. Run it; it does everything below. |
-| [`EventHawk.iss`](../EventHawk.iss) | Inno Setup installer definition (shortcuts, install modes, publisher). |
-| [`eventhawk_gui.py`](../eventhawk_gui.py) | The entry point the bundle launches. |
-| `requirements.txt` | The dependency list installed into the bundle. |
-
-**Where things live:** the app code is `evtx_tool\`; the icon is
-`evtx_tool\resources\images\eventhawk_logo.ico`; the app version is
-`evtx_tool\__init__.py`. Update those, re-run `build_standalone.ps1`, and you
-get fresh artifacts.
-
----
-
-## Prerequisites
+From the repository root, after preparing those prerequisites:
 
 ```powershell
-winget install JRSoftware.InnoSetup   # the ISCC.exe installer compiler
-winget install 7zip.7zip              # for the portable archives (optional)
+.\build_standalone.ps1
 ```
 
-Internet access (the build downloads a fresh signed Python) and ~1.5 GB free
-disk for the temporary build.
+## What the source stages
 
----
+The script checks the downloaded python.exe's Authenticode status and Python Software Foundation signer before proceeding. It installs requirements.txt, copies evtx_tool and sentinel plus evtx_tool.py/eventhawk_gui.py, adds an icon and EventHawk.cmd, and trims selected runtime files. The final Python path file isolates the deployed runtime from user site packages.
 
-## Build it
+Copying the sentinel package does not install optional pySigma: the script installs the main requirements, not sentinel/requirements.txt. Sentinel's heuristic pre-tagging therefore requires separate dependency preparation if advertised; non-Sigma analysis has its own path.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File build_standalone.ps1
-```
+When 7-Zip is found, the script produces EventHawk-portable.7z; a self-extracting portable EXE also depends on its SFX module. Inno Setup uses EventHawk.iss and currently names the installer EventHawk-1.3.0-Setup.exe. These names/defaults come from source; do not infer the next release version or availability from them. No package-size guarantee is made.
 
-That's the whole thing. To point at an already-installed Inno compiler:
+## Verify the actual artifact
 
-```powershell
-.\build_standalone.ps1 -ISCC "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-```
+Test extraction/installation and startup without relying on system Python or developer-installed packages. Verify dependencies after trimming, icons/resources/default profiles, parsing, Juggernaut workers, session tools, Sentinel and exports. Test launch from outside the source directory. A signature check on Python alone does not authenticate all downloaded dependencies or prove the application works.
 
----
+EventHawk.iss offers per-user installation by default with an optional elevated installation mode and creates shortcuts to the bundled Python entry script. Review its uninstall cleanup too: it removes the application's local EventHawk directory, which includes GUI logs. Preserve needed diagnostic material before uninstalling.
 
-## How the build works (the "clean-room" design)
-
-`build_standalone.ps1` deliberately trusts **nothing** on the build machine:
-
-1. **Fresh, verified Python.** Downloads the official Windows *embeddable* Python
-   from python.org and **aborts unless `python.exe` is Authenticode-signed by the
-   Python Software Foundation**.
-2. **Isolated dependencies.** Bootstraps `pip`, then `pip install -r
-   requirements.txt` straight from PyPI into that runtime, with
-   `PYTHONNOUSERSITE=1` so your machine's global `AppData\Roaming\Python`
-   packages are never read. The deployed app's `._pth` is likewise isolated.
-3. **Trim (no features cut).** A full install is ~250 MB, mostly PySide6's Qt
-   WebEngine/QML/translations that EventHawk never imports. The script keeps only
-   Qt Core/Gui/Widgets/Svg and drops dead weight — PyArrow + DuckDB Juggernaut
-   mode stay fully intact. It keeps every package's `.dist-info` (DuckDB reads its
-   own version via `importlib.metadata` at runtime).
-4. **Package.** Inno Setup (LZMA2 ultra64) → the installer; 7-Zip → the portable
-   `.zip` and `.7z`.
-
-### Why not PyInstaller
-
-This build ships the **code-signed** `pythonw.exe` and installs via Inno Setup
-to a normal install location — a standard signed Python runtime rather than a
-one-file bootloader stub, so it stays self-contained and easy to update.
-
----
-
-## Gotchas
-
-- **MAX_PATH.** Build from a short path. The script uses
-  `%LOCALAPPDATA%\eh-build`; building under a very long path (deep `lxml`
-  schematron files) overflows Windows' 260-char limit and the Inno compile
-  aborts.
-- **Logs.** The app writes logs to `%LOCALAPPDATA%\EventHawk\logs`, never next to
-  itself — a Program Files install is read-only for non-admin users, so logging
-  beside the app would crash startup. See `evtx_tool\gui\app.py`.
-- **Version bumps.** The installer version is defined in `EventHawk.iss`
-  (`MyAppVersion`); keep it in step with `evtx_tool\__init__.py`.
-
----
-
-## Related docs
-
-- [Installation](01-installation.md)
-- [Building a Release (launcher build)](20-building-release.md)
+Do not claim a build passed unless its actual output was launched and tested. See [testing](22-testing.md) and [installation](01-installation.md).

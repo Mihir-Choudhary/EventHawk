@@ -1,70 +1,33 @@
-# Column Filter Popups
+# Column filters and custom columns
 
-## What It Is
+Click a supported header to open its value popup. Use the checkboxes, **All**, **None**, search, and **OK**; **Cancel** leaves the selection unchanged. Right-click a header for sorting and column management. Not every built-in header has a value popup.
 
-Column Filter Popups let you filter by distinct values in any column by right-clicking its header. EventHawk runs a background `GROUP BY` query and shows you every distinct value in that column with its event count, so you can tick exactly the values you want.
+Column filters belong to the event tab. Switching tabs changes which column restrictions apply. Popup values reflect the tab's scope and other active restrictions; the popup excludes its own column predicate when gathering candidate values.
 
-This is faster than typing into the Advanced Filter when you don't know the exact values in your dataset — you can browse what's there and click.
+## Long value lists
 
----
+Ordinary value lists initially show the most frequent 1,000 values. The popup explains when the initial list is limited. Search can query beyond that initial list; its display has a separate 5,000-value limit and a notice when limited. A value absent from the initial list is not proof that it is absent from the data.
 
-## How to Use
+The timestamp tree groups by year, month, day and hour in the display time zone. Days/hours are loaded through the date-specific path rather than the ordinary top-value limit. Partial day selections apply hour restrictions. Selecting all currently shown search results is not the same as clearing the entire column restriction. Selections outside the visible subset are retained rather than silently widening the filter.
 
-**1. Right-click** any column header in the events table.
+## Built-in columns
 
-**2.** A popup appears showing all distinct values in that column, sorted by frequency (most common first), with event counts.
+Right-click a header and choose **Add / Remove Columns**. The dialog supports selecting and ordering visible built-in columns and restoring defaults. Record Number and Event Record ID are separate columns; see [their meanings](05-event-detail-panel.md).
 
-**3.** Check or uncheck values to include or exclude them.
+## Custom columns
 
-**4.** Click **Apply** (or the popup closes automatically and applies).
+Choose **Add Custom Column** in the header menu. A definition combines literal text with retained field tokens, for example:
 
-<img src="screenshots/col_filter_popup.png" alt="Column filter popup on Level column showing distinct values with event counts"/>
-
----
-
-## Supported Columns
-
-Column filter popups work on all columns:
-
-| Column | Example values |
-|---|---|
-| Level | Information, Warning, Error, Critical |
-| Computer | DC01, WKS-JOHN, SERVER02 |
-| Provider | Microsoft-Windows-Security-Auditing, Sysmon |
-| Channel | Security, System, Application |
-| User | S-1-5-18, john@corp.local, SYSTEM |
-| Source File | Security.evtx, System.evtx |
-| EID | 4624, 4625, 4688 … (up to 1000 distinct values shown) |
-
----
-
-## How It Works in Juggernaut Mode
-
-In JM, the popup query runs via a separate `ColValueWorker` thread that registers the Arrow table in its own DuckDB connection and runs:
-
-```sql
-SELECT <column>, COUNT(*) FROM events
-WHERE <column> IS NOT NULL
-GROUP BY <column>
-ORDER BY COUNT(*) DESC
-LIMIT 1000
+```text
+{EventID}
+{Provider[Name]}
+{Data[TargetUserName]}
+{Data[3]}
+{UserData[Name]}
 ```
 
-The popup appears within ~100–300 ms even on 6M row datasets. The main UI thread is never blocked.
+Named Data lookup also searches nested retained event data. Positional Data tokens count from **1**. UserData is an alias for the same field lookup. `{{` and `}}` produce literal braces; a backslash remains a backslash. A stored System field missing from an individual event produces an empty value; an unsupported System token is refused when defined.
 
----
+Choose text/integer sorting to match the intended column. Non-numeric text is retained rather than coerced into a fabricated number. Custom columns are evaluated for the tab's scope in both modes. CSV/JSON/XML/HTML event exports can carry the selected custom-column values; do not assume that PDF adds the same custom grid columns.
 
-## Limitations
-
-- Maximum 1000 distinct values displayed per column. Columns with more than 1000 distinct values (e.g. `Computer` in a large enterprise capture) will be truncated — use the Advanced Filter text field for those.
-- The popup reflects the **current filtered view**, not the full dataset. If you already have an Active filter applied, the popup shows distinct values within that filter.
-- Popup state is not saved — it resets each time you open it.
-- In Normal Mode the GROUP BY runs on the in-memory model, which is instant. In JM it runs a DuckDB query, so expect ~100–300 ms for the first open.
-
----
-
-## Related Docs
-
-- [Advanced Filter](06-advanced-filter.md)
-- [Quick Filters](07-quick-filters.md)
-- [Juggernaut Mode](04-juggernaut-mode.md)
+See [Advanced Filter](06-advanced-filter.md) and [exporting](11-exporting.md).

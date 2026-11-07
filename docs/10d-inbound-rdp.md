@@ -5,7 +5,7 @@ evidence alongside the other remote-access artifacts. Inbound rows have type
 **RDP Session**. `LOCAL_CONSOLE` means LSM recorded local console activity;
 that row is not proof of access from another computer.
 
-Each LSM 21 logon or 25 reconnect starts a separate row. A matching 23 logoff
+EventHawk treats each LSM 21 logon or 25 reconnect starts a separate row. A matching 23 logoff
 or 24 disconnect ends that interval; 39/40 can also prove a disconnect. A
 new start with the same SessionID always starts another row. Event 22 is a
 shell notification and 41 is arbitration, so neither proves a boundary.
@@ -44,7 +44,7 @@ intervals; all their source keys remain available to the filter.
 Security logon LUIDs and LSM SessionIDs are separate namespaces and are never
 merged by username, peer address or time proximity. Security 4624 type 10 to
 4634 measures a **logon lifetime**, which may include disconnected time.
-4778/4779 use their documented `LogonID` field for separate connection
+4778/4779 use their `LogonID` field for separate connection
 intervals. The Evidence column identifies the namespace and boundary events.
 
 These rules concern inbound reconstruction. The other remote-access types have
@@ -54,7 +54,7 @@ different telemetry and do not establish inbound RDP connection durations.
 
 Rows of type **Classic RA** retain every loaded event from
 `Microsoft-Windows-RemoteAssistance/Operational`. A duration is shown only
-between the provider's documented session-begun event 16 and a documented
+between the provider's session-begun event 16 and a
 remote or local disconnect (18 or 19). Event 21, not the provider's tracing
 events 1/2, is the evidence that shared control was granted. Event 3 is an
 application error, not a session end. Other provider records remain visible as
@@ -70,3 +70,7 @@ duration only from 1025 (**connected**) to 1026 (**disconnected**) in the same
 unambiguous reconstructed row. Attempts, credential events and transport-only
 activity remain in their rows with **Unavailable** duration. These rows prove
 client telemetry, not the lifetime of a destination-side Windows logon.
+
+## Loading and exports
+
+In Juggernaut mode, relevant events are counted before loading. Above 200,000 rows the GUI asks before loading them into memory; it does not truncate the result there. Choosing No leaves the browser unloaded. Review the count and memory estimate before continuing. The browser exports shown rows to formula-safe CSV. See [exporting](11-exporting.md).

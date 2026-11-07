@@ -1,93 +1,20 @@
-# Terminal UI (TUI) Mode
+# Terminal dashboard and interactive wizard
 
-## What It Is
+The normal CLI parse command uses a Rich live progress display. It reports work and resource state as the processing engine updates it, then prints a summary. It is not a terminal event-grid application with GUI-equivalent pivots, tabs, keyboard filters or export menus.
 
-The TUI (Terminal User Interface) is a live Rich-based dashboard that runs inside the terminal during a CLI parse. It shows real-time CPU and RAM gauges, file progress, events/second throughput, and an overall progress bar — giving you a detailed view of parsing activity without the full GUI.
-
----
-
-## When to Use It
-
-| Situation | Recommendation |
-|---|---|
-| Parsing on a server with no display | TUI ✓ |
-| Running from an SSH session | TUI ✓ |
-| Scripted pipeline but want live progress | TUI ✓ |
-| Need results as structured output (JSON/CSV) | CLI without TUI |
-| Want full event browsing and filtering | [GUI Mode](02-gui-overview.md) |
-
----
-
-## How to Enable
-
-The dashboard shows during every `parse` run; add `--no-tui` to turn it off (for scripts and logs):
-
-```bat
-py -3 evtx_tool.py parse C:\Logs ^
-    --profile "Process Creation and Termination" ^
-    --output results.json
+```powershell
+py -3.12 evtx_tool.py parse .\logs -o .\events.json
+py -3.12 evtx_tool.py parse .\logs --no-tui -o .\events.json
 ```
 
----
+Use **--no-tui** for plain terminal progress, automation or redirected output. This changes the display path, not the requested filter/output format. The dashboard labels Ctrl+C as stop; an interrupted run is not a successfully completed export. Read cancellation/error messages and inspect any output before relying on it.
 
-## Dashboard Layout
+## Interactive
 
-```
-┌─ EventHawk v1.1 ────────────────────────────────────────────┐
-│                                               [Ctrl+C stop] │
-├─ Resource Monitor ──────┬─ Progress ───────────────────────┤
-│ CPU ████░░░ 72%         │ Files: [████░░░] 32/47            │
-│ RAM ███░░░░ 45%  1.8GB  │ Events matched: 812,041           │
-│ Workers: 6 active / 11  │ Records/sec: 88,000               │
-│                         │ Elapsed: 00:00:09                 │
-├─────────────────────────┴───────────────────────────────────┤
-│ Overall:  ████████████████████████████░░░░░░  68%          │
-│           9.1s elapsed  /  ~13s estimated total             │
-└─────────────────────────────────────────────────────────────┘
+```powershell
+py -3.12 evtx_tool.py interactive .\logs
 ```
 
-**Resource Monitor panel (left):**
-- CPU usage as animated bar + percentage
-- RAM usage as animated bar + absolute value
-- Active worker count / total workers
+Without paths, the wizard prompts for an EVTX path. It lists profiles and accepts profile numbers, all, or blank. It then asks about ATT&CK (default Yes), IOC extraction (No), correlation (No), output and worker count. An output extension determines format; an unrecognized extension prompts for one. Blank output selects console reporting.
 
-**Progress panel (right):**
-- Files completed / total files
-- Cumulative events matched so far
-- Current throughput (events per second, rolling average)
-- Elapsed time
-
-**Bottom bar:**
-- Overall progress percentage
-- Time elapsed + estimated time remaining
-
-<img src="screenshots/tui_dashboard.png" alt="TUI terminal dashboard — CPU/RAM gauges, file progress, events/sec, overall progress bar"/>
-
----
-
-## Stopping a Parse
-
-Press **Ctrl+C** at any time. EventHawk cleanly shuts down all worker processes before exiting — no orphaned processes or locked files.
-
----
-
-## Refresh Rate
-
-The TUI refreshes at 4 frames per second. This is sufficient to see live progress without consuming excessive CPU on the main process.
-
----
-
-## Limitations
-
-- TUI does not show individual event details — it is a progress monitor only.
-- The CLI has no Juggernaut switch: Juggernaut Mode is a GUI mode.
-- TUI requires a terminal that supports ANSI escape codes. Standard Windows `cmd.exe`, PowerShell, and Windows Terminal all support this. Very old SSH clients may not render the progress bars correctly.
-- The time estimate is a rolling average based on current throughput — it can fluctuate significantly when file sizes vary widely.
-
----
-
-## Related Docs
-
-- [CLI Mode](12-cli.md)
-- [Normal Mode — Performance](03-normal-mode.md#performance)
-- [Juggernaut Mode](04-juggernaut-mode.md)
+The wizard launches one parse and exits. It does not accept REPL commands such as open, filter, export or quit. For reproducible filtering, saving configurations and timeline anchors, use the explicit [parse options](12-cli.md).

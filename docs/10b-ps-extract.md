@@ -1,200 +1,25 @@
-# PowerShell History Extraction
+# PowerShell History
 
-## What It Does
+**PowerShell History** is a top-level menu-bar action. Queue files/directories first, click the action and choose an output folder. Extraction reads queued EVTX files; it does not require a preceding grid parse or use the grid's current view filter.
 
-The **PowerShell History** feature reconstructs the full PowerShell activity recorded in a set of EVTX files — sessions, commands, script blocks, and execution metadata — into five structured output files ready for investigation or SIEM ingestion.
+The extractor reads Windows PowerShell classic, Microsoft-Windows-PowerShell/Operational and PowerShellCore/Operational channels. Its extracted event-ID set is **300, 400, 403, 600, 800, 4100, 4102, 4103, 4104, 53504**. Other observed PowerShell IDs are counted in the summary.
 
-It extracts these event IDs from the Windows PowerShell, Microsoft-Windows-PowerShell/Operational and
-PowerShellCore/Operational (PowerShell 7) channels:
+## Outputs
 
-| Event ID | Channel | What It Records |
-|----------|---------|-----------------|
-| 400 | Windows PowerShell | Engine started — **HostApplication** (how PowerShell was started, with every argument; an `-EncodedCommand` is decoded), host name and version, runspace |
-| 403 | Windows PowerShell | Engine stopped — pairs with its 400 by HostId |
-| 600 | Windows PowerShell | Provider loaded (FileSystem, Registry, etc.) |
-| 800 | Windows PowerShell | Pipeline executed — the command line, plus its CommandInvocation / ParameterBinding details |
-| 300 | Windows PowerShell | Provider or engine error — the message, exception class, command and HostApplication |
-| 4100 | PowerShell/Operational | PowerShell error — error message, failing command, script, user, host application |
-| 4102 | PowerShell/Operational | PowerShell warning — same fields as 4100 |
-| 4103 | PowerShell/Operational | Command invocation — module logging |
-| 4104 | PowerShell/Operational | Script block — full source text (multi-fragment) |
-| 53504 | PowerShell/Operational | A process loaded the PowerShell engine (process ID and AppDomain) — shows PowerShell hosted inside a process other than powershell.exe |
-
-Every other event ID on these channels (script-block start/stop 4105/4106, console start 40961/40962, remoting
-8193–8196/12039/32784, …) carries no command; each is **counted by ID** in `ps_extraction_summary.txt` so none
-goes unseen.
-
-`-EncodedCommand` is recognised in every form PowerShell accepts: any prefix of the name (`-e`, `-en`, `-enc`,
-`-ec`, `-encodedc`, …), introduced by `-`, `/` or an en/em dash, quoted or not. A value that is not valid UTF-16 Base64 is reported
-as `[not decodable: …]` rather than guessed.
-
-> **Note:** PS History is a GUI-only feature. It is not available from the CLI.
-
----
-
-## Prerequisites
-
-PowerShell logging must have been enabled on the source system before the incident occurred. Without the right audit policy, events will not be present in the EVTX files.
-
-| What you need | Where to enable it |
+| Output | Purpose |
 |---|---|
-| EID 4103 (module logging) | `HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging` → `EnableModuleLogging = 1` |
-| EID 4104 (script block logging) | `HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging` → `EnableScriptBlockLogging = 1` |
-| EID 400/403/600/800 | Enabled by default when PowerShell is installed — no policy change needed |
+| `ps_commands.txt` | Command/session timeline with summaries/previews |
+| `scriptblock_<key>.txt` | Reassembled block files |
+| `ps_extraction_summary.txt` | Counts, coverage and analysis summary |
+| `ps_extraction.json` | Structured extraction with full retained values |
+| `ps_timeline.xlsx` | Excel timeline and script-block hyperlinks |
 
-If only EID 400/403 are present, session metadata will be available but no command content. If EID 4104 is present, full script block text is available.
+These are five output types, not necessarily five files: many blocks can produce many files. Keys are filename-safe. Keep the workbook beside its block files for relative hyperlinks. Overlong workbook cells are marked with a reference to the full JSON value; text previews likewise are not complete content. Spreadsheet text is written as text rather than formulas.
 
----
+## Interpretation
 
-## How to Run
+Available lifecycle/runspace evidence forms sessions; multipart blocks are reassembled and supported encoded content is decoded. Missing fragments and boundaries limit reconstruction. A failed decode is not proof of harmless content.
 
-1. Load your EVTX files via **Normal Mode** or **Juggernaut Mode** as usual.
-2. From the menu bar, click **Analysis → PowerShell History**.
-3. A folder picker appears — choose an **empty output directory** for the extracted files.
-4. The extraction progress dialog appears showing live progress. Click **Cancel** at any time to abort cleanly.
-5. When complete, a summary dialog lists all output files and a **Open Folder** button opens the output directory in Explorer.
+Keyword/ATT&CK annotations are hints, not complete detection coverage or proof of execution. Do not execute extracted content during investigation. Coverage depends on what was logged and collected; EventHawk cannot recover an unrecorded script. Review summary counts, missing-fragment information, errors and cancellation before treating extraction as complete.
 
----
-
-## Output Files
-
-All five files are written to the output directory you chose.
-
-### `ps_commands.txt`
-
-Chronological human-readable timeline of all PowerShell sessions and their commands. Each session block shows:
-
-```
-================================================================================
-SESSION: {HostId}
-================================================================================
-  Host Application : powershell.exe -NonInteractive -EncodedCommand ...
-  Host Name        : ConsoleHost
-  Host Version     : 5.1.19041.4648
-  Engine Version   : 5.1.19041.4648
-  Started          : 2025-07-05 05:06:54.459730
-  Ended            : 2025-07-05 05:07:12.001004
-  Duration         : 0:00:17
-  PID              : 4832
-  User SID         : S-1-5-21-...
-  User Name        : CORP\john.doe
-  Source File      : C:\Evidence\Security.evtx
-
-Events (3):
-  [2025-07-05 05:06:54] EID 400  ENGINE_START
-  [2025-07-05 05:06:55] EID 4104 SCRIPT_BLOCK  Path: C:\Scripts\recon.ps1
-      Content: param($target) $results = Invoke-Command -ComputerName $target ... [4,821 chars — see scriptblock_abc123….txt]
-  [2025-07-05 05:07:12] EID 403  ENGINE_STOP
-```
-
-Events that cannot be tied to an engine start (the start rolled out of the log, a 4103 from a process with no
-400, a process that hosted the engine without starting a console…) are listed at the end under
-**UNSESSIONED EVENTS**. They are never dropped.
-
-### `scriptblock_<GUID>.txt`
-
-One file per unique script block ID. Contains the fully reassembled script block source — even if it was split across multiple EID 4104 events (large scripts are fragmented by PowerShell). The file header shows metadata:
-
-```
-Script Block ID : {3fa85f64-5717-4562-b3fc-2c963f66afa6}
-Path            : C:\Scripts\recon.ps1
-Flags           : [FIRST_FRAGMENT] [LAST_FRAGMENT]
-Fragments       : 3 / 3
-Timestamp       : 2025-07-05 05:06:55.123456
-ATT&CK          : T1059.001 (PowerShell), T1027 (Obfuscated Files or Information)
-Risk Flags      : ENCODED_COMMAND, BYPASS_EXECUTION_POLICY
---------------------------------------------------------------------------------
-<full script text>
-```
-
-### `ps_extraction_summary.txt`
-
-Statistics overview:
-
-- Event counts per extracted ID, and how many are not tied to an engine start
-- PowerShell events not extracted, counted by ID
-- Total sessions (real vs ghost), commands, script blocks
-- Source files that contained PS events
-- ATT&CK techniques detected across all script blocks
-- Risk flag breakdown (encoded commands, AMSI bypass attempts, etc.)
-
-### `ps_extraction.json`
-
-Machine-readable export for SIEM ingestion or further scripting. Contains:
-
-- Full session objects with metadata
-- Per-session event list with all parsed fields; every event carries its `event_record_id`
-- `unsessioned_events`: the events not tied to an engine start, with their HostId and HostApplication
-- Script block index with content, metadata, and ATT&CK annotations
-- Source file list (only files that contained PS events)
-
-### `ps_timeline.xlsx`
-
-Flat chronological event timeline in Excel format. Columns:
-
-| Column | Description |
-|--------|-------------|
-| timestamp | `YYYY-MM-DD HH:MM:SS.ffffff` |
-| event_id | 300 / 400 / 403 / 600 / 800 / 4100 / 4102 / 4103 / 4104 / 53504 |
-| event_type | ENGINE_START / COMMAND_EXEC / SCRIPT_BLOCK etc. |
-| pid | Process ID |
-| session_id | HostId linking back to ps_commands.txt |
-| user_sid | User SID from event |
-| user_name | Domain\Username |
-| command | Command name, provider, or script path |
-| script_block_id | GUID (EID 4104 rows only) |
-| script_block_file | Clickable hyperlink → opens `scriptblock_<GUID>.txt` |
-| detail | Context: HostApplication and decoded command, command line, error message, payload. Values over 32,000 characters end with a marker giving the full length; the whole value is in `ps_extraction.json` |
-
-The `script_block_file` column contains **native Excel hyperlinks** — click the cell to open the corresponding `.txt` file directly from the output folder.
-
----
-
-## ATT&CK Detection
-
-EventHawk maps patterns found in script block content to MITRE ATT&CK techniques automatically:
-
-| Technique | What Triggers It |
-|-----------|-----------------|
-| T1059.001 — PowerShell | Any EID 4104 script block |
-| T1027 — Obfuscation | Base64 blobs, char-code concatenation, string reversal, tick escapes |
-| T1562.001 — Disable Defenses | Set-MpPreference, Add-MpPreference, AMSI bypass patterns |
-| T1003 — Credential Dumping | Invoke-Mimikatz, sekurlsa, lsass references |
-| T1055 — Process Injection | VirtualAlloc, WriteProcessMemory, CreateRemoteThread |
-| T1086 — PowerShell (legacy) | Encoded -EncodedCommand invocations |
-| T1105 — Ingress Tool Transfer | Invoke-WebRequest, WebClient.DownloadFile, BITS |
-| T1053 — Scheduled Tasks | Register-ScheduledTask, schtasks |
-
-Detected techniques appear in the script block files and the JSON export. They are not yet merged into the ATT&CK tab (that integration is on the roadmap).
-
----
-
-## Ghost Sessions
-
-Some EVTX files contain EID 400 records with entirely empty metadata (no host name, no host application) due to log corruption or aggressive log rotation. EventHawk automatically detects and filters these **ghost sessions** — they do not appear in `ps_commands.txt` or the JSON export. The summary file shows the ghost count separately.
-
-A session is only filtered as a ghost if it meets all three criteria:
-1. Host ID is a synthetic `_pid...` key (no real HostId in the event)
-2. Both `host_name` and `host_application` are empty
-3. The session contains one event or fewer
-
-Sessions that meet criteria 1 but have correlated commands are kept — they are real sessions with a damaged ID.
-
----
-
-## Limitations
-
-- **PS logging must be pre-enabled** on the source system. EventHawk cannot reconstruct commands that were never logged.
-- EID 4103 (module logging) produces one event per parameter binding — large loops generate many events. This is expected.
-- EID 4104 script blocks can be fragmented across many events. EventHawk reassembles all fragments automatically using the `ScriptBlockId` + fragment index.
-- If `ScriptBlockId` is all-zeros (a known PowerShell bug with certain host types), EventHawk uses the event record ID to disambiguate fragments.
-- The Excel cell character limit is 32,767. Script block content in `ps_timeline.xlsx` is linked via hyperlink rather than embedded inline to avoid this limit.
-- PS History is GUI-only — not available from the CLI or TUI.
-
----
-
-## Related Docs
-
-- [Analysis Tabs](09-analysis-tabs.md) — ATT&CK, IOC, and Chain tabs
-- [Hayabusa Integration](10-hayabusa.md) — additional Sigma-rule-based detection
-- [Exporting](11-exporting.md) — export formats for main event table
+This is a GUI action, not a `parse --powershell` CLI option. See [analysis](09-analysis-tabs.md).
