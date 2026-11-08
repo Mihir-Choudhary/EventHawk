@@ -688,7 +688,14 @@ class ColumnFilterPopup(QDialog):
         self._tree.setTextElideMode(Qt.TextElideMode.ElideNone)
         self._tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self._tree.header().setStretchLastSection(False)
-        self._tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        # Sized ONCE after each expand / collapse / search, not continuously:
+        # ResizeToContents re-measured every row on every change, so a search
+        # that expands thousands of days took ~45 s instead of ~3 s.
+        self._tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self._col_fit_timer = QTimer(self)
+        self._col_fit_timer.setSingleShot(True)
+        self._col_fit_timer.setInterval(0)
+        self._col_fit_timer.timeout.connect(lambda: self._tree.resizeColumnToContents(0))
         self._tree.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
@@ -710,7 +717,8 @@ class ColumnFilterPopup(QDialog):
         self._refresh_group_labels()
         self._all_item.setExpanded(True)   # years visible; months stay collapsed
         self._tree.itemChanged.connect(self._on_tree_item_changed)
-        self._tree.itemExpanded.connect(self._load_day_hours)
+        self._tree.itemExpanded.connect(self._load_day_hours)   # also re-fits the column
+        self._col_fit_timer.start()
         root.addWidget(self._tree)
 
     @staticmethod
@@ -863,6 +871,13 @@ class ColumnFilterPopup(QDialog):
 
     def _load_day_hours(self, item: QTreeWidgetItem) -> None:
         """First expand of a day: add its hours, ticked like the day."""
+        # Every expand lands here: re-fit the column once the expanding is
+        # done (a search expands thousands of rows; one timer, one fit).  No
+        # extra per-row signal connection -- each would cost a Python call
+        # per expanded row, and the timer is started only if idle (restarting
+        # a QTimer 100,000 times cost seconds on its own).
+        if not self._col_fit_timer.isActive():
+            self._col_fit_timer.start()
         if (self._hour_provider is None or item.childCount()
                 or item.data(0, _ROLE_HOURS_LOADED)):
             return
@@ -1120,6 +1135,7 @@ class ColumnFilterPopup(QDialog):
         else:
             self._tree.collapseAll()
             self._all_item.setExpanded(True)
+        self._col_fit_timer.start()
 
     def _apply_popup_style(self) -> None:
         self.setStyleSheet("""

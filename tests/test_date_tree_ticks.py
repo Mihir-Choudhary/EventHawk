@@ -143,6 +143,23 @@ def main() -> int:
           or any("2026-10-26 01" in v for _c, _m, v in emitted[:1]), f"{emitted[:1]}")
     p.close()
 
+    # ── speed: a search over thousands of days (it expands every match) ─────
+    import time as _t
+    from datetime import date, timedelta
+    from PySide6.QtWidgets import QHeaderView
+    many = {(date(2015, 1, 1) + timedelta(days=i)).isoformat(): 10 for i in range(4000)}
+    p2 = ColumnFilterPopup(DATE_COL, many, hour_provider=lambda day: {f"{h:02d}": 1 for h in range(24)})
+    p2.show(); app.processEvents()
+    t0 = _t.time(); p2._filter_tree("2"); app.processEvents(); dt = _t.time() - t0
+    check("4,000 days: a search that expands every match finishes in < 6 s (beta ~3 s; was ~45 s)", dt < 6, f"{dt:.1f} s")
+    t2 = p2._tree
+    check("the column is sized once per change, not continuously",
+          t2.header().sectionResizeMode(0) != QHeaderView.ResizeMode.ResizeToContents)
+    need = t2.sizeHintForColumn(0)
+    check("…and still fits its rows after the search", t2.columnWidth(0) >= need,
+          f"column {t2.columnWidth(0)}, rows need {need}")
+    p2.close()
+
     ok = sum(1 for _n, c, _d in CHECKS if c)
     print(f"\n{'=' * 60}\n{ok}/{len(CHECKS)} checks passed")
     for n, c, d in CHECKS:
