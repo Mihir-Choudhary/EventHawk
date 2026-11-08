@@ -8203,6 +8203,10 @@ class _ExportScopeDialog(QDialog):
         if et in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick,
                   QEvent.Type.MouseButtonRelease) and event.button() == Qt.MouseButton.LeftButton:
             shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            if shift and et == QEvent.Type.MouseButtonDblClick:
+                # The second press of a quick double Shift+click: the first one
+                # already applied the range, so it must not toggle this row too.
+                return True
             if shift and self._anchor is not None and self._anchor != i:
                 # Every shown row from the anchor to here takes the anchor's
                 # state: None, click file 1, Shift+click file 10 = those 10.

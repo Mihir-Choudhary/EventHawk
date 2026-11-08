@@ -37,7 +37,8 @@ def check(name, cond, detail=""):
 
 def main() -> int:
     from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
-    from PySide6.QtCore import Qt, QPoint
+    from PySide6.QtCore import Qt, QPoint, QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
     from PySide6.QtTest import QTest
     app = QApplication.instance() or QApplication([])
     import evtx_tool.gui.main_window as mw
@@ -69,6 +70,14 @@ def main() -> int:
         QTest.keyClick(c, k, mods)
         app.processEvents()
 
+    def real_dclick(c, mods, pos):
+        """What a real mouse sends: press, release, double-click, release."""
+        QTest.mouseClick(c, Qt.MouseButton.LeftButton, mods, pos)
+        QApplication.sendEvent(c, QMouseEvent(QEvent.Type.MouseButtonDblClick, QPointF(pos),
+                                              QPointF(c.mapToGlobal(pos)), Qt.MouseButton.LeftButton,
+                                              Qt.MouseButton.LeftButton, mods))
+        QTest.mouseRelease(c, Qt.MouseButton.LeftButton, mods, pos)
+
     def btn(dlg, text):
         return next(b for b in dlg._files_box.findChildren(QPushButton) if b.text() == text)
 
@@ -95,6 +104,15 @@ def main() -> int:
           ticked(dlg) == set(paths[0:10]), f"{len(ticked(dlg))} selected")
     check("the count line says 10 selected",
           dlg._lbl_file_count.text() == f"{N} of {N} shown, 10 selected", dlg._lbl_file_count.text())
+    # A Shift+click that arrives as a double-click (a quick second Shift+click)
+    # must not toggle the clicked row again after the range was applied.
+    btn(dlg, "None").click(); app.processEvents()
+    click(dlg, 0)
+    c = dlg._file_checks[9][0]
+    scroll_of(dlg).ensureWidgetVisible(c); app.processEvents()
+    real_dclick(c, SHIFT, QPoint(8, c.height() // 2)); app.processEvents()
+    check("Shift+double-click applies the range once and leaves its end row ticked",
+          ticked(dlg) == set(paths[0:10]), f"{sorted(paths.index(p) for p in ticked(dlg))}")
     click(dlg, 20)
     click(dlg, 14, SHIFT)
     check("a second range adds to the first, and works upwards too",
