@@ -184,6 +184,43 @@ def main() -> int:
           models._BG_NORMAL.name() == theme.LIGHT_COLORS["bg_main"])
     check("back to light: no event filter left installed", theme._remapper is None)
 
+    # ── 5. Stylesheet images: the date tree's expand arrows ──────────────────
+    # Their colour is inside the SVG file, so the stylesheet text alone
+    # cannot carry it; dark must point at a recoloured copy.
+    from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+    from evtx_tool.gui.main_window import ColumnFilterPopup
+    import hashlib
+    url_re = re.compile(r'url\("([^"]+)"\)')
+    qss = ColumnFilterPopup._branch_qss()
+    originals = url_re.findall(qss)
+    check("arrow stylesheet references 4 images", len(originals) == 4, f"{originals}")
+    digest = {u: hashlib.sha256(open(u, "rb").read()).hexdigest() for u in originals}
+
+    def fills(path):
+        return re.findall(r'fill="(#[0-9a-fA-F]{6})"', open(path, encoding="utf-8").read())
+
+    w._on_theme_changed("dark"); app.processEvents()
+    tree = QTreeWidget(); tree.setStyleSheet(qss)
+    top = QTreeWidgetItem(tree, ["2022"]); QTreeWidgetItem(top, ["January"])
+    tree.show(); app.processEvents()
+    dark_urls = url_re.findall(tree.styleSheet())
+    check("dark: arrows use recoloured copies",
+          len(dark_urls) == 4 and not set(dark_urls) & set(originals), f"{dark_urls}")
+    ok = all(os.path.isfile(u) for u in dark_urls)
+    bg = theme.DARK_COLORS["bg_input"]
+    low = [(u, f, round(_contrast(f, bg), 2)) for u in dark_urls if os.path.isfile(u)
+           for f in fills(u) if _contrast(f, bg) < 3.0]
+    check("dark: every arrow is >= 3:1 against the dark background", ok and not low, f"{low}")
+    w._on_theme_changed("light"); app.processEvents()
+    check("back to light: arrows use the original images again",
+          url_re.findall(tree.styleSheet()) == originals)
+    w._on_theme_changed("dark"); app.processEvents()
+    check("dark again: same copies reused", url_re.findall(tree.styleSheet()) == dark_urls)
+    w._on_theme_changed("light"); app.processEvents()
+    check("original arrow images are never modified",
+          all(hashlib.sha256(open(u, "rb").read()).hexdigest() == h for u, h in digest.items()))
+    tree.close(); tree.deleteLater(); app.processEvents()
+
     w.close()
 
     print("\n" + "=" * 60)

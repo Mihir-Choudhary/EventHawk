@@ -33,7 +33,10 @@ sources, so translating is idempotent and reversible — switching back to
 Light restores every colour exactly.
 """
 
+import hashlib
+import os
 import re
+import tempfile
 
 # ── Colour constants (also used by main_window for per-cell colouring) ────────
 
@@ -218,9 +221,65 @@ def is_dark() -> bool:
     return _current == "dark"
 
 
+_SVG_URL_RE = re.compile(r'url\(\s*"([^"]+?\.svg)"\s*\)', re.IGNORECASE)
+_svg_dark_copy: dict = {}   # original image path -> dark copy path
+_svg_original: dict = {}    # dark copy path -> original image path
+
+
+def _dark_svg(path: str) -> str:
+    """Path of a copy of the SVG at *path* with its colours mapped to dark.
+
+    Stylesheet images (the date tree's expand arrows) have their colours
+    baked into the file, so translating the stylesheet text alone left a
+    dark arrow on the dark background.  The copy lives in the temp folder;
+    the original file is never modified.  Returns *path* unchanged when the
+    file cannot be read or has no theme colours.
+    """
+    hit = _svg_dark_copy.get(path)
+    if hit is not None:
+        return hit
+    out = path
+    try:
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        dst = _HEX_RE.sub(lambda m: _DARK_MAP.get(m.group(0).lower(), m.group(0)), src)
+        if dst != src:
+            folder = os.path.join(tempfile.gettempdir(), "eventhawk_theme_images")
+            os.makedirs(folder, exist_ok=True)
+            tag = hashlib.sha1(path.encode("utf-8")).hexdigest()[:10]
+            target = os.path.join(folder, f"dark_{tag}_{os.path.basename(path)}")
+            tmp = f"{target}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(dst)
+            os.replace(tmp, target)
+            out = target.replace("\\", "/")
+    except OSError:
+        out = path
+    _svg_dark_copy[path] = out
+    if out != path:
+        _svg_original[out] = path
+    return out
+
+
+def _remap_svg_urls(text: str, dark: bool) -> str:
+    if "url(" not in text:
+        return text
+
+    def swap(m):
+        path = m.group(1)
+        new = _dark_svg(path) if dark else _svg_original.get(path, path)
+        return m.group(0) if new == path else f'url("{new}")'
+
+    return _SVG_URL_RE.sub(swap, text)
+
+
 def remap_colors(text: str, dark: bool) -> str:
-    """Translate every light hex in *text* to its dark value (or back)."""
+    """Translate every light hex in *text* to its dark value (or back).
+
+    SVG images referenced by ``url("...")`` follow too (see _dark_svg).
+    """
     table = _DARK_MAP if dark else _LIGHT_MAP
+    text = _remap_svg_urls(text, dark)
     return _HEX_RE.sub(lambda m: table.get(m.group(0).lower(), m.group(0)), text)
 
 
