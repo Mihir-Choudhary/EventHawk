@@ -56,6 +56,9 @@ _CHUNK_MAGIC = b"ElfChnk\x00"
 # records", not a record ID.  Record IDs start at 1 and increment by one, so the
 # value is unreachable by a real log.
 _U64_SENTINEL = 0xFFFF_FFFF_FFFF_FFFF
+# Records start here in a chunk; a free-space offset at (or before) this point
+# means the chunk's record area is empty.
+_CHUNK_DATA_START = 0x200
 _FILE_MAGIC  = b"ElfFile\x00"
 
 
@@ -123,19 +126,29 @@ def read_chunk_index(filepath: str) -> dict:
                                          # which is how an enabled-but-never-written
                                          # channel looks on disk.
           "damaged": [chunk_idx, ...],   # non-zero garbage where a chunk should be
+          "unranged": [chunk_idx, ...],  # sentinel record-ID header over a record
+                                         # area that is NOT empty: no usable
+                                         # range, but it may hold records
         }
+
+    A sentinel header is only taken at its word ("no records") when the
+    chunk's free-space offset agrees that the record area is empty.  When the
+    record area is occupied the header and the body disagree -- a damaged or
+    edited header -- and the chunk goes to "unranged": it adds nothing to the
+    expected count (it has no range, so no 2**64-sized total can come from it),
+    but salvage still parses it, so its records are not hidden.
 
     Never raises; on I/O failure returns empty lists.
     """
-    out = {"valid": [], "slack": [], "damaged": []}
+    out = {"valid": [], "slack": [], "damaged": [], "unranged": []}
     try:
         size = os.path.getsize(filepath)
         n = max(0, (size - _HDR_BLOCK) // _CHUNK_SIZE)
         with open(filepath, "rb") as fh:
             for i in range(n):
                 fh.seek(_HDR_BLOCK + i * _CHUNK_SIZE)
-                h = fh.read(0x30)
-                if len(h) < 0x30:
+                h = fh.read(0x34)
+                if len(h) < 0x34:
                     break
                 if h[:8] == _CHUNK_MAGIC:
                     _fn, _ln, first_id, last_id = struct.unpack_from("<QQQQ", h, 8)
@@ -155,7 +168,16 @@ def read_chunk_index(filepath: str) -> dict:
                         #     first_id to 2**64-1, i.e. ~1.8e19 "expected" records.
                         # Claiming evidence is missing when none is, is exactly the
                         # failure this accounting exists to prevent.
-                        out["slack"].append(i)
+                        #
+                        # The free-space offset decides which: an empty record
+                        # area confirms the sentinel; an occupied one means the
+                        # header cannot be trusted, and the chunk must still be
+                        # read rather than skipped as empty.
+                        free_off = struct.unpack_from("<I", h, 0x30)[0]
+                        if free_off > _CHUNK_DATA_START:
+                            out["unranged"].append(i)
+                        else:
+                            out["slack"].append(i)
                     elif 0 < first_id <= last_id:
                         out["valid"].append((i, first_id, last_id))
                     else:
@@ -244,14 +266,18 @@ def salvage_records_json(
     idx = read_chunk_index(filepath)
     stats["damaged_chunk_headers"] = len(idx["damaged"])
     wanted = set(chunk_indices) if chunk_indices is not None else None
+    # "unranged" chunks have no declared range, so the covers-range fast path
+    # cannot skip them; per-record de-duplication below still applies.
+    to_read = list(idx["valid"]) + [(ci, None, None) for ci in idx["unranged"]]
 
     try:
         with open(filepath, "rb") as fh:
             hdr = fh.read(_HDR_BLOCK)
-            for ci, first_id, last_id in idx["valid"]:
+            for ci, first_id, last_id in to_read:
                 if wanted is not None and ci not in wanted:
                     continue
-                if already_emitted is not None and already_emitted.covers_range(first_id, last_id):
+                if (already_emitted is not None and first_id is not None
+                        and already_emitted.covers_range(first_id, last_id)):
                     stats["chunks_skipped"] += 1
                     continue
 
