@@ -952,6 +952,41 @@ def add_theme_listener(fn) -> None:
         _listeners.append(fn)
 
 
+def rebuild_on_theme(method):
+    """Decorator: run a window's label-building method again after a switch.
+
+    Rich-text labels get their colours from ``tc()`` when they are built and
+    are never rewritten afterwards (rewriting a label's string could alter a
+    value shown in it).  A window that stays open across a switch therefore
+    rebuilds its label from the same inputs: the method is called again with
+    the arguments it was last called with.  The listener goes when the window
+    is destroyed.
+    """
+    import functools
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        store = self.__dict__.setdefault("_eh_theme_rebuild", {})
+        store[method.__name__] = (args, kwargs)
+        if not self.__dict__.get("_eh_theme_hooked"):
+            self.__dict__["_eh_theme_hooked"] = True
+
+            def again(_name=None):
+                try:
+                    for name, (a, k) in list(store.items()):
+                        getattr(self, name)(*a, **k)
+                except RuntimeError:          # the window's C++ side is gone
+                    remove_theme_listener(again)
+
+            add_theme_listener(again)
+            try:
+                self.destroyed.connect(lambda *_: remove_theme_listener(again))
+            except (AttributeError, RuntimeError):
+                pass
+        return method(self, *args, **kwargs)
+    return wrapper
+
+
 def remove_theme_listener(fn) -> None:
     if fn in _listeners:
         _listeners.remove(fn)

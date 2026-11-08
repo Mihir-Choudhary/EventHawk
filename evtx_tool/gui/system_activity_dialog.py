@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QTableWidgetItem, QTabWidget, QVBoxLayout)
 
 from evtx_tool.analysis.host_power import fmt_secs
-from evtx_tool.gui.theme import tc
+from evtx_tool.gui.theme import rebuild_on_theme, tc
 from evtx_tool.analysis.system_activity import ACTIVITY_SQL
 
 logger = logging.getLogger(__name__)
@@ -203,6 +203,7 @@ class SystemActivityDialog(QDialog):
                 tbl.setItem(i, c, cell)
         tbl.setSortingEnabled(True)
 
+    @rebuild_on_theme
     def _summary(self, host):
         rows = [r for r in self._res.get("rows", []) if host is None or r["host"] == host]
         if not rows and not self._res.get("points"):

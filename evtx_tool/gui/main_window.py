@@ -69,7 +69,7 @@ from .models import (
 )
 from .worker import ParseWorker, AnalysisWorker
 from evtx_tool.analysis.analysis_runner import AnalysisRunner
-from .theme import COLORS, qc, tc
+from .theme import COLORS, qc, rebuild_on_theme, tc
 from .filter_dialog import FilterDialog
 
 
@@ -3012,6 +3012,7 @@ class _LogonSessionDialog(QDialog):
         self._populate_table(sessions)
         self._update_summary(sessions)
 
+    @rebuild_on_theme
     def _update_summary(self, sessions: list) -> None:
         total     = len(sessions)
         with_4624 = sum(1 for s in sessions if s["logon_ev"])
@@ -4291,6 +4292,7 @@ class _WifiHistoryDialog(QDialog):
         self._populate_table(sessions)
         self._update_summary(sessions)
 
+    @rebuild_on_theme
     def _update_summary(self, sessions: list[dict]) -> None:
         total  = len(sessions)
         ssids  = len({s["ssid"] for s in sessions})
@@ -6023,6 +6025,7 @@ class _RemoteAssistanceDialog(QDialog):
                 tbl.setItem(r, c, item)
         tbl.setSortingEnabled(True)
 
+    @rebuild_on_theme
     def _update_summary(self) -> None:
         total   = len(self._all_sessions)
         shown   = len(self._shown_sessions)
@@ -7215,6 +7218,7 @@ class _ComputerNormalisationDialog(QDialog):
                 tbl.setItem(row, c, item)
         tbl.setSortingEnabled(True)
 
+    @rebuild_on_theme
     def _update_summary(self) -> None:
         total = len(self._all_rows)
         shown = len(self._shown_rows)

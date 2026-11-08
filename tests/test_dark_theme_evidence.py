@@ -184,10 +184,15 @@ def main() -> int:
                         out.append("\t".join(str(m.index(r, c).data() or "") for c in range(m.columnCount())))
             return out
 
-        def leftovers(root):
+        def leftovers(root, palette=None):
+            """Theme colours of the OTHER theme left in stylesheets or rich-text labels."""
+            other = palette if palette is not None else light_only
             bad = []
             for x in [root] + root.findChildren(QWidget):
-                hits = {h.lower() for h in HEX.findall(x.styleSheet())} & light_only
+                src = x.styleSheet()
+                if isinstance(x, QLabel) and x.textFormat() != Qt.TextFormat.PlainText:
+                    src += x.text()
+                hits = {h.lower() for h in HEX.findall(src)} & other
                 if hits:
                     bad.append(f"{type(x).__name__}: {sorted(hits)[:3]}")
             return bad
@@ -203,9 +208,9 @@ def main() -> int:
             for i, name in enumerate(SWITCHES, 1):
                 w._on_theme_changed(name); pump(0.5)
                 same = text_of(dlg) == t_light
-                left = leftovers(dlg) if name == "dark" else []
-                check(f"{label}, open during switch {i} ({name}): same text"
-                      + (", no light-only colour" if name == "dark" else ""),
+                left = leftovers(dlg) if name == "dark" else leftovers(dlg, dark_vals - light_only)
+                check(f"{label}, open during switch {i} ({name}): same text, "
+                      + ("no light-only colour" if name == "dark" else "no dark-only colour"),
                       same and not left, "; ".join(left[:3]))
             dlg.close(); pump(0.5)
             setattr(w, attr, None)
