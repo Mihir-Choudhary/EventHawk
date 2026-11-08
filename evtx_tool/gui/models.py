@@ -17,7 +17,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QFont
 
 # FINDING-9: import _parse_ts at module level so _passes_advanced() avoids
 # executing an import statement on every row in the hot loop.
@@ -89,19 +89,32 @@ COL_DEFAULT_COUNT = 9
 
 # ── Colours for level column ──────────────────────────────────────────────────
 
-_LEVEL_FG = {
-    "Critical":    QColor("#a01800"),
-    "Error":       QColor("#a01800"),
-    "Warning":     QColor("#7a4c00"),
-    "Information": QColor("#1e1a14"),
-    "Verbose":     QColor("#9a8878"),
-    "LogAlways":   QColor("#9a8878"),
-}
+# Rebuilt for the active theme by _refresh_theme_colors() (light hexes in,
+# theme colours out) so the hot data() path only reads module globals.
 
-_BG_NORMAL    = QColor("#f5f0e8")
-_BG_ALT       = QColor("#ede8d8")
-_BG_SEL       = QColor("#ddd4bc")
-_BG_BOOKMARK  = QColor("#e8c96e")   # amber highlight for bookmarked rows
+def _refresh_theme_colors(_theme: str | None = None) -> None:
+    global _LEVEL_FG, _BG_NORMAL, _BG_ALT, _BG_SEL, _BG_BOOKMARK, _FG_MUTED, _FG_ACCENT
+    from evtx_tool.gui.theme import qc
+    _LEVEL_FG = {
+        "Critical":    qc("#a01800"),
+        "Error":       qc("#a01800"),
+        "Warning":     qc("#7a4c00"),
+        "Information": qc("#1e1a14"),
+        "Verbose":     qc("#9a8878"),
+        "LogAlways":   qc("#9a8878"),
+    }
+
+    _BG_NORMAL    = qc("#f5f0e8")
+    _BG_ALT       = qc("#ede8d8")
+    _BG_SEL       = qc("#ddd4bc")
+    _BG_BOOKMARK  = qc("#e8c96e")   # amber highlight for bookmarked rows
+    _FG_MUTED     = qc("#9a8878")
+    _FG_ACCENT    = qc("#7a5c1e")
+
+
+_refresh_theme_colors()
+__import__("evtx_tool.gui.theme", fromlist=["add_theme_listener"]).add_theme_listener(
+    _refresh_theme_colors)
 
 # Mono font for source file column
 _MONO_FONT = QFont("Consolas", 9)
@@ -549,17 +562,17 @@ class EventTableModel(QAbstractTableModel):
 
     def _cell_fg(self, ev: dict, col: int):
         if col == COL_LEVEL:
-            return _LEVEL_FG.get(ev.get("level_name", ""), QColor("#9a8878"))
+            return _LEVEL_FG.get(ev.get("level_name", ""), _FG_MUTED)
         if col == COL_NUM:
-            return QColor("#9a8878")
+            return _FG_MUTED
         if col == COL_ATTACK:
             tags = ev.get("attack_tags") or []
             if tags:
-                return QColor("#7a5c1e")
+                return _FG_ACCENT
         if col == COL_SOURCE:
-            return QColor("#9a8878")
+            return _FG_MUTED
         if ev.get("level_name") in ("Verbose", "LogAlways"):
-            return QColor("#9a8878")
+            return _FG_MUTED
         return None   # use palette default
 
     # ── Data management ───────────────────────────────────────────────────────

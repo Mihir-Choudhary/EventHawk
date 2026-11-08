@@ -1,13 +1,43 @@
 """
-Warm Cream / Beige theme for EventHawk GUI.
+Themes for EventHawk GUI: Light (warm cream, the default) and Dark.
 
-Aesthetic: Soft ecru / cream — document-reader warmth with professional contrast.
-Warm off-white backgrounds, dark amber accents, dark-brown text.
+Light aesthetic: Soft ecru / cream — document-reader warmth with professional
+contrast. Warm off-white backgrounds, dark amber accents, dark-brown text.
+
+Dark aesthetic: the same warm palette inverted — charcoal-brown backgrounds,
+bright amber accents, cream text.
+
+How the dark theme works
+------------------------
+The light colours are the single source of truth.  Every light hex the GUI
+uses has exactly one dark counterpart in ``_DARK_MAP``, so:
+
+* ``COLORS`` is a live dict — ``apply_theme()`` updates it in place, so code
+  that reads ``COLORS[...]`` at render time (event detail pane, dialogs)
+  follows the active theme automatically.
+* Widget stylesheets written with literal light hexes are rewritten to their
+  dark equivalents by an application event filter while the dark theme is on.
+* ``tc()`` / ``qc()`` translate a light hex for code that builds colours
+  directly (table models, per-item foreground/background, rich-text labels).
+* Text documents (QTextBrowser / read-only QTextEdit) are recoloured through
+  their character, block and table-cell FORMATS, never by rewriting their HTML.
+
+Evidence text is never touched.  Only presentation properties change: a
+stylesheet, a palette, an item's brush, a text format's colour.  Rewriting the
+HTML of a text pane or a label would also rewrite any value in it that happens
+to look like a colour code (``#a01800`` in an event field), and switching back
+would turn a genuine dark-palette code into a light one.
+
+The map is one-to-one and its dark values never appear as literals in the GUI
+sources, so translating is idempotent and reversible — switching back to
+Light restores every colour exactly.
 """
+
+import re
 
 # ── Colour constants (also used by main_window for per-cell colouring) ────────
 
-COLORS = {
+LIGHT_COLORS = {
     # Backgrounds
     "bg_main":    "#f5f0e8",   # soft cream — main window
     "bg_panel":   "#ede8df",   # warm beige — panels / sidebars
@@ -77,9 +107,142 @@ COLORS = {
     "progress_text": "#1e1a14",
 }
 
+# ── Dark counterparts ──────────────────────────────────────────────────────────
+# Light hex -> dark hex, for every light-design colour used by the GUI.
+# Colours not listed are kept as-is in both themes: white, the mid-tone flat
+# UI reds/oranges/greys, the green Parse button, and the few widgets that were
+# already styled dark (context menus, Juggernaut badge, IOC score tints).
+# tests/test_dark_theme.py enforces that this map stays one-to-one and that no
+# dark value collides with a colour literal in the GUI sources.
+
+_DARK_MAP = {
+    # Backgrounds
+    "#f5f0e8": "#1b1814",   # main window
+    "#ede8df": "#221e19",   # panels / sidebars
+    "#e4ddd3": "#2b2620",   # header bars / buttons
+    "#faf7f2": "#15130f",   # inputs
+    "#e9e2d8": "#352f27",   # hover
+    "#ede8d8": "#201c17",   # alternating row
+    "#ddd4bc": "#46391f",   # selection
+    "#e8c96e": "#5c4a17",   # bookmarked row
+    "#d8d1c5": "#3a332b",   # button hover
+    "#ccc5b5": "#463e34",   # button pressed
+    "#d0c8b8": "#585040",
+    "#c8d0b8": "#505840",
+    "#d4c8a8": "#685b3b",
+    "#d6cdbf": "#53493a",
+    "#dce8f0": "#21303a",
+    "#e0d8c4": "#4f4630",
+    "#e0d8cc": "#483e30",
+    "#e8dcc8": "#4a3e2a",
+    "#e8e0cc": "#483f28",
+    "#e8e0d0": "#453b28",
+    "#f0ead8": "#3c3622",
+    "#f3ede3": "#221d16",   # subtle row stripe on input background
+    "#f5e0dc": "#37231f",
+    "#edf7ed": "#192c19",   # pale green row tint
+    # System Activity states (row fills) -- same hue, dark
+    "#e3f4e1": "#1f3320",   # On
+    "#dde7f7": "#1f2a3d",   # Sleep / Sleep or hibernate
+    "#e6dff5": "#2a2340",   # Hibernate
+    "#e4eef2": "#1f3036",   # Modern Standby
+    "#e8e6e3": "#2e2c29",   # Shut down / Off
+    "#f8dcd6": "#3d2420",   # Off (unexpected shutdown)
+    "#fbefd2": "#3a3020",   # Locked / Screen saver
+    "#fde8e0": "#30211b",   # pale red row tint
+    "#fdf5dc": "#332d1d",   # pale yellow row tint
+    "#fff3cd": "#3a3421",   # amber row tint
+    "#fff8dc": "#322d1c",   # pale yellow row tint
+    # Borders
+    "#c4bba8": "#4b4339",
+    "#b8b0a0": "#6d6556",
+    "#c4b898": "#75694b",
+    "#b8924a": "#d0a45a",   # focus ring
+    # Text
+    "#1e1a14": "#e9e2d6",   # main text
+    "#5a4e42": "#b5a995",   # dim text
+    "#9a8878": "#928473",   # muted text
+    "#666666": "#a1a1a1",
+    "#3a2a10": "#eed8b5",
+    "#5a3e10": "#f2d099",
+    "#5a3e1e": "#e3c29e",   # scrollbar handle
+    "#5a4030": "#d1b4a2",
+    "#6a5a4c": "#b9a899",
+    "#6b4e18": "#ebca8d",
+    "#8a6c2e": "#d8b978",
+    # Accents — #7a5c1e is both accent text and the fill behind white text,
+    # so its dark value is a mid amber that reads in both roles.
+    "#7a5c1e": "#a8792a",
+    "#9b7a2e": "#c09040",
+    "#c4a535": "#d6b84a",
+    # Event levels / severities
+    "#a01800": "#ff6a4d",
+    "#c02000": "#ff694b",
+    "#c04020": "#e96949",
+    "#b03800": "#ff8d57",
+    "#7a4c00": "#f0a53a",
+    "#7a3a00": "#ffbc80",
+    "#8a3c00": "#ffb074",
+    "#8a4800": "#ffbc74",
+    "#8a4e00": "#ffc274",
+    "#6a3e00": "#ffcf8c",
+    "#c07000": "#ffb44b",
+    # Greens / blues / purples
+    "#2e6820": "#7cc56a",
+    "#1e5c1e": "#9ce39c",
+    "#2a6a2a": "#93d993",
+    "#2a5a8a": "#6fa8dd",
+    "#1e4d8c": "#73a5e7",
+    "#4a6fa5": "#678bc1",
+    "#4a7aaa": "#6292c1",
+    "#0f6e6e": "#88f4f4",
+    "#6a2a8a": "#ba78dc",
+    "#6b1e6b": "#e58fe5",
+}
+
+_LIGHT_MAP = {v: k for k, v in _DARK_MAP.items()}
+
+THEMES = ("light", "dark")
+_SETTINGS_KEY = "ui_theme"
+_current = "light"
+
+_HEX_RE = re.compile(r"#[0-9a-fA-F]{6}\b")
+
+
+def current_theme() -> str:
+    """Name of the active theme: ``"light"`` or ``"dark"``."""
+    return _current
+
+
+def is_dark() -> bool:
+    return _current == "dark"
+
+
+def remap_colors(text: str, dark: bool) -> str:
+    """Translate every light hex in *text* to its dark value (or back)."""
+    table = _DARK_MAP if dark else _LIGHT_MAP
+    return _HEX_RE.sub(lambda m: table.get(m.group(0).lower(), m.group(0)), text)
+
+
+def tc(light_hex: str) -> str:
+    """Colour string for *light_hex* in the active theme."""
+    if _current == "dark":
+        return _DARK_MAP.get(light_hex.lower(), light_hex)
+    return light_hex
+
+
+def qc(light_hex: str):
+    """QColor for *light_hex* in the active theme."""
+    from PySide6.QtGui import QColor
+    return QColor(tc(light_hex))
+
+
+COLORS = dict(LIGHT_COLORS)
+DARK_COLORS = {k: remap_colors(v, True) for k, v in LIGHT_COLORS.items()}
+
 # ── Master QSS stylesheet ──────────────────────────────────────────────────────
 
-DARK_QSS = """
+LIGHT_QSS = """
 /* ── Global ─────────────────────────────────────────── */
 * {
     font-family: "Segoe UI", Arial, sans-serif;
@@ -698,28 +861,334 @@ QPushButton#searchTagRemove:hover {
 }
 """
 
+DARK_QSS = remap_colors(LIGHT_QSS, True)
 
-def apply_theme(app) -> None:
-    """Apply the warm cream/beige theme to a QApplication."""
-    from PySide6.QtGui import QFont, QPalette, QColor
 
-    app.setStyleSheet(DARK_QSS)
+# ── Persistence ────────────────────────────────────────────────────────────────
 
+def saved_theme() -> str:
+    """Theme stored in QSettings, or ``"light"`` if none/invalid."""
+    try:
+        from PySide6.QtCore import QSettings
+        name = str(QSettings("EventHawk", "GUI").value(_SETTINGS_KEY, "light") or "light")
+    except Exception:
+        return "light"
+    return name if name in THEMES else "light"
+
+
+def save_theme(name: str) -> None:
+    from PySide6.QtCore import QSettings
+    QSettings("EventHawk", "GUI").setValue(_SETTINGS_KEY, name)
+
+
+# ── Change listeners ───────────────────────────────────────────────────────────
+# Modules that cache QColor objects (the table models) register a callback to
+# rebuild them when the theme changes.
+
+_listeners: list = []
+
+
+def add_theme_listener(fn) -> None:
+    if fn not in _listeners:
+        _listeners.append(fn)
+
+
+def remove_theme_listener(fn) -> None:
+    if fn in _listeners:
+        _listeners.remove(fn)
+
+
+# ── Stylesheet translation for widgets ─────────────────────────────────────────
+
+_remapper = None
+_applied = False
+
+
+def _make_remapper():
+    """Application event filter that rewrites widget stylesheets to dark.
+
+    ``setStyleSheet()`` sends QEvent.StyleChange (and first show sends
+    QEvent.Polish), so catching those covers stylesheets set at any time —
+    in constructors, in dialogs opened later, and in status-colour updates.
+    Only installed while the dark theme is active.
+    """
+    from PySide6.QtCore import QObject, QEvent
+    from PySide6.QtWidgets import QWidget
+
+    watched = (QEvent.Type.StyleChange, QEvent.Type.Polish)
+
+    class _StyleSheetRemapper(QObject):
+        _busy = False
+
+        def eventFilter(self, obj, event):
+            if event.type() in watched and not self._busy and isinstance(obj, QWidget):
+                ss = obj.styleSheet()
+                if ss:
+                    new = remap_colors(ss, True)
+                    if new != ss:
+                        self._busy = True
+                        try:
+                            obj.setStyleSheet(new)
+                        finally:
+                            self._busy = False
+                if event.type() == QEvent.Type.Polish:
+                    _watch_text_document(obj)
+            return False
+
+    return _StyleSheetRemapper()
+
+
+# ── Text documents: formats only ───────────────────────────────────────────────
+
+def recolor_document(doc, dark: bool) -> int:
+    """Swap theme colours in *doc*'s formats; returns how many were changed.
+
+    Walks character formats (text colour / highlight), block backgrounds and
+    table / cell backgrounds and replaces a colour only when it is one of the
+    theme's mapped colours.  The ranges are collected first and changed
+    afterwards, through QTextCursor merges, so no character of the document
+    is ever rewritten -- toPlainText() is identical before and after.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import (QBrush, QColor, QTextBlockFormat, QTextCharFormat,
+                               QTextCursor, QTextFormat, QTextTable)
+    table = _DARK_MAP if dark else _LIGHT_MAP
+
+    def swapped(fmt, prop):
+        if not fmt.hasProperty(prop):
+            return None
+        b = fmt.brushProperty(prop)
+        if b.style() == Qt.BrushStyle.NoBrush:
+            return None
+        new = table.get(b.color().name())
+        if new is None:
+            return None
+        c = QColor(new)
+        c.setAlpha(b.color().alpha())
+        return QBrush(c)
+
+    FG, BG = QTextFormat.Property.ForegroundBrush, QTextFormat.Property.BackgroundBrush
+    char_edits, block_edits = [], []
+    block = doc.begin()
+    while block.isValid():
+        nb = swapped(block.blockFormat(), BG)
+        if nb is not None:
+            block_edits.append((block.position(), nb))
+        it = block.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            if frag.isValid():
+                cf = frag.charFormat()
+                fg, bg = swapped(cf, FG), swapped(cf, BG)
+                if fg is not None or bg is not None:
+                    char_edits.append((frag.position(), frag.length(), fg, bg))
+            it += 1
+        block = block.next()
+
+    cell_edits = []
+
+    def walk(frame):
+        for child in frame.childFrames():
+            if isinstance(child, QTextTable):
+                tf = child.format()
+                nb = swapped(tf, BG)
+                if nb is not None:
+                    cell_edits.append((child, None, None, nb))
+                for r in range(child.rows()):
+                    for c in range(child.columns()):
+                        cell = child.cellAt(r, c)
+                        nb = swapped(cell.format(), BG)
+                        if nb is not None:
+                            cell_edits.append((child, r, c, nb))
+            walk(child)
+    walk(doc.rootFrame())
+
+    if not (char_edits or block_edits or cell_edits):
+        return 0
+    cur = QTextCursor(doc)
+    cur.beginEditBlock()
+    try:
+        for pos, length, fg, bg in char_edits:
+            c = QTextCursor(doc)
+            c.setPosition(pos)
+            c.setPosition(pos + length, QTextCursor.MoveMode.KeepAnchor)
+            f = QTextCharFormat()
+            if fg is not None:
+                f.setForeground(fg)
+            if bg is not None:
+                f.setBackground(bg)
+            c.mergeCharFormat(f)
+        for pos, brush in block_edits:
+            c = QTextCursor(doc)
+            c.setPosition(pos)
+            f = QTextBlockFormat()
+            f.setBackground(brush)
+            c.mergeBlockFormat(f)
+        for tbl, r, col, brush in cell_edits:
+            if r is None:
+                tf = tbl.format()
+                tf.setBackground(brush)
+                tbl.setFormat(tf)
+            else:
+                cell = tbl.cellAt(r, col)
+                cf = cell.format()
+                cf.setBackground(brush)
+                cell.setFormat(cf)
+    finally:
+        cur.endEditBlock()
+    return len(char_edits) + len(block_edits) + len(cell_edits)
+
+
+def _watch_text_document(widget) -> None:
+    """While dark, recolour a text pane's formats whenever its content changes.
+
+    Covers panes filled after the switch (setHtml in a dialog opened later).
+    Formats only, as above; the content itself is never rewritten.
+    """
+    from PySide6.QtWidgets import QTextEdit
+    if not isinstance(widget, QTextEdit) or not widget.isReadOnly():
+        return
+    if widget.property("_eh_theme_watched"):
+        return
+    widget.setProperty("_eh_theme_watched", True)
+    from PySide6.QtCore import QTimer
+
+    def on_change():
+        if _current != "dark" or widget.property("_eh_recoloring"):
+            return
+
+        def run():
+            try:
+                widget.setProperty("_eh_recoloring", True)
+                recolor_document(widget.document(), True)
+            except RuntimeError:
+                pass          # widget deleted meanwhile
+            finally:
+                try:
+                    widget.setProperty("_eh_recoloring", False)
+                except RuntimeError:
+                    pass
+        QTimer.singleShot(0, run)
+    widget.document().contentsChanged.connect(on_change)
+    if _current == "dark":
+        on_change()
+
+
+def _build_palette():
+    from PySide6.QtGui import QPalette, QColor
+    C = COLORS
     palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window,          QColor("#f5f0e8"))
-    palette.setColor(QPalette.ColorRole.WindowText,      QColor("#1e1a14"))
-    palette.setColor(QPalette.ColorRole.Base,            QColor("#faf7f2"))
-    palette.setColor(QPalette.ColorRole.AlternateBase,   QColor("#ede8df"))
-    palette.setColor(QPalette.ColorRole.Text,            QColor("#1e1a14"))
-    palette.setColor(QPalette.ColorRole.Button,          QColor("#e4ddd3"))
-    palette.setColor(QPalette.ColorRole.ButtonText,      QColor("#1e1a14"))
-    palette.setColor(QPalette.ColorRole.Highlight,       QColor("#7a5c1e"))
+    palette.setColor(QPalette.ColorRole.Window,          QColor(C["bg_main"]))
+    palette.setColor(QPalette.ColorRole.WindowText,      QColor(C["text"]))
+    palette.setColor(QPalette.ColorRole.Base,            QColor(C["bg_input"]))
+    palette.setColor(QPalette.ColorRole.AlternateBase,   QColor(C["bg_panel"]))
+    palette.setColor(QPalette.ColorRole.Text,            QColor(C["text"]))
+    palette.setColor(QPalette.ColorRole.Button,          QColor(C["btn_bg"]))
+    palette.setColor(QPalette.ColorRole.ButtonText,      QColor(C["text"]))
+    palette.setColor(QPalette.ColorRole.Highlight,       QColor(C["accent"]))
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
-    palette.setColor(QPalette.ColorRole.Link,            QColor("#7a5c1e"))
-    palette.setColor(QPalette.ColorRole.ToolTipBase,     QColor("#e4ddd3"))
-    palette.setColor(QPalette.ColorRole.ToolTipText,     QColor("#1e1a14"))
-    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#9a8878"))
-    app.setPalette(palette)
+    palette.setColor(QPalette.ColorRole.Link,            QColor(C["accent"]))
+    palette.setColor(QPalette.ColorRole.ToolTipBase,     QColor(C["bg_header"]))
+    palette.setColor(QPalette.ColorRole.ToolTipText,     QColor(C["text"]))
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(C["text_muted"]))
+    return palette
 
-    font = QFont("Segoe UI", 9)
-    app.setFont(font)
+
+def _retheme_existing(app, dark: bool) -> None:
+    """Translate colours already applied to live widgets (runtime switch)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QBrush, QColor
+    from PySide6.QtWidgets import (
+        QTreeWidget, QTreeWidgetItemIterator, QTableWidget,
+        QListWidget, QTextEdit, QAbstractItemView,
+    )
+
+    def _swap_brush(get, set_):
+        b = get()
+        if b.style() != Qt.BrushStyle.NoBrush:
+            name = b.color().name()
+            new = remap_colors(name, dark)
+            if new != name:
+                c = QColor(new)
+                c.setAlpha(b.color().alpha())
+                set_(QBrush(c))
+
+    for w in app.allWidgets():
+        ss = w.styleSheet()
+        if ss:
+            new = remap_colors(ss, dark)
+            if new != ss:
+                w.setStyleSheet(new)
+
+        if isinstance(w, QTreeWidget):
+            it = QTreeWidgetItemIterator(w)
+            cols = w.columnCount()
+            while it.value():
+                item = it.value()
+                for c in range(cols):
+                    _swap_brush(lambda: item.foreground(c), lambda b: item.setForeground(c, b))
+                    _swap_brush(lambda: item.background(c), lambda b: item.setBackground(c, b))
+                it += 1
+        elif isinstance(w, QTableWidget):
+            for r in range(w.rowCount()):
+                for c in range(w.columnCount()):
+                    item = w.item(r, c)
+                    if item is not None:
+                        _swap_brush(item.foreground, item.setForeground)
+                        _swap_brush(item.background, item.setBackground)
+        elif isinstance(w, QListWidget):
+            for r in range(w.count()):
+                item = w.item(r)
+                _swap_brush(item.foreground, item.setForeground)
+                _swap_brush(item.background, item.setBackground)
+        elif isinstance(w, QTextEdit) and w.isReadOnly():
+            # Formats only -- the pane's text is never rewritten.  Rich-text
+            # QLabels are deliberately not touched: their colours come from
+            # tc() when they are built, and rewriting a label's string could
+            # alter a value shown in it.
+            recolor_document(w.document(), dark)
+
+        if isinstance(w, QAbstractItemView):
+            w.viewport().update()
+
+
+def apply_theme(app, theme: str | None = None) -> None:
+    """Apply *theme* (default: the saved one) to a QApplication.
+
+    Safe to call again at runtime to switch themes live.
+    """
+    global _current, _remapper, _applied
+    from PySide6.QtGui import QFont
+
+    name = theme if theme in THEMES else saved_theme()
+    first = not _applied
+    if not first and name == _current:
+        return
+    dark = name == "dark"
+
+    _current = name
+    COLORS.clear()
+    COLORS.update(DARK_COLORS if dark else LIGHT_COLORS)
+
+    if dark and _remapper is None:
+        _remapper = _make_remapper()
+        app.installEventFilter(_remapper)
+    elif not dark and _remapper is not None:
+        app.removeEventFilter(_remapper)
+        _remapper = None
+
+    app.setStyleSheet(DARK_QSS if dark else LIGHT_QSS)
+    app.setPalette(_build_palette())
+
+    if first:
+        app.setFont(QFont("Segoe UI", 9))
+        _applied = True
+    else:
+        _retheme_existing(app, dark)
+
+    for fn in list(_listeners):
+        try:
+            fn(name)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("theme listener failed")

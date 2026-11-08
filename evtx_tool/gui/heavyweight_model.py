@@ -28,7 +28,7 @@ from typing import Any
 from PySide6.QtCore import (
     QAbstractTableModel, QModelIndex, Qt, QThread, Signal, Slot,
 )
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QFont
 
 logger = logging.getLogger(__name__)
 
@@ -64,20 +64,30 @@ from evtx_tool.gui.models import (
 
 # ── Colour palette ─────────────────────────────────────────────────────────────
 
-_LEVEL_FG = {
-    "Critical":    QColor("#a01800"),
-    "Error":       QColor("#a01800"),
-    "Warning":     QColor("#7a4c00"),
-    "Information": QColor("#1e1a14"),
-    "Verbose":     QColor("#9a8878"),
-    "LogAlways":   QColor("#9a8878"),
-}
+def _refresh_theme_colors(_theme: str | None = None) -> None:
+    """Rebuild the cached QColors for the active theme."""
+    global _LEVEL_FG, _BG_NORMAL, _BG_ALT, _BG_BOOKMARK, _COLOR_GRAY
+    from evtx_tool.gui.theme import qc
+    _LEVEL_FG = {
+        "Critical":    qc("#a01800"),
+        "Error":       qc("#a01800"),
+        "Warning":     qc("#7a4c00"),
+        "Information": qc("#1e1a14"),
+        "Verbose":     qc("#9a8878"),
+        "LogAlways":   qc("#9a8878"),
+    }
+    _BG_NORMAL   = qc("#f5f0e8")
+    _BG_ALT      = qc("#ede8d8")
+    _BG_BOOKMARK = qc("#e8c96e")   # amber highlight for bookmarked rows
+    _COLOR_GRAY  = qc("#9a8878")
 
-_BG_NORMAL   = QColor("#f5f0e8")
-_BG_ALT      = QColor("#ede8d8")
-_BG_BOOKMARK = QColor("#e8c96e")   # amber highlight for bookmarked rows
+
+_LEVEL_FG: dict = {}
+
+_refresh_theme_colors()
+__import__("evtx_tool.gui.theme", fromlist=["add_theme_listener"]).add_theme_listener(
+    _refresh_theme_colors)
 _MONO_FONT   = QFont("Consolas", 9)
-_COLOR_GRAY  = QColor("#9a8878")
 
 class _PreparedValues:
     """A custom column's values and sort keys, already Arrow arrays."""

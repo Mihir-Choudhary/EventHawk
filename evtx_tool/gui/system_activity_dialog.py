@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QTableWidgetItem, QTabWidget, QVBoxLayout)
 
 from evtx_tool.analysis.host_power import fmt_secs
+from evtx_tool.gui.theme import tc
 from evtx_tool.analysis.system_activity import ACTIVITY_SQL
 
 logger = logging.getLogger(__name__)
@@ -198,7 +199,7 @@ class SystemActivityDialog(QDialog):
                 if key is not None:
                     cell.setData(Qt.ItemDataRole.UserRole + 1, key.isoformat() if hasattr(key, "isoformat") else key)
                 if bg:
-                    cell.setBackground(QColor(bg))
+                    cell.setBackground(QColor(tc(bg)))
                 tbl.setItem(i, c, cell)
         tbl.setSortingEnabled(True)
 
@@ -222,7 +223,7 @@ class SystemActivityDialog(QDialog):
         who = host if host is not None else f"{len(self._res.get('hosts', []))} computer(s)"
         txt = f"<b>{who}</b> &nbsp;│&nbsp; " + " &nbsp;│&nbsp; ".join(parts) if parts else f"<b>{who}</b>"
         if unknown:
-            txt += (f" &nbsp;│&nbsp; <span style='color:#8a4800;'>{unknown} period(s) with an unknown start or "
+            txt += (f" &nbsp;│&nbsp; <span style='color:{tc('#8a4800')};'>{unknown} period(s) with an unknown start or "
                     f"end are not in these totals</span>")
         if host is not None and not any(r["layer"] == "Screen" for r in rows):
             txt += " &nbsp;│&nbsp; no screen data (no Kernel-Power 566 in these logs)"
