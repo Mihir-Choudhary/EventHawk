@@ -8023,8 +8023,11 @@ class _ExportScopeDialog(QDialog):
             fmt_row.addWidget(rb)
         fmt_row.addStretch()
         fmt_lay.addLayout(fmt_row)
+        # One line, never wrapped: a wrapped label's height depends on its
+        # width and the window is not resized when the text changes, so a
+        # two-line hint (PDF's) was cut off.  Unwrapped, the layout widens the
+        # dialog to fit it; see _fit_hint_width.
         self._lbl_fmt_hint = QLabel()
-        self._lbl_fmt_hint.setWordWrap(True)
         fmt_lay.addWidget(self._lbl_fmt_hint)
         root.addWidget(self._fmt_box)
         try:
@@ -8126,6 +8129,18 @@ class _ExportScopeDialog(QDialog):
     def _update_fmt_hint(self) -> None:
         key = self.selected_format()
         self._lbl_fmt_hint.setText(next(h for k, _l, h in _EXPORT_FORMATS if k == key))
+
+    def _fit_hint_width(self) -> None:
+        """Make room for the widest hint, so picking a format never resizes the box."""
+        lab = self._lbl_fmt_hint
+        lab.ensurePolished()
+        fm = lab.fontMetrics()
+        lab.setMinimumWidth(max(fm.horizontalAdvance(h) for _k, _l, h in _EXPORT_FORMATS) + 4)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        # Fonts are final here (the dialog's stylesheet is set last in __init__).
+        self._fit_hint_width()
+        super().showEvent(event)
 
     def selected_format(self) -> str:
         """'html' | 'pdf' | 'csv' | 'json' | 'xml' -- always one the scope can write."""

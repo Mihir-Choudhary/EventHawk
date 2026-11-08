@@ -101,6 +101,33 @@ def main() -> int:
         check("the next Export dialog starts on the remembered format", d2.selected_format() == "csv")
         d.close(); d2.close()
 
+        print("\n=== 1b. the hint is never cut off ===")
+        def clipped(dlg):
+            bad = []
+            for rb in (dlg._rb_view, dlg._rb_combined, dlg._rb_separate, dlg._rb_specific):
+                rb.setChecked(True); app.processEvents()
+                for k in dlg.available_formats():
+                    dlg._fmt_buttons[k].setChecked(True); app.processEvents()
+                    lab = dlg._lbl_fmt_hint
+                    need = lab.heightForWidth(lab.width())
+                    if lab.height() < need or lab.geometry().bottom() > lab.parentWidget().height():
+                        bad.append(f"{rb.text().split('  ')[0]}/{k}: {lab.height()} < {need}")
+            return bad
+        for backend in ("normal", "jm"):
+            dd = mw._ExportScopeDialog(paths, None, "separate", 10, None, backend=backend)
+            dd.show(); app.processEvents()
+            bad = clipped(dd)
+            check(f"{backend}: every format's hint shows in full in every scope", not bad, "; ".join(bad[:4]))
+            dd.close()
+        settings.setValue(mw._EXPORT_FORMAT_KEY, "pdf")
+        dd = mw._ExportScopeDialog(paths, None, "separate", 10, None)
+        dd.show(); app.processEvents()
+        lab = dd._lbl_fmt_hint
+        check("a dialog that opens on PDF shows its hint in full",
+              dd.selected_format() == "pdf" and lab.height() >= lab.heightForWidth(lab.width()),
+              f"{lab.height()} vs {lab.heightForWidth(lab.width())}")
+        dd.close()
+
         print("\n=== 2. the Format box, Juggernaut ===")
         settings.setValue(mw._EXPORT_FORMAT_KEY, "pdf")
         j = mw._ExportScopeDialog(paths, None, "separate", 10, None, backend="jm")
