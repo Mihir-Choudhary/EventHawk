@@ -7791,6 +7791,67 @@ class _AroundCustomDialog(QDialog):
         self._lbl_limit.setStyleSheet("" if ok else "color: #a01800;")
 
 
+# Export formats: (key, label, one-line hint).  The hints say what each is
+# for, and that the PDF is a summary report, not a full event dump.
+_EXPORT_FORMATS: list[tuple[str, str, str]] = [
+    ("html", "HTML report",
+     "Opens in any web browser \u2014 summary and the events."),
+    ("pdf",  "PDF report",
+     "Printable summary report \u2014 counts, ATT&CK, IOCs and the first 500 events."),
+    ("csv",  "CSV",
+     "Spreadsheet (Excel, LibreOffice) \u2014 one row per event."),
+    ("json", "JSON",
+     "Full structured data \u2014 for scripts and other tools."),
+    ("xml",  "XML",
+     "Structured data \u2014 for tools that need XML."),
+]
+_EXPORT_FILTERS: dict[str, str] = {
+    "html": "HTML Report (*.html)", "pdf": "PDF Report (*.pdf)",
+    "csv": "CSV (*.csv)", "json": "JSON (*.json)", "xml": "XML (*.xml)",
+}
+# What each export path can write -- the same lists those paths offered before
+# (the Save window filter for one file; the format prompt for one per source).
+_EXPORT_FORMATS_FOR: dict[tuple[str, bool], tuple[str, ...]] = {
+    ("normal", False): ("html", "pdf", "csv", "json", "xml"),
+    ("normal", True):  ("csv", "json", "html", "xml"),
+    ("jm", False):     ("html", "csv", "json", "xml"),
+    ("jm", True):      ("csv", "json", "html", "xml"),
+}
+_EXPORT_FORMAT_KEY = "export_format"        # QSettings("EventHawk", "GUI")
+
+
+def _export_save_path(parent, title: str, fmt: str,
+                      allowed: tuple[str, ...] = ()) -> tuple[str, str]:
+    """Save dialog offering *fmt*; returns (path, format), ("", fmt) if cancelled.
+
+    A name typed with the extension of another format this export can write
+    (``report.csv`` while HTML is chosen) is taken at its word, as export has
+    always inferred the format from the extension.  A name with no such
+    extension gets *fmt*'s.  When the extension has to be appended, the Save
+    dialog never saw the final name, so it could not ask about replacing an
+    existing file -- that question is asked here.
+    """
+    path, _ = QFileDialog.getSaveFileName(parent, title, "", _EXPORT_FILTERS[fmt])
+    if not path:
+        return "", fmt
+    typed = os.path.splitext(path)[1].lstrip(".").lower()
+    if typed in (allowed or (fmt,)):
+        return path, typed
+    if not path.lower().endswith("." + fmt):
+        path += "." + fmt
+        if os.path.exists(path):
+            reply = QMessageBox.question(
+                parent, "Replace File?",
+                f"{os.path.basename(path)} already exists in\n{os.path.dirname(path)}\n\n"
+                "Replace it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return "", fmt
+    return path, fmt
+
+
 class _ExportScopeDialog(QDialog):
     """
     Clean export-scope chooser with four radio-button options:
@@ -7811,10 +7872,12 @@ class _ExportScopeDialog(QDialog):
         view_mode: str,
         total_events: int,
         parent=None,
+        backend: str = "normal",
     ):
         super().__init__(parent)
         self.setWindowTitle("Export")
         self.setMinimumWidth(440)
+        self._backend = backend if backend in ("normal", "jm") else "normal"
         self._all_file_paths = all_file_paths
         self._scope = "combined"       # default
         self._file_checks: list[tuple[QCheckBox, str]] = []
@@ -7951,6 +8014,40 @@ class _ExportScopeDialog(QDialog):
         self._files_box.setVisible(False)
         root.addWidget(self._files_box)
 
+        # ── Format ────────────────────────────────────────────────────────
+        # Chosen here instead of in the Save window's "Save as type" list (or
+        # a second prompt for one file per source).  Only the formats the
+        # chosen backend and scope can write are enabled; the others stay
+        # visible, greyed, with the reason in their tooltip.
+        self._fmt_box = QGroupBox("Format:")
+        fmt_lay = QVBoxLayout(self._fmt_box)
+        fmt_lay.setContentsMargins(8, 8, 8, 8)
+        fmt_lay.setSpacing(4)
+        fmt_row = QHBoxLayout()
+        fmt_row.setSpacing(14)
+        self._fmt_grp = QButtonGroup(self)
+        self._fmt_buttons: dict[str, QRadioButton] = {}
+        for i, (key, label, _hint) in enumerate(_EXPORT_FORMATS):
+            rb = QRadioButton(label)
+            self._fmt_grp.addButton(rb, i)
+            self._fmt_buttons[key] = rb
+            fmt_row.addWidget(rb)
+        fmt_row.addStretch()
+        fmt_lay.addLayout(fmt_row)
+        self._lbl_fmt_hint = QLabel()
+        self._lbl_fmt_hint.setWordWrap(True)
+        fmt_lay.addWidget(self._lbl_fmt_hint)
+        root.addWidget(self._fmt_box)
+        try:
+            self._fmt_pref = str(QSettings("EventHawk", "GUI").value(_EXPORT_FORMAT_KEY, "html") or "html")
+        except Exception:
+            self._fmt_pref = "html"
+        self._fmt_grp.idToggled.connect(self._on_fmt_toggled)
+        for _rb in (self._rb_view, self._rb_combined, self._rb_separate,
+                    self._rb_specific, self._rb_specific_one, self._rb_specific_each):
+            _rb.toggled.connect(lambda _on: self._refresh_formats())
+        self._refresh_formats()
+
         # ── OK / Cancel ───────────────────────────────────────────────────
         root.addSpacing(4)
         btn_row = QHBoxLayout()
@@ -8002,7 +8099,50 @@ class _ExportScopeDialog(QDialog):
             QMessageBox.warning(self, "No Files Selected",
                                 "Please check at least one file to export.")
             return
+        try:
+            QSettings("EventHawk", "GUI").setValue(_EXPORT_FORMAT_KEY, self.selected_format())
+        except Exception:
+            pass
         self.accept()
+
+    # ── Format choice ─────────────────────────────────────────────────────
+
+    def _writes_one_per_source(self) -> bool:
+        return (self._rb_separate.isChecked()
+                or (self._rb_specific.isChecked() and self._rb_specific_each.isChecked()))
+
+    def available_formats(self) -> tuple[str, ...]:
+        """Formats the current backend and scope can write."""
+        return _EXPORT_FORMATS_FOR[(self._backend, self._writes_one_per_source())]
+
+    def _refresh_formats(self) -> None:
+        avail = self.available_formats()
+        where = "Juggernaut Mode" if self._backend == "jm" else "one file per source"
+        for key, label, hint in _EXPORT_FORMATS:
+            rb = self._fmt_buttons[key]
+            rb.setEnabled(key in avail)
+            rb.setToolTip(hint if key in avail else
+                          f"{label} isn\u2019t available for {where} \u2014 "
+                          "use HTML for a report.")
+        cur = next((k for k, rb in self._fmt_buttons.items() if rb.isChecked()), None)
+        if cur not in avail:
+            # Prefer the remembered choice; otherwise the first available.
+            want = self._fmt_pref if self._fmt_pref in avail else avail[0]
+            self._fmt_buttons[want].setChecked(True)
+        self._update_fmt_hint()
+
+    def _on_fmt_toggled(self, _id: int, on: bool) -> None:
+        if on:
+            self._update_fmt_hint()
+
+    def _update_fmt_hint(self) -> None:
+        key = self.selected_format()
+        self._lbl_fmt_hint.setText(next(h for k, _l, h in _EXPORT_FORMATS if k == key))
+
+    def selected_format(self) -> str:
+        """'html' | 'pdf' | 'csv' | 'json' | 'xml' -- always one the scope can write."""
+        cid = self._fmt_grp.checkedId()
+        return _EXPORT_FORMATS[cid][0] if cid >= 0 else self.available_formats()[0]
 
     def selected_scope(self) -> str:
         """Returns 'view' | 'combined' | 'separate' | 'specific'."""
@@ -16541,13 +16681,14 @@ class MainWindow(QMainWindow):
 
         scope = dlg.selected_scope()   # "view" | "combined" | "separate" | "specific"
         specific_files = dlg.selected_files()  # set[str] — only used when scope="specific"
+        fmt = dlg.selected_format()    # chosen in the dialog, valid for this scope
 
         # ── Export All Separate ────────────────────────────────────────────
         if scope == "separate":
-            self._export_separate(all_file_paths, _groups)
+            self._export_separate(all_file_paths, _groups, fmt=fmt)
             return
         if scope == "specific" and dlg.specific_separate():
-            self._export_separate(sorted(specific_files), _groups)
+            self._export_separate(sorted(specific_files), _groups, fmt=fmt)
             return
 
         # ── Resolve events for the other scopes ───────────────────────────
@@ -16594,12 +16735,8 @@ class MainWindow(QMainWindow):
             from evtx_tool.core.custom_columns import with_custom_columns
             export_events = with_custom_columns(export_events, _cc)
 
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            f"Export Events — {export_label}",
-            "",
-            "HTML Report (*.html);;PDF Report (*.pdf);;CSV (*.csv);;JSON (*.json);;XML (*.xml)",
-        )
+        path, fmt = _export_save_path(self, f"Export Events — {export_label}", fmt,
+                                      dlg.available_formats())
         if not path:
             return
 
@@ -16637,8 +16774,13 @@ class MainWindow(QMainWindow):
             groups.setdefault(fp, {"events": []})
         return groups
 
-    def _export_separate(self, file_paths: list[str], groups: dict | None = None) -> None:
-        """Export each source file to its own output file (user picks the output folder)."""
+    def _export_separate(self, file_paths: list[str], groups: dict | None = None,
+                         fmt: str | None = None) -> None:
+        """Export each source file to its own output file (user picks the output folder).
+
+        *fmt* is the format chosen in the Export dialog; called without one
+        (an older caller) it asks, from the same list as before.
+        """
         if groups is None:
             groups = self._per_file_data
         out_dir = QFileDialog.getExistingDirectory(
@@ -16647,19 +16789,14 @@ class MainWindow(QMainWindow):
         if not out_dir:
             return
 
-        fmt_map = {
-            "html": "HTML Report (*.html)",
-            "csv": "CSV (*.csv)",
-            "json": "JSON (*.json)",
-            "xml": "XML (*.xml)",
-        }
-        from PySide6.QtWidgets import QInputDialog
-        fmt, ok = QInputDialog.getItem(
-            self, "Export Format", "Choose output format:",
-            ["CSV", "JSON", "HTML", "XML"], 0, False
-        )
-        if not ok:
-            return
+        if fmt is None:
+            from PySide6.QtWidgets import QInputDialog
+            fmt, ok = QInputDialog.getItem(
+                self, "Export Format", "Choose output format:",
+                ["CSV", "JSON", "HTML", "XML"], 0, False
+            )
+            if not ok:
+                return
         ext = fmt.lower()
 
         try:
@@ -16731,13 +16868,16 @@ class MainWindow(QMainWindow):
         scope_dlg = _ExportScopeDialog(
             all_file_paths=all_files, active_file=_active_fp,
             view_mode=self._view_mode, total_events=len(full), parent=self,
+            backend="jm",
         )
         if scope_dlg.exec() != QDialog.DialogCode.Accepted:
             return
         scope = scope_dlg.selected_scope()
         chosen = sorted(scope_dlg.selected_files())
+        fmt = scope_dlg.selected_format()
         if scope == "separate" or (scope == "specific" and scope_dlg.specific_separate()):
-            self._export_juggernaut_separate(all_files if scope == "separate" else chosen, counts)
+            self._export_juggernaut_separate(all_files if scope == "separate" else chosen,
+                                             counts, fmt=fmt)
             return
 
         from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
@@ -16770,15 +16910,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Nothing to Export",
                                     "No events match the current filters.")
             return
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            f"Export Events — ⚡ Juggernaut ({total:,} events)",
-            "",
-            "HTML Report (*.html);;CSV (*.csv);;JSON (*.json);;XML (*.xml)",
-        )
+        path, ext = _export_save_path(
+            self, f"Export Events — ⚡ Juggernaut ({total:,} events)", fmt,
+            scope_dlg.available_formats())
         if not path:
             return
-        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
         row_limit = self._jm_export_row_limit(total, ext)
         if row_limit is None:
             return
@@ -16884,7 +17020,8 @@ class MainWindow(QMainWindow):
         dlg.canceled.connect(worker.cancel)
         worker.start()
 
-    def _export_juggernaut_separate(self, files: list, counts: dict) -> None:
+    def _export_juggernaut_separate(self, files: list, counts: dict,
+                                    fmt: str | None = None) -> None:
         """One output per source file, written one after another.
 
         Files with no events are named in the summary instead of being written
@@ -16896,13 +17033,14 @@ class MainWindow(QMainWindow):
         )
         if not out_dir:
             return
-        from PySide6.QtWidgets import QInputDialog
-        fmt, ok = QInputDialog.getItem(
-            self, "Export Format", "Choose output format:",
-            ["CSV", "JSON", "HTML", "XML"], 0, False
-        )
-        if not ok:
-            return
+        if fmt is None:
+            from PySide6.QtWidgets import QInputDialog
+            fmt, ok = QInputDialog.getItem(
+                self, "Export Format", "Choose output format:",
+                ["CSV", "JSON", "HTML", "XML"], 0, False
+            )
+            if not ok:
+                return
         ext = fmt.lower()
         sources = [f for f in files if counts.get(f, 0) > 0]
         empty = [f for f in files if counts.get(f, 0) == 0]
