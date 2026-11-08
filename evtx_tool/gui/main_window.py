@@ -387,6 +387,17 @@ def _contrast_ratio(a, b) -> float:
     return (la + 0.05) / (lb + 0.05)
 
 
+def _tick_ink(fill):
+    """Colour for a tick drawn on *fill*: white or near-black, else black.
+
+    White or the theme's near-black, whichever contrasts more; if that is
+    still under 4.5:1 (Dark's accent amber gives 4.48:1), pure black.
+    """
+    cands = (QColor("#ffffff"), QColor("#1e1a14"))
+    best = max(cands, key=lambda c: _contrast_ratio(c, fill))
+    return best if _contrast_ratio(best, fill) >= 4.5 else QColor("#000000")
+
+
 def _tick_delegate_class():
     """The date tree's tick-drawing delegate class, built once (imports kept local)."""
     global _TICK_DELEGATE_CLS
@@ -425,11 +436,10 @@ def _tick_delegate_class():
             # The indicator's fill (see _apply_popup_style) is the theme's
             # accent when checked and its focus amber when partly checked;
             # read it from COLORS so it follows whatever theme is active, and
-            # draw in whichever of white / near-black contrasts more with it.
+            # draw with an ink that stays readable on it (_tick_ink).
             fill = QColor(COLORS["accent"] if state == Qt.CheckState.Checked
                           else COLORS["border_focus"])
-            ink = max((QColor("#ffffff"), QColor("#1e1a14")),
-                      key=lambda c: _contrast_ratio(c, fill))
+            ink = _tick_ink(fill)
             pen = QPen(ink, 2)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)

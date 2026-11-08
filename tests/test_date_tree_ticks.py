@@ -97,6 +97,19 @@ def main() -> int:
           f"{ink_pixels(octo)} px")
     check("an unchecked row shows nothing", ink_pixels(d25) == 0, f"{ink_pixels(d25)} px")
 
+    # ── the tick's ink is readable on every fill (both themes' amber) ────────
+    from PySide6.QtGui import QColor
+    import evtx_tool.gui.main_window as mw
+    fills = {"#7a5c1e": "#ffffff", "#b8924a": "#1e1a14",      # Light: unchanged inks
+             "#a8792a": None, "#d0a45a": None}                 # Dark accent / focus amber
+    low = []
+    for f, want in fills.items():
+        ink = mw._tick_ink(QColor(f))
+        cr = mw._contrast_ratio(ink, QColor(f))
+        if cr < 4.5 or (want and ink.name() != want):
+            low.append(f"{f}: {ink.name()} {cr:.2f}:1")
+    check("the tick is >= 4.5:1 on all four fills, and Light keeps its inks", not low, "; ".join(low))
+
     # ── no cut-off ────────────────────────────────────────────────────────────
     check("the date popup opens at least 320 px wide", p.width() >= 320, f"{p.width()} px")
     check("rows are never elided", t.textElideMode() == Qt.TextElideMode.ElideNone)
