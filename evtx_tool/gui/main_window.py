@@ -7939,6 +7939,7 @@ class _ExportScopeDialog(QDialog):
         files_layout.addWidget(self._lbl_file_count)
 
         scroll = QScrollArea()
+        self._file_scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFixedHeight(min(180, 32 * max(1, len(all_file_paths))))
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -7948,24 +7949,23 @@ class _ExportScopeDialog(QDialog):
         inner_layout.setSpacing(2)
         inner_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Highlight ("marked" rows) for ticking many files at once: Ctrl+click,
-        # Shift+click, Ctrl+A, Shift+Up/Down, then Space or the Tick/Untick
-        # highlighted buttons.  A plain click still ticks the row, as before.
-        self._hl_rows: set[int] = set()
-        self._hl_anchor: int | None = None
+        # Shift+click ticks or unticks a range in one go (see eventFilter):
+        # the anchor is the last row clicked or toggled with Space.
+        self._anchor: int | None = None
         for fp in all_file_paths:
             chk = QCheckBox(os.path.basename(fp))
             chk.setChecked(True)
-            chk.setToolTip(fp + "\n\nCtrl+click / Shift+click to highlight several, "
-                                 "then Space to tick or untick them together.")
+            chk.setToolTip(fp)
             chk.toggled.connect(self._update_file_count)
-            chk.toggled.connect(lambda on, c=chk: self._on_row_toggled(c, on))
             chk.installEventFilter(self)
             inner_layout.addWidget(chk)
             self._file_checks.append((chk, fp))
 
         scroll.setWidget(inner)
         files_layout.addWidget(scroll)
+        range_tip = QLabel("Click a file, then Shift+click another to tick or untick all between.")
+        range_tip.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 8pt;")
+        files_layout.addWidget(range_tip)
 
         # Select All / None mini-buttons inside the box
         mini_row = QHBoxLayout()
@@ -7985,17 +7985,6 @@ class _ExportScopeDialog(QDialog):
         mini_row.addWidget(self._btn_clear_shown)
         mini_row.addStretch()
         files_layout.addLayout(mini_row)
-        hl_row = QHBoxLayout()
-        self._btn_tick_hl = QPushButton("Tick highlighted")
-        self._btn_tick_hl.setToolTip("Tick every highlighted file (Ctrl/Shift+click to highlight)")
-        self._btn_tick_hl.clicked.connect(lambda: self._tick_highlighted(True))
-        self._btn_untick_hl = QPushButton("Untick highlighted")
-        self._btn_untick_hl.setToolTip("Untick every highlighted file")
-        self._btn_untick_hl.clicked.connect(lambda: self._tick_highlighted(False))
-        hl_row.addWidget(self._btn_tick_hl)
-        hl_row.addWidget(self._btn_untick_hl)
-        hl_row.addStretch()
-        files_layout.addLayout(hl_row)
 
         # How the selected files are written.
         self._rb_specific_one = QRadioButton("Into one file")
@@ -8088,7 +8077,6 @@ class _ExportScopeDialog(QDialog):
             }}
             QPushButton:hover {{ background: {COLORS.get('accent', '#7a5c1e')}; color: white; }}
             QScrollArea {{ border: none; background: transparent; }}
-            QCheckBox[hl="true"] {{ background: {COLORS['selected_bg']}; border-radius: 2px; }}
         """)
 
     def _on_ok(self) -> None:
@@ -8160,9 +8148,6 @@ class _ExportScopeDialog(QDialog):
         needle = text.strip().lower()
         for chk, fp in self._file_checks:
             chk.setHidden(bool(needle) and needle not in os.path.basename(fp).lower())
-        # A row the filter hides keeps its tick but leaves the highlight, so
-        # "Tick/Untick highlighted" and Space only ever act on rows on screen.
-        self._set_highlight({i for i in self._hl_rows if not self._file_checks[i][0].isHidden()})
         self._update_file_count()
 
     def _tick_shown(self, checked: bool) -> None:
@@ -8173,20 +8158,14 @@ class _ExportScopeDialog(QDialog):
 
     def _update_file_count(self, *_args) -> None:
         shown = sum(1 for chk, _ in self._file_checks if not chk.isHidden())
-        text = (f"{shown} of {len(self._file_checks)} shown, "
-                f"{len(self.selected_files())} selected")
-        hl = getattr(self, "_hl_rows", set())
-        if hl:
-            text += f", {len(hl)} highlighted"
-        self._lbl_file_count.setText(text)
-        if hasattr(self, "_btn_tick_hl"):
-            self._btn_tick_hl.setEnabled(bool(hl))
-            self._btn_untick_hl.setEnabled(bool(hl))
+        self._lbl_file_count.setText(
+            f"{shown} of {len(self._file_checks)} shown, "
+            f"{len(self.selected_files())} selected")
 
-    # ── Highlight: keyboard and multiple selection ────────────────────────
+    # ── Ranges and keyboard ───────────────────────────────────────────────
     #
-    # Ticked = will be exported (unchanged).  Highlighted = marked to be ticked
-    # or unticked together.  Only rows the filter shows can be highlighted.
+    # One kind of selection only: the tick (= will be exported).  A range is
+    # applied to the rows the filter shows; hidden rows keep their tick.
 
     def _row_index(self, chk) -> int:
         return next(i for i, (c, _fp) in enumerate(self._file_checks) if c is chk)
@@ -8194,95 +8173,51 @@ class _ExportScopeDialog(QDialog):
     def _shown_rows(self) -> list[int]:
         return [i for i, (c, _fp) in enumerate(self._file_checks) if not c.isHidden()]
 
-    def _set_highlight(self, rows: set[int]) -> None:
-        for i, (c, _fp) in enumerate(self._file_checks):
-            on = i in rows
-            if bool(c.property("hl")) != on:
-                c.setProperty("hl", on)
-                c.style().unpolish(c)
-                c.style().polish(c)
-        self._hl_rows = set(rows)
-        self._update_file_count()
-
-    def _range_rows(self, a: int, b: int) -> set[int]:
+    def _set_range(self, a: int, b: int, checked: bool) -> None:
         lo, hi = sorted((a, b))
-        return {i for i in self._shown_rows() if lo <= i <= hi}
-
-    def _tick_highlighted(self, checked: bool) -> None:
-        for i in sorted(self._hl_rows):
-            self._file_checks[i][0].setChecked(checked)
+        for i in self._shown_rows():
+            if lo <= i <= hi:
+                self._file_checks[i][0].setChecked(checked)
         self._update_file_count()
-
-    def _on_row_toggled(self, chk, on: bool) -> None:
-        """A plain click on a highlighted row ticks/unticks every highlighted row."""
-        if getattr(self, "_hl_applying", False):
-            return
-        i = self._row_index(chk)
-        if i in self._hl_rows and len(self._hl_rows) > 1:
-            self._hl_applying = True
-            try:
-                self._tick_highlighted(on)
-            finally:
-                self._hl_applying = False
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if not any(obj is c for c, _fp in self._file_checks):
             return super().eventFilter(obj, event)
         et = event.type()
-        mods = getattr(event, "modifiers", lambda: Qt.KeyboardModifier.NoModifier)()
-        ctrl = bool(mods & Qt.KeyboardModifier.ControlModifier)
-        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
         i = self._row_index(obj)
-
         if et in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick,
                   QEvent.Type.MouseButtonRelease) and event.button() == Qt.MouseButton.LeftButton:
-            if ctrl or shift:
-                # Modifier clicks highlight instead of ticking.
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            if shift and self._anchor is not None and self._anchor != i:
+                # Every shown row from the anchor to here takes the anchor's
+                # state: None, click file 1, Shift+click file 10 = those 10.
                 if et == QEvent.Type.MouseButtonPress:
-                    if shift and self._hl_anchor is not None:
-                        self._set_highlight(self._range_rows(self._hl_anchor, i)
-                                            | (self._hl_rows if ctrl else set()))
-                    else:
-                        self._set_highlight(self._hl_rows ^ {i})
-                        self._hl_anchor = i
+                    self._set_range(self._anchor, i, self._file_checks[self._anchor][0].isChecked())
+                    self._anchor = i
                     obj.setFocus()
                 return True
-            if et == QEvent.Type.MouseButtonPress and i not in self._hl_rows:
-                # A plain click outside the highlight starts afresh from this
-                # row.  On a highlighted row it ticks the whole group (see
-                # _on_row_toggled) and keeps the group and its anchor.
-                self._hl_anchor = i
-                self._set_highlight(set())
+            if et == QEvent.Type.MouseButtonPress:
+                self._anchor = i          # a plain click ticks / unticks as before
             return False
-
         if et == QEvent.Type.KeyPress:
-            key = event.key()
-            shown = self._shown_rows()
-            if key == Qt.Key.Key_A and ctrl:
-                self._set_highlight(set(shown))
+            key, mods = event.key(), event.modifiers()
+            if key == Qt.Key.Key_A and mods & Qt.KeyboardModifier.ControlModifier:
+                self._tick_shown(True)
                 return True
+            shown = self._shown_rows()
             if key in (Qt.Key.Key_Up, Qt.Key.Key_Down) and shown:
                 pos = shown.index(i) if i in shown else 0
                 nxt = shown[max(0, pos - 1)] if key == Qt.Key.Key_Up else shown[min(len(shown) - 1, pos + 1)]
-                if shift:
-                    if self._hl_anchor is None:
-                        self._hl_anchor = i
-                    self._set_highlight(self._range_rows(self._hl_anchor, nxt))
-                else:
-                    self._hl_anchor = nxt
-                self._file_checks[nxt][0].setFocus()
+                if mods & Qt.KeyboardModifier.ShiftModifier:
+                    # Carry this row's tick on to the next one.
+                    self._file_checks[nxt][0].setChecked(obj.isChecked())
+                    self._anchor = i
+                target = self._file_checks[nxt][0]
+                target.setFocus()
+                self._file_scroll.ensureWidgetVisible(target)
                 return True
-            if key == Qt.Key.Key_Space and self._hl_rows and not event.isAutoRepeat():
-                # The new state is the opposite of the focused row's (or the
-                # first highlighted row's when focus is elsewhere).
-                ref = i if i in self._hl_rows else min(self._hl_rows)
-                self._tick_highlighted(not self._file_checks[ref][0].isChecked())
-                return True
-            if key == Qt.Key.Key_Escape and self._hl_rows:
-                self._set_highlight(set())
-                return True
-        if et == QEvent.Type.KeyRelease and event.key() == Qt.Key.Key_Space and self._hl_rows:
-            return True      # QCheckBox would toggle on release otherwise
+            if key == Qt.Key.Key_Space:
+                self._anchor = i          # the checkbox toggles itself
         return super().eventFilter(obj, event)
 
 

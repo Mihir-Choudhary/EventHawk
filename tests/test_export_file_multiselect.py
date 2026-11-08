@@ -1,23 +1,23 @@
-"""Export "Specific files": highlight several rows and tick them together.
+"""Export "Specific files": tick or untick a range of files in one go.
 
 The checklist already filters by name, keeps hidden rows' ticks, and has All /
 None (every row) and Select shown / Clear shown (visible rows) -- see
 test_export_file_picker.py, which must keep passing unchanged.  What it lacked
-is selecting several rows at once from the keyboard or mouse, which matters
-with hundreds of logs.  Ticked still means "will be exported"; "highlighted"
-is the new, separate marking.
+is picking a set of files quickly -- "only these 10 / 50 of 272 logs".
 
-Driven with REAL mouse and key events on the real checkbox rows:
+There is ONE kind of selection: the tick (= will be exported).  Driven with
+REAL mouse and key events on the real checkbox rows:
 
-  * a plain click still ticks / unticks just that row (unchanged);
-  * Ctrl+click highlights without ticking; Shift+click highlights a range of
-    the SHOWN rows; Ctrl+A highlights every shown row; Shift+Down extends;
-  * Space and "Tick / Untick highlighted" change every highlighted row, and a
-    plain click on a highlighted row applies to all of them;
-  * the filter never changes ticks, and drops hidden rows from the highlight;
-  * All / None still act on every row (hidden ones included) and Select shown
-    / Clear shown on the shown rows only;
-  * the count line adds "N highlighted" only while something is highlighted.
+  * a plain (or Ctrl+) click ticks / unticks just that row, as before, and
+    becomes the anchor;
+  * Shift+click gives every SHOWN row between the anchor and the clicked row
+    the anchor's state -- so None, click file 1, Shift+click file 10 selects
+    exactly those 10; on an unticked anchor it unticks the range;
+  * rows hidden by the filter inside the range keep their tick;
+  * keyboard: Up/Down move between shown rows (scrolling them into view),
+    Space ticks / unticks the focused row, Shift+Up/Down extend the anchor's
+    state, Ctrl+A ticks every shown row;
+  * the count line keeps its format; there is no second, "highlighted" state.
 
 Run: QT_QPA_PLATFORM=offscreen python tests/test_export_file_multiselect.py
 """
@@ -36,101 +36,142 @@ def check(name, cond, detail=""):
 
 
 def main() -> int:
-    from PySide6.QtWidgets import QApplication, QPushButton
+    from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
     from PySide6.QtCore import Qt, QPoint
     from PySide6.QtTest import QTest
     app = QApplication.instance() or QApplication([])
     import evtx_tool.gui.main_window as mw
 
-    paths = [rf"C:\case\host{i:02d}\{n}.evtx" for i in range(10) for n in ("Security", "System", "Application")]
-    N = len(paths)
-    dlg = mw._ExportScopeDialog(paths, None, "separate", 999, None)
-    dlg._rb_specific.setChecked(True)
-    dlg.show(); app.processEvents()
-    rows = [c for c, _fp in dlg._file_checks]
+    SHIFT, CTRL = Qt.KeyboardModifier.ShiftModifier, Qt.KeyboardModifier.ControlModifier
 
-    def ticked():
+    def make(paths):
+        dlg = mw._ExportScopeDialog(paths, None, "separate", 999, None)
+        dlg._rb_specific.setChecked(True)
+        dlg.show(); app.processEvents()
+        return dlg
+
+    def scroll_of(dlg):
+        return next(s for s in dlg._files_box.findChildren(QScrollArea))
+
+    def ticked(dlg):
         return {fp for c, fp in dlg._file_checks if c.isChecked()}
 
-    def hl():
-        return sorted(dlg._hl_rows)
-
-    def click(i, mods=Qt.KeyboardModifier.NoModifier):
-        c = rows[i]
-        c.parentWidget().parentWidget().parentWidget().ensureWidgetVisible(c) \
-            if hasattr(c.parentWidget().parentWidget().parentWidget(), "ensureWidgetVisible") else None
+    def click(dlg, i, mods=Qt.KeyboardModifier.NoModifier):
+        c = dlg._file_checks[i][0]
+        scroll_of(dlg).ensureWidgetVisible(c)
+        app.processEvents()
         QTest.mouseClick(c, Qt.MouseButton.LeftButton, mods, QPoint(8, c.height() // 2))
         app.processEvents()
 
-    def key(i, k, mods=Qt.KeyboardModifier.NoModifier):
-        rows[i].setFocus()
-        QTest.keyClick(rows[i], k, mods)
+    def key(dlg, i, k, mods=Qt.KeyboardModifier.NoModifier):
+        c = dlg._file_checks[i][0]
+        c.setFocus(); app.processEvents()
+        QTest.keyClick(c, k, mods)
         app.processEvents()
 
-    click(0)
-    check("a plain click still unticks just that row", ticked() == set(paths) - {paths[0]})
-    click(0)
-    check("…and ticks it again", ticked() == set(paths))
-    check("the count line is unchanged while nothing is highlighted",
+    def btn(dlg, text):
+        return next(b for b in dlg._files_box.findChildren(QPushButton) if b.text() == text)
+
+    paths = [rf"C:\case\host{i:02d}\{n}.evtx" for i in range(10) for n in ("Security", "System", "Application")]
+    N = len(paths)
+    dlg = make(paths)
+
+    # ── single rows: unchanged ───────────────────────────────────────────────
+    click(dlg, 0)
+    check("a plain click still unticks just that row", ticked(dlg) == set(paths) - {paths[0]})
+    click(dlg, 0)
+    check("…and ticks it again", ticked(dlg) == set(paths))
+    check("the count line keeps its format",
           dlg._lbl_file_count.text() == f"{N} of {N} shown, {N} selected", dlg._lbl_file_count.text())
-    check("Tick/Untick highlighted start disabled",
-          not dlg._btn_tick_hl.isEnabled() and not dlg._btn_untick_hl.isEnabled())
+    click(dlg, 2, CTRL)
+    check("Ctrl+click also ticks / unticks just that row", ticked(dlg) == set(paths) - {paths[2]})
+    click(dlg, 2)
 
-    click(1, Qt.KeyboardModifier.ControlModifier)
-    click(3, Qt.KeyboardModifier.ControlModifier)
-    check("Ctrl+click highlights rows without ticking them",
-          hl() == [1, 3] and ticked() == set(paths), f"{hl()}")
-    click(6, Qt.KeyboardModifier.ShiftModifier)
-    check("Shift+click highlights the range from the anchor", hl() == [3, 4, 5, 6], f"{hl()}")
-    check("the count line says how many are highlighted",
-          dlg._lbl_file_count.text().endswith(", 4 highlighted"), dlg._lbl_file_count.text())
-    check("Tick/Untick highlighted are enabled", dlg._btn_tick_hl.isEnabled())
+    # ── "only these 10": None, click, Shift+click ────────────────────────────
+    btn(dlg, "None").click(); app.processEvents()
+    click(dlg, 0)
+    click(dlg, 9, SHIFT)
+    check("None, click file 1, Shift+click file 10 -> exactly those 10 selected",
+          ticked(dlg) == set(paths[0:10]), f"{len(ticked(dlg))} selected")
+    check("the count line says 10 selected",
+          dlg._lbl_file_count.text() == f"{N} of {N} shown, 10 selected", dlg._lbl_file_count.text())
+    click(dlg, 20)
+    click(dlg, 14, SHIFT)
+    check("a second range adds to the first, and works upwards too",
+          ticked(dlg) == set(paths[0:10]) | set(paths[14:21]), f"{len(ticked(dlg))} selected")
+    click(dlg, 5)                      # unticks 5 -> anchor is unticked
+    click(dlg, 8, SHIFT)
+    check("Shift+click from an unticked row unticks the range",
+          ticked(dlg) == (set(paths[0:5]) | {paths[9]} | set(paths[14:21])), f"{len(ticked(dlg))} selected")
 
-    key(6, Qt.Key.Key_Space)
-    check("Space unticks every highlighted row",
-          ticked() == set(paths) - {paths[i] for i in (3, 4, 5, 6)}, f"{N - len(ticked())} unticked")
-    key(6, Qt.Key.Key_Space)
-    check("Space again ticks them back", ticked() == set(paths))
-    dlg._btn_untick_hl.click(); app.processEvents()
-    check("'Untick highlighted' unticks exactly the highlighted rows",
-          ticked() == set(paths) - {paths[i] for i in (3, 4, 5, 6)})
-    click(5)
-    check("a plain click on a highlighted row applies to all highlighted rows",
-          ticked() == set(paths) and hl() == [3, 4, 5, 6], f"{N - len(ticked())} unticked, hl={hl()}")
-
-    key(6, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
-    check("Shift+Down extends the highlight", hl() == [3, 4, 5, 6, 7], f"{hl()}")
-    key(7, Qt.Key.Key_Escape)
-    check("Escape clears the highlight", hl() == [])
-
-    # ── filter: ticks kept, highlight limited to shown rows ──────────────────
+    # ── the filter: ranges skip hidden rows ──────────────────────────────────
+    btn(dlg, "None").click(); app.processEvents()
     dlg._inp_file_search.setText("system"); app.processEvents()
-    shown = [i for i, c in enumerate(rows) if not c.isHidden()]
-    key(shown[0], Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
-    check("Ctrl+A highlights every shown row and nothing hidden", hl() == shown, f"{len(hl())} of {len(shown)}")
-    dlg._btn_untick_hl.click(); app.processEvents()
-    check("…so 'Untick highlighted' leaves hidden rows' ticks alone",
-          ticked() == {p for p in paths if not p.endswith("System.evtx")})
-    click(shown[0], Qt.KeyboardModifier.ControlModifier)
+    shown = [i for i, (c, _fp) in enumerate(dlg._file_checks) if not c.isHidden()]
+    click(dlg, shown[0])
+    click(dlg, shown[3], SHIFT)
+    want = {paths[i] for i in shown[0:4]}
+    check("with a filter, a range ticks only the shown rows in it",
+          ticked(dlg) == want, f"{sorted(ticked(dlg) - want)}")
+    dlg._inp_file_search.setText(""); app.processEvents()
+    check("…and clearing the filter changes no tick", ticked(dlg) == want)
+
+    # ── keyboard ─────────────────────────────────────────────────────────────
+    btn(dlg, "None").click(); app.processEvents()
+    key(dlg, 3, Qt.Key.Key_Space)
+    check("Space ticks the focused row", ticked(dlg) == {paths[3]})
+    for r in (3, 4, 5):
+        key(dlg, r, Qt.Key.Key_Down, SHIFT)
+    check("Shift+Down carries the row's tick down: Space then Shift+Down x3 -> 4 rows",
+          ticked(dlg) == set(paths[3:7]), f"{len(ticked(dlg))}")
+    check("…with focus on the last of them", dlg._file_checks[6][0].hasFocus())
+    key(dlg, 6, Qt.Key.Key_Down)
+    check("plain Down only moves focus", dlg._file_checks[7][0].hasFocus() and ticked(dlg) == set(paths[3:7]))
     dlg._inp_file_search.setText("security"); app.processEvents()
-    check("a filter change drops now-hidden rows from the highlight", hl() == [], f"{hl()}")
-    check("…and never changes a tick", ticked() == {p for p in paths if not p.endswith("System.evtx")})
+    shown = [i for i, (c, _fp) in enumerate(dlg._file_checks) if not c.isHidden()]
+    key(dlg, shown[0], Qt.Key.Key_A, CTRL)
+    check("Ctrl+A ticks every shown row and leaves hidden rows alone",
+          ticked(dlg) == set(paths[3:7]) | {paths[i] for i in shown}, f"{len(ticked(dlg))}")
+    dlg._inp_file_search.setText(""); app.processEvents()
 
     # ── existing buttons keep their scopes ───────────────────────────────────
+    dlg._inp_file_search.setText("application"); app.processEvents()
     dlg._btn_clear_shown.click(); app.processEvents()
     check("Clear shown still unticks only the shown rows",
-          ticked() == {p for p in paths if p.endswith("Application.evtx")})
-    btns = {b.text(): b for b in dlg._files_box.findChildren(QPushButton)}
-    btns["All"].click(); app.processEvents()
-    check("All still ticks every row, hidden ones included", ticked() == set(paths))
-    btns["None"].click(); app.processEvents()
-    check("None still unticks every row, hidden ones included", ticked() == set())
+          not any(p.endswith("Application.evtx") for p in ticked(dlg)))
+    btn(dlg, "All").click(); app.processEvents()
+    check("All still ticks every row, hidden ones included", ticked(dlg) == set(paths))
+    btn(dlg, "None").click(); app.processEvents()
+    check("None still unticks every row, hidden ones included", ticked(dlg) == set())
     dlg._btn_select_shown.click(); app.processEvents()
     check("Select shown still ticks only the shown rows",
-          ticked() == {p for p in paths if p.endswith("Security.evtx")})
+          ticked(dlg) == {p for p in paths if p.endswith("Application.evtx")})
     dlg._inp_file_search.setText(""); app.processEvents()
     check("selected_files() returns exactly the ticked paths",
-          dlg.selected_files() == {p for p in paths if p.endswith("Security.evtx")})
+          dlg.selected_files() == {p for p in paths if p.endswith("Application.evtx")})
+    texts = [w.text() for w in dlg._files_box.findChildren(QPushButton)] + [dlg._lbl_file_count.text()]
+    check("there is no separate 'highlighted' state left",
+          not any("highlight" in t.lower() for t in texts) and not hasattr(dlg, "_hl_rows"), f"{texts}")
+    dlg.close()
+
+    # ── at the scale it is for: 50 of 300 logs ──────────────────────────────
+    big = [rf"C:\case\host{i:03d}\Security.evtx" for i in range(300)]
+    dlg = make(big)
+    btn(dlg, "None").click(); app.processEvents()
+    click(dlg, 100)
+    click(dlg, 149, SHIFT)
+    check("50 of 300: None, click file 101, Shift+click file 150 -> exactly 50 selected",
+          ticked(dlg) == set(big[100:150]), f"{len(ticked(dlg))} selected")
+    for _ in range(12):
+        foc = next(i for i, (c, _fp) in enumerate(dlg._file_checks) if c.hasFocus()) \
+            if any(c.hasFocus() for c, _fp in dlg._file_checks) else 149
+        key(dlg, foc, Qt.Key.Key_Down)
+    foc = next((i for i, (c, _fp) in enumerate(dlg._file_checks) if c.hasFocus()), None)
+    vp = scroll_of(dlg).viewport()
+    c = dlg._file_checks[foc][0] if foc is not None else None
+    top = c.mapTo(vp, QPoint(0, 0)).y() if c is not None else -1
+    check("keyboard focus scrolls the row into view",
+          foc == 161 and 0 <= top and top + c.height() <= vp.height(), f"row {foc}, y={top}, viewport={vp.height()}")
     dlg.close()
 
     ok = sum(1 for _n, c, _d in CHECKS if c)
