@@ -94,7 +94,7 @@ def main() -> int:
         check("…and PDF says why it is unavailable",
               not d._fmt_buttons["pdf"].isEnabled() and "one file per source" in d._fmt_buttons["pdf"].toolTip(),
               d._fmt_buttons["pdf"].toolTip())
-        d._rb_combined.setChecked(True); d._fmt_buttons["csv"].setChecked(True); app.processEvents()
+        d._rb_combined.setChecked(True); d._fmt_buttons["csv"].click(); app.processEvents()
         d._on_ok()
         check("OK returns the chosen format", d.selected_format() == "csv")
         d2 = mw._ExportScopeDialog(paths, None, "separate", 10, None)
@@ -138,13 +138,20 @@ def main() -> int:
         check("a remembered PDF falls back to a format Juggernaut can write",
               j.selected_format() == "html", j.selected_format())
         check("…and PDF's tooltip says Juggernaut Mode", "Juggernaut Mode" in j._fmt_buttons["pdf"].toolTip())
+        j._rb_combined.setChecked(True); j._on_ok()
+        check("a fallback the user did not pick is not remembered (PDF stays the choice)",
+              str(settings.value(mw._EXPORT_FORMAT_KEY)) == "pdf", str(settings.value(mw._EXPORT_FORMAT_KEY)))
         j.close()
 
         print("\n=== 3. the Save window ===")
         seen = {}
         typed = {}
-        patch(QFileDialog, "getSaveFileName", staticmethod(
-            lambda parent, title, default, filt, *a, **k: (seen.update(filter=filt), (typed["v"], filt))[1]))
+        def fake_save(parent, title, default, filt, *a, **k):
+            seen["filter"] = filt
+            seen["n"] = seen.get("n", 0) + 1
+            v = typed["v"]
+            return (v.pop(0) if isinstance(v, list) else v), filt
+        patch(QFileDialog, "getSaveFileName", staticmethod(fake_save))
         asked = []
         answer = {}
         patch(QMessageBox, "question", staticmethod(
@@ -157,10 +164,17 @@ def main() -> int:
         existing = os.path.join(tmp, "report.json")
         open(existing, "w").write("keep me")
         answer["v"] = QMessageBox.StandardButton.No
+        typed["v"] = [os.path.join(tmp, "report"), os.path.join(tmp, "other")]
+        seen["n"] = 0
         path, fmt = mw._export_save_path(None, "t", "json", ("json",))
         check("an appended name that already exists is asked about first", len(asked) == 1, asked[:1])
-        check("…'No' cancels and leaves the file alone",
-              path == "" and open(existing).read() == "keep me")
+        check("…'No' opens the Save window again (a new name can be typed); the file is left alone",
+              seen["n"] == 2 and path.endswith("other.json") and open(existing).read() == "keep me",
+              f"save windows {seen['n']}, path {path}")
+        typed["v"] = [os.path.join(tmp, "report"), ""]
+        path, fmt = mw._export_save_path(None, "t", "json", ("json",))
+        check("…and cancelling that Save window cancels the export", path == "")
+        typed["v"] = os.path.join(tmp, "report")
         answer["v"] = QMessageBox.StandardButton.Yes
         path, fmt = mw._export_save_path(None, "t", "json", ("json",))
         check("…'Yes' goes ahead with that name", path == existing)

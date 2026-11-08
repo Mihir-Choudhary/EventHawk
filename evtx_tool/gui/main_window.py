@@ -7831,25 +7831,26 @@ def _export_save_path(parent, title: str, fmt: str,
     dialog never saw the final name, so it could not ask about replacing an
     existing file -- that question is asked here.
     """
-    path, _ = QFileDialog.getSaveFileName(parent, title, "", _EXPORT_FILTERS[fmt])
-    if not path:
-        return "", fmt
-    typed = os.path.splitext(path)[1].lstrip(".").lower()
-    if typed in (allowed or (fmt,)):
-        return path, typed
-    if not path.lower().endswith("." + fmt):
-        path += "." + fmt
-        if os.path.exists(path):
-            reply = QMessageBox.question(
-                parent, "Replace File?",
-                f"{os.path.basename(path)} already exists in\n{os.path.dirname(path)}\n\n"
-                "Replace it?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return "", fmt
-    return path, fmt
+    while True:
+        path, _ = QFileDialog.getSaveFileName(parent, title, "", _EXPORT_FILTERS[fmt])
+        if not path:
+            return "", fmt
+        typed = os.path.splitext(path)[1].lstrip(".").lower()
+        if typed in (allowed or (fmt,)):
+            return path, typed
+        if not path.lower().endswith("." + fmt):
+            path += "." + fmt
+            if os.path.exists(path):
+                reply = QMessageBox.question(
+                    parent, "Replace File?",
+                    f"{os.path.basename(path)} already exists in\n{os.path.dirname(path)}\n\n"
+                    "Replace it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    continue          # back to the Save window for another name
+        return path, fmt
 
 
 class _ExportScopeDialog(QDialog):
@@ -8041,6 +8042,10 @@ class _ExportScopeDialog(QDialog):
         except Exception:
             self._fmt_pref = "html"
         self._fmt_grp.idToggled.connect(self._on_fmt_toggled)
+        # Remember only a format the user picked: a fallback forced by the
+        # scope (PDF -> HTML in Juggernaut) must not replace their choice.
+        self._fmt_picked = False
+        self._fmt_grp.buttonClicked.connect(lambda _b: setattr(self, "_fmt_picked", True))
         for _rb in (self._rb_view, self._rb_combined, self._rb_separate,
                     self._rb_specific, self._rb_specific_one, self._rb_specific_each):
             _rb.toggled.connect(lambda _on: self._refresh_formats())
@@ -8096,10 +8101,11 @@ class _ExportScopeDialog(QDialog):
             QMessageBox.warning(self, "No Files Selected",
                                 "Please check at least one file to export.")
             return
-        try:
-            QSettings("EventHawk", "GUI").setValue(_EXPORT_FORMAT_KEY, self.selected_format())
-        except Exception:
-            pass
+        if self._fmt_picked:
+            try:
+                QSettings("EventHawk", "GUI").setValue(_EXPORT_FORMAT_KEY, self.selected_format())
+            except Exception:
+                pass
         self.accept()
 
     # ── Format choice ─────────────────────────────────────────────────────
