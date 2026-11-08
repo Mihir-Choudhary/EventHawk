@@ -373,6 +373,85 @@ def _chevron_path(name: str) -> str:
                         "resources", "images", name)
 
 
+_TICK_DELEGATE_CLS = None
+
+
+def _contrast_ratio(a, b) -> float:
+    """WCAG contrast ratio of two QColors."""
+    def lum(c):
+        def ch(v):
+            v /= 255
+            return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+        return 0.2126 * ch(c.red()) + 0.7152 * ch(c.green()) + 0.0722 * ch(c.blue())
+    la, lb = sorted((lum(a), lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def _tick_delegate_class():
+    """The date tree's tick-drawing delegate class, built once (imports kept local)."""
+    global _TICK_DELEGATE_CLS
+    if _TICK_DELEGATE_CLS is not None:
+        return _TICK_DELEGATE_CLS
+    from PySide6.QtCore import QPointF, QRectF
+    from PySide6.QtGui import QPainterPath, QPen
+    from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QStyle
+
+    class _TickDelegate(QStyledItemDelegate):
+        """Paints a tick (checked) or a dash (partly checked) in each checkbox.
+
+        The popup's stylesheet draws the indicator as a filled square, so
+        "all", "some" and "none" of a year, month or day differed only by a
+        shade of amber.  A spreadsheet-style tick and dash make the three
+        states readable at a glance.  Painting only: check state, lazy hour
+        loading and the emitted filter values are untouched.
+        """
+
+        def paint(self, painter, option, index) -> None:
+            super().paint(painter, option, index)
+            state = index.data(Qt.ItemDataRole.CheckStateRole)
+            if state is None:
+                return
+            state = Qt.CheckState(state)
+            if state == Qt.CheckState.Unchecked:
+                return
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            widget = option.widget
+            style = widget.style() if widget is not None else QApplication.style()
+            box = style.subElementRect(
+                QStyle.SubElement.SE_ItemViewItemCheckIndicator, opt, widget)
+            if not box.isValid():
+                return
+            # The indicator's fill (see _apply_popup_style) is the theme's
+            # accent when checked and its focus amber when partly checked;
+            # read it from COLORS so it follows whatever theme is active, and
+            # draw in whichever of white / near-black contrasts more with it.
+            fill = QColor(COLORS["accent"] if state == Qt.CheckState.Checked
+                          else COLORS["border_focus"])
+            ink = max((QColor("#ffffff"), QColor("#1e1a14")),
+                      key=lambda c: _contrast_ratio(c, fill))
+            pen = QPen(ink, 2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(pen)
+            b = QRectF(box).adjusted(3, 3, -3, -3)
+            if state == Qt.CheckState.Checked:
+                path = QPainterPath()
+                path.moveTo(b.left(), b.top() + b.height() * 0.55)
+                path.lineTo(b.left() + b.width() * 0.38, b.bottom())
+                path.lineTo(b.right(), b.top())
+                painter.drawPath(path)
+            else:
+                y = b.center().y()
+                painter.drawLine(QPointF(b.left(), y), QPointF(b.right(), y))
+            painter.restore()
+
+    _TICK_DELEGATE_CLS = _TickDelegate
+    return _TickDelegate
+
+
 class ColumnFilterPopup(QDialog):
     """
     Excel-style dropdown that appears when clicking a filterable column header.
@@ -459,7 +538,11 @@ class ColumnFilterPopup(QDialog):
         self._month_items: dict[tuple[str, str], QTreeWidgetItem] = {}
         self._tree_sync = False          # re-entrancy guard for itemChanged
         self._tree_pre_search = None     # {value: was_checked}, see _filter_tree
-        self.setMinimumWidth(260 if self._is_date_tree else 220)
+        # The date tree is up to five levels deep ((Select All) > year > month
+        # > day > hour); at 260 px the hour rows ("14:00–14:59  (1,234)") were
+        # cut off.  320 fits them at normal font sizes, and the tree scrolls
+        # sideways for anything wider (see _build_date_tree).
+        self.setMinimumWidth(320 if self._is_date_tree else 220)
         self.setMaximumHeight(400)
         self._build_ui()
         self._apply_popup_style()
@@ -587,6 +670,15 @@ class ColumnFilterPopup(QDialog):
         self._tree.setHeaderHidden(True)
         self._tree.setRootIsDecorated(True)
         self._tree.setUniformRowHeights(True)
+        self._tree.setItemDelegate(_tick_delegate_class()(self._tree))
+        # Never cut a row off with "…": size the column to its widest row and
+        # scroll sideways when that is wider than the popup.  The horizontal
+        # scrollbar is always shown, like the vertical one, so it is obvious
+        # the deeper rows can be scrolled into view.
+        self._tree.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self._tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._tree.header().setStretchLastSection(False)
+        self._tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self._tree.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._tree.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
