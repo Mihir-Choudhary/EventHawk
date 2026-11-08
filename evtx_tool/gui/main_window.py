@@ -2915,7 +2915,6 @@ class _LogonSessionDialog(QDialog):
     # ── Table population ──────────────────────────────────────────────────
 
     def _populate_table(self, sessions: list[dict]) -> None:
-        from PySide6.QtGui import QColor
         self._tbl.setSortingEnabled(False)
         self._tbl.setRowCount(len(sessions))
 
