@@ -172,6 +172,49 @@ def main() -> int:
           not any("highlight" in t.lower() for t in texts) and not hasattr(dlg, "_hl_rows"), f"{texts}")
     dlg.close()
 
+    # ── review fixes: hidden anchor, blank area, Ctrl+Shift+A, Shift+Down anchor ──
+    dlg = make(paths)
+    btn(dlg, "None").click(); app.processEvents()
+    click(dlg, 0)                                   # anchor = row 0 (a Security log), ticked
+    dlg._inp_file_search.setText("system"); app.processEvents()
+    sys_rows = [i for i, (c, _fp) in enumerate(dlg._file_checks) if not c.isHidden()]
+    click(dlg, sys_rows[3], SHIFT)
+    check("Shift+click with the anchor hidden by the filter acts as a plain click",
+          ticked(dlg) == {paths[0], paths[sys_rows[3]]}, f"{sorted(paths.index(p) for p in ticked(dlg))}")
+    dlg._inp_file_search.setText(""); app.processEvents()
+    before = ticked(dlg)
+    c = dlg._file_checks[20][0]
+    scroll_of(dlg).ensureWidgetVisible(c); app.processEvents()
+    QTest.mouseClick(c, Qt.MouseButton.LeftButton, SHIFT, QPoint(c.width() - 3, c.height() // 2)); app.processEvents()
+    check("Shift+click on the blank part of a row does nothing, like a plain click there",
+          c.width() - 3 > c.sizeHint().width() and ticked(dlg) == before,
+          f"width {c.width()} hint {c.sizeHint().width()}, changed {len(ticked(dlg) ^ before)}")
+    btn(dlg, "None").click(); app.processEvents()
+    key(dlg, 0, Qt.Key.Key_A, CTRL | SHIFT)
+    check("Ctrl+Shift+A is not Ctrl+A", ticked(dlg) == set())
+    key(dlg, 4, Qt.Key.Key_Space)
+    key(dlg, 4, Qt.Key.Key_Down, SHIFT)            # 4 -> 5 ticked, anchor moves to 5
+    click(dlg, 8, SHIFT)
+    check("after Shift+Down, Shift+click ranges from the row Shift+Down reached",
+          ticked(dlg) == set(paths[4:9]), f"{sorted(paths.index(p) for p in ticked(dlg))}")
+    check("the tip names the keyboard keys too (tooltip)",
+          all(k in dlg._lbl_range_tip.toolTip() for k in ("Space", "Shift+", "Ctrl+A")), dlg._lbl_range_tip.toolTip())
+    dlg.close()
+
+    # ── speed with thousands of files (the case the filter exists for) ──────
+    import time as _t
+    many = [rf"C:\case\h{i:04d}\Security.evtx" for i in range(2000)]
+    t0 = _t.time(); dlg = make(many); t_open = _t.time() - t0
+    t0 = _t.time(); dlg._inp_file_search.setText("h00"); app.processEvents(); t_filter = _t.time() - t0
+    t0 = _t.time(); dlg._inp_file_search.setText(""); app.processEvents(); t_clear = _t.time() - t0
+    btn(dlg, "None").click(); app.processEvents()
+    click(dlg, 0)
+    t0 = _t.time(); click(dlg, 1999, SHIFT); t_range = _t.time() - t0
+    check("2,000 files: open < 2 s, filter / clear filter < 4 s, Shift+click over all < 1 s",
+          t_open < 2 and t_filter < 4 and t_clear < 4 and t_range < 1 and len(ticked(dlg)) == 2000,
+          f"open {t_open:.2f}s, filter {t_filter:.2f}s, clear {t_clear:.2f}s, range {t_range:.2f}s")
+    dlg.close()
+
     # ── at the scale it is for: 50 of 300 logs ──────────────────────────────
     big = [rf"C:\case\host{i:03d}\Security.evtx" for i in range(300)]
     dlg = make(big)
