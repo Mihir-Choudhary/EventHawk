@@ -882,10 +882,14 @@ def _hw_worker_stream(
     missing_vs_expected = 0
     if not is_split:
         try:
-            from evtx_tool.core.chunk_salvage import expected_record_count
-            _expected, _dmg = expected_record_count(fpath)
-            if _expected > 0 and emitted.total() < _expected:
-                missing_vs_expected = _expected - emitted.total()
+            from evtx_tool.core.chunk_salvage import expected_ranges
+            # Only IDs read inside the declared ranges count (see the Normal
+            # engine): records with no declared range cannot hide lost ones.
+            _ranges = expected_ranges(fpath)
+            _expected = sum(hi - lo + 1 for lo, hi in _ranges)
+            _got = emitted.count_within(_ranges)
+            if _expected > 0 and _got < _expected:
+                missing_vs_expected = _expected - _got
         except Exception:
             pass
 

@@ -160,6 +160,51 @@ def main() -> int:
         d[base + 0x200 + sig: base + 0x200 + sig + 4] = b"XXXX"
         open(aborted, "wb").write(d)
 
+        print("\n=== 2b. accounting: recovered records never hide missing ones ===")
+        # The "missing records" warning compares the IDs the headers declare with
+        # the IDs read.  Records recovered from a header-less (sentinel) chunk
+        # have no declared range, so they must not offset IDs that ARE declared
+        # and were lost (here: the records after the corrupt one in chunk j).
+        import queue as _q
+        import threading as _th
+        from evtx_tool.core.engine import _worker_parse_file
+        from evtx_tool.core.heavyweight.engine import _hw_worker_stream
+        idx_a = read_chunk_index(aborted)
+        declared = set()
+        for _ci, a, b2 in idx_a["valid"]:
+            declared.update(range(a, b2 + 1))
+        res = _worker_parse_file({"filepath": aborted, "filter_config": {}})
+        got_ids = [e["event_record_id"] for e in res["events"]]
+        truth_missing = len(declared - set(got_ids))
+        check("independent count: some declared records really are lost", truth_missing > 0,
+              f"{truth_missing} declared IDs never read")
+        check("Normal: missing_vs_expected equals the declared IDs never read",
+              res.get("missing_vs_expected") == truth_missing,
+              f"{res.get('missing_vs_expected')} vs {truth_missing}")
+        check("Normal: the hidden chunk's records are still loaded", set(truth_k) <= set(got_ids))
+        qq, stop = _q.Queue(), _th.Event()
+        _hw_worker_stream({"filepath": aborted}, qq, stop)
+        done = None
+        while not qq.empty():
+            m = qq.get()
+            if m[0] == "DONE":
+                done = m[2]
+        check("Juggernaut: missing_vs_expected equals the declared IDs never read",
+              done is not None and done.get("missing_vs_expected") == truth_missing,
+              f"{(done or {}).get('missing_vs_expected')} vs {truth_missing}")
+
+        # a sentinel header over a COPY of another chunk's records: no duplicates
+        dup = os.path.join(tmp, "DupBody.evtx")
+        m_ci = ranged[6]
+        d3 = bytearray(open(aborted, "rb").read())
+        d3[HDR + k * CHUNK: HDR + (k + 1) * CHUNK] = d3[HDR + m_ci * CHUNK: HDR + (m_ci + 1) * CHUNK]
+        struct.pack_into("<QQ", d3, HDR + k * CHUNK + 0x18, S, S)
+        open(dup, "wb").write(d3)
+        r2 = _worker_parse_file({"filepath": dup, "filter_config": {}})
+        ids2 = [e["event_record_id"] for e in r2["events"]]
+        check("Normal: a hidden chunk holding another chunk's records adds no duplicate rows",
+              len(ids2) == len(set(ids2)), f"{len(ids2) - len(set(ids2))} duplicates")
+
         print("\n=== 3. through the real window, both modes ===")
         from PySide6.QtWidgets import QApplication, QMessageBox
         app = QApplication.instance() or QApplication([])
