@@ -11,57 +11,98 @@ usual causes are few and fixable:
 * another program has the file open and locked;
 * the file is no longer at that path.
 
-``explain_open_errors()`` turns the error lines of one parse into a short
+``explain_open_errors()`` turns the error texts of one parse into a short
 paragraph per cause that occurred, for the bottom of the warning dialog, so
-a parse with forty locked files gets one explanation, not forty.
+a parse with forty locked files gets one explanation, not forty.  The advice
+never involves changing the original file: a locked or protected log is
+copied by a tool that can read it, and the copy's hash is checked.
 """
 
 from __future__ import annotations
 
+import os
 import re
 
-# (cause, pattern over the error text, explanation)
-_CAUSES: list[tuple[str, re.Pattern, str]] = [
+# (cause, words in the error text, Windows error codes, explanation)
+# The codes are matched as "(os error N)" (the parser's form) or "[WinError N]"
+# (Python's), and only on Windows: elsewhere the same numbers mean other
+# things (os error 5 is EIO on Linux).  The words also cover non-English
+# Windows through the codes, and POSIX text such as "Permission denied".
+_CAUSES: list[tuple[str, re.Pattern, tuple[int, ...], str]] = [
     (
         "access",
-        re.compile(r"os error 5\b|access is denied|permission denied|\[errno 13\]", re.I),
+        re.compile(r"access is denied|permission denied|\[errno 13\]", re.I),
+        (5,),
         "“Access is denied”: Windows blocked reading the file because of its "
         "file permissions (common for Windows’ own log folder, or for logs copied "
         "out of a mounted image with the original machine’s permissions). "
-        "Copy the file to a normal folder, such as your case folder, and add the "
-        "copy — or run EventHawk as Administrator.",
+        "Make a working copy with an account that can read it — an elevated "
+        "(Administrator) copy, or robocopy /B — check the copy’s hash against the "
+        "original, and add the copy; or run EventHawk as Administrator, which only "
+        "reads the file. Do not change the original’s permissions or owner.",
     ),
     (
         "in_use",
-        re.compile(r"os error 32\b|being used by another process|sharing violation", re.I),
-        "“In use”: another program has the file open and locked. Close that "
-        "program, or copy the file and add the copy.",
+        re.compile(r"being used by another process|sharing violation|"
+                   r"another process has locked", re.I),
+        (32, 33),
+        "“In use”: another program has the file open and locked (for live logs, "
+        "Windows’ own Event Log service). Close that program, or take a copy with "
+        "a tool that can read locked files — a Volume Shadow Copy or your forensic "
+        "imager — check its hash, and add the copy.",
     ),
     (
         "missing",
-        re.compile(r"os error [23]\b|cannot find the (file|path)|no such file", re.I),
+        re.compile(r"cannot find the (?:file|path)|no such file|"
+                   r"network path was not found|network name cannot be found|"
+                   r"device is not ready", re.I),
+        (2, 3, 21, 53, 67),
         "“Not found”: the file is no longer at that path — it was moved, "
-        "renamed, or is on a drive that is no longer connected. Add it again "
-        "from where it is now.",
+        "renamed, or is on a drive or network share that is no longer "
+        "connected. Add it again from where it is now.",
     ),
 ]
 
-
-def open_error_causes(text: str) -> list[str]:
-    """The cause keys ("access", "in_use", "missing") found in *text*."""
-    return [key for key, pat, _ in _CAUSES if pat.search(text or "")]
+_CODE_RE = re.compile(r"\(os error (\d+)\)|\[WinError (\d+)\]", re.I)
+_ENGINE_LINE_RE = re.compile(r"^Parse error [^:]*: (.*)$", re.S)
 
 
-def explain_open_errors(lines) -> str:
-    """One paragraph per open-error cause present in *lines*, or ``""``.
+def engine_error_text(line: str) -> str:
+    """The error part of a Normal-mode engine line, or ``""``.
 
-    Each paragraph is prefixed with how many of the lines it covers, so the
-    examiner can tell "one stray file" from "the whole folder" at a glance.
+    The engine reports ``Parse error <file name>: <error>``; a Windows file
+    name cannot contain ``:``, so the error is everything after the first
+    ``": "``.  Reading only that part means a file NAME ("no such file.evtx")
+    never triggers an explanation.  Other lines (``Timeout (…): <file>``,
+    ``Worker exception for <file>: …`` -- which can come from a temp or output
+    write, not the evidence file) are not explained.
     """
-    lines = [str(x) for x in (lines or [])]
-    out = []
-    for key, pat, text in _CAUSES:
-        n = sum(1 for line in lines if pat.search(line))
-        if n:
-            out.append(f"{n} file(s) — {text}")
-    return "\n\n".join(out)
+    m = _ENGINE_LINE_RE.match(str(line or ""))
+    return m.group(1) if m else ""
+
+
+def open_error_causes(text: str, windows: bool | None = None) -> list[str]:
+    """The cause keys ("access", "in_use", "missing") found in *text*."""
+    if windows is None:
+        windows = os.name == "nt"
+    text = str(text or "")
+    codes = {int(a or b) for a, b in _CODE_RE.findall(text)} if windows else set()
+    return [key for key, words, nums, _ in _CAUSES
+            if words.search(text) or codes.intersection(nums)]
+
+
+def explain_open_errors(texts, windows: bool | None = None) -> str:
+    """One paragraph per open-error cause present in *texts*, or ``""``.
+
+    *texts* are error texts (see ``engine_error_text`` for Normal mode's
+    lines).  Each is counted once, under its first cause, and each paragraph
+    is prefixed with how many files it covers, so the examiner can tell "one
+    stray file" from "the whole folder" at a glance.
+    """
+    counts: dict[str, int] = {}
+    for t in texts or []:
+        causes = open_error_causes(t, windows)
+        if causes:
+            counts[causes[0]] = counts.get(causes[0], 0) + 1
+    return "\n\n".join(f"{counts[key]} file(s) — {text}"
+                       for key, _w, _n, text in _CAUSES if counts.get(key))

@@ -45,27 +45,64 @@ def check(name, cond, detail=""):
 
 
 def main() -> int:
-    from evtx_tool.core.open_errors import explain_open_errors, open_error_causes
+    from evtx_tool.core.open_errors import explain_open_errors, open_error_causes, engine_error_text
 
     print("=== 1. cause matching ===")
+    # The OS's error text (what the parser reports, and Juggernaut's open_error).
     samples = {
-        "Parse error A.evtx: Access is denied. (os error 5)": ["access"],
-        "B.evtx: [Errno 13] Permission denied: 'B.evtx'": ["access"],
-        "Parse error C.evtx: The process cannot access the file because it is "
-        "being used by another process. (os error 32)": ["in_use"],
-        "D.evtx: The system cannot find the file specified. (os error 2)": ["missing"],
-        "E.evtx: The system cannot find the path specified. (os error 3)": ["missing"],
-        "F.evtx: parse aborted mid-file (invalid chunk header)": [],
-        "Timeout (300s): G.evtx": [],
+        "Access is denied. (os error 5)": ["access"],
+        "[WinError 5] Zugriff verweigert: 'C:\\x\\B.evtx'": ["access"],      # non-English Windows
+        "[Errno 13] Permission denied: 'B.evtx'": ["access"],
+        "The process cannot access the file because it is being used by another process. (os error 32)": ["in_use"],
+        "The process cannot access the file because another process has locked a portion of the file. "
+        "(os error 33)": ["in_use"],
+        "The system cannot find the file specified. (os error 2)": ["missing"],
+        "The system cannot find the path specified. (os error 3)": ["missing"],
+        "The network path was not found. (os error 53)": ["missing"],
+        "The device is not ready. (os error 21)": ["missing"],
+        "parse aborted mid-file (invalid chunk header)": [],
+        "Data error (cyclic redundancy check). (os error 23)": [],          # not 2 or 3
+        "Some error (os error 50)": [],                                     # not 5
+        "Access violation at 0x0": [],
     }
     for text, want in samples.items():
-        check(f"{text[:44]!r}… -> {want or 'none'}", open_error_causes(text) == want)
-    why = explain_open_errors(list(samples))
-    check("one paragraph per cause, with its file count",
-          why.count("2 file(s) — “Access is denied”") == 1
+        check(f"{text[:44]!r}… -> {want or 'none'}", open_error_causes(text, windows=True) == want)
+    check("off Windows, a bare 'os error 5' (EIO there) is not read as access denied",
+          open_error_causes("Input/output error (os error 5)", windows=False) == [])
+    check("off Windows, the words still count",
+          open_error_causes("Permission denied (os error 13)", windows=False) == ["access"])
+
+    # Normal mode's engine lines: "Parse error <file>: <error>".  Only the error
+    # part is read, so a file NAME can never trigger an explanation, and lines
+    # that are not about opening a file (Timeout, Worker exception) are left out.
+    check("the error part of a 'Parse error' line is read",
+          engine_error_text("Parse error Locked.evtx: Access is denied. (os error 5)") == "Access is denied. (os error 5)")
+    check("a file named like an error explains nothing",
+          explain_open_errors([engine_error_text("Parse error Access is denied.evtx: bad magic"),
+                               engine_error_text("Parse error no such file.evtx: bad magic")]) == "")
+    check("Timeout and Worker exception lines are not explained",
+          engine_error_text("Timeout (300s): G.evtx") == ""
+          and engine_error_text("Worker exception for H.evtx: [Errno 13] Permission denied: 'tmp'") == "")
+    lines = ["Parse error A.evtx: Access is denied. (os error 5)",
+             "Parse error B.evtx: [WinError 5] Zugriff verweigert: 'B.evtx'",
+             "Parse error C.evtx: The process cannot access the file because it is being used by another "
+             "process. (os error 32)",
+             "Parse error D.evtx: The system cannot find the file specified. (os error 2)",
+             "Parse error E.evtx: Access is denied. (os error 5); retry: (os error 2)",
+             "Parse error F.evtx: parse aborted mid-file (invalid chunk header)",
+             "Timeout (300s): G.evtx"]
+    why = explain_open_errors([engine_error_text(x) for x in lines], windows=True)
+    check("one paragraph per cause; each file counted once, under its first cause",
+          why.count("3 file(s) — “Access is denied”") == 1
           and why.count("1 file(s) — “In use”") == 1
-          and why.count("2 file(s) — “Not found”") == 1, why[:120])
-    check("nothing to explain -> empty", explain_open_errors(["F.evtx: parse aborted"]) == "")
+          and why.count("1 file(s) — “Not found”") == 1, why[:160])
+    check("nothing to explain -> empty", explain_open_errors(["parse aborted"]) == "")
+    acc = explain_open_errors(["Access is denied. (os error 5)"], windows=True)
+    check("access advice: copy with an account that can read it, check the hash, leave the original alone",
+          "robocopy /B" in acc and "hash" in acc and "Do not change the original" in acc, acc)
+    use = explain_open_errors(["(os error 32)"], windows=True)
+    check("in-use advice: a copy needs a tool that reads locked files (shadow copy / imager)",
+          "Volume Shadow Copy" in use and "hash" in use, use)
 
     LOGS = os.environ.get("EVTX_TEST_LOGS", "sample_logs")
 
@@ -167,6 +204,8 @@ def main() -> int:
         check("the explanation is shown", EXPL in text)
         check("no ABORT note when nothing aborted", "parse ABORT" not in text)
         check("still points at parse_stats.json", "parse_stats.json in the session directory" in text)
+        check("…on its own paragraph, not run on to the last finding",
+              "\n\nDetails: parse_stats.json" in text, repr(text[-120:]))
         rows, text = run("jm", [locked, aborts])
         check("a real abort in another file is still reported",
               "Aborts.evtx: parse aborted mid-file" in text, text[:240])
