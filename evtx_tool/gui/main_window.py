@@ -395,7 +395,9 @@ def _tick_ink(fill):
     """
     cands = (QColor("#ffffff"), QColor("#1e1a14"))
     best = max(cands, key=lambda c: _contrast_ratio(c, fill))
-    return best if _contrast_ratio(best, fill) >= 4.5 else QColor("#000000")
+    # Qt's own black (not a hex literal: it is picked per theme by contrast,
+    # so it has no light/dark pair of its own).
+    return best if _contrast_ratio(best, fill) >= 4.5 else QColor(Qt.GlobalColor.black)
 
 
 def _tick_delegate_class():
