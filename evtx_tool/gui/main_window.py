@@ -8145,15 +8145,19 @@ class _ExportScopeDialog(QDialog):
     def _fit_hint_width(self) -> None:
         """Make room for the widest hint, so picking a format never resizes the box.
 
-        Also give each format button a few pixels past its size hint: with the
-        app's stylesheet the hint is a pixel or two short, which cut the last
-        letter ("CSV" drawn as "CSv").
+        Also give the radio buttons that sit in a tight row a few pixels past
+        their size hint.  The app stylesheet draws a ticked indicator 2 px
+        smaller than an unticked one (1 px border instead of 2 px), and a
+        button measures its size hint once, while it may be ticked -- so a
+        button that starts ticked is 2 px short once another is picked, and
+        loses its last letter ("CSV" drawn as "CSv", "Into one file" as
+        "Into one fil").
         """
         lab = self._lbl_fmt_hint
         lab.ensurePolished()
         fm = lab.fontMetrics()
         lab.setMinimumWidth(max(fm.horizontalAdvance(h) for _k, _l, h in _EXPORT_FORMATS) + 4)
-        for rb in self._fmt_buttons.values():
+        for rb in (*self._fmt_buttons.values(), self._rb_specific_one, self._rb_specific_each):
             rb.ensurePolished()
             rb.setMinimumWidth(rb.sizeHint().width() + 4)
 

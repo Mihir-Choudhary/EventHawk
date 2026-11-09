@@ -122,30 +122,58 @@ def main() -> int:
         print("\n=== 1c. no format name is cut off (app theme applied) ===")
         from PySide6.QtGui import QImage
 
-        def cut_names(dlg):
+        def cut_names(buttons):
             # Draw each button at its real width and with 40 px to spare: ink
             # past the real width in the wide drawing is text the dialog cuts.
+            # grab() is in device pixels, so compare at the device pixel ratio.
             bad = []
-            for k, b in dlg._fmt_buttons.items():
+            for b in buttons:
                 w, h = b.width(), b.height()
                 b.resize(w + 40, h)
                 img = b.grab().toImage().convertToFormat(QImage.Format.Format_RGB32)
                 b.resize(w, h)
-                bg = img.pixel(img.width() - 1, h // 2)
-                ink = [x for x in range(w, img.width()) for y in range(h) if img.pixel(x, y) != bg]
+                dpr = img.devicePixelRatio() or 1.0
+                bg = img.pixel(img.width() - 1, img.height() // 2)
+                ink = [x for x in range(int(round(w * dpr)), img.width())
+                       for y in range(img.height()) if img.pixel(x, y) != bg]
                 if ink:
-                    bad.append(f"{b.text()} (width {w}, text reaches {max(ink) + 1})")
+                    bad.append(f"{b.text()} (width {w}, text reaches {(max(ink) + 1) / dpr:.0f})")
             return bad
+        from PySide6.QtGui import QFont, QPalette
         from evtx_tool.gui import theme as _theme
-        _theme.apply_theme(app)
-        for backend in ("normal", "jm"):
-            dd = mw._ExportScopeDialog(paths, None, "separate", 10, None, backend=backend)
-            dd.show(); app.processEvents()
-            for k in dd.available_formats():
-                dd._fmt_buttons[k].setChecked(True); app.processEvents()
-                bad = cut_names(dd)
-                check(f"{backend}, {k} picked: every format name shows in full", not bad, "; ".join(bad))
-            dd.close()
+        _saved = (app.styleSheet(), QPalette(app.palette()), QFont(app.font()))
+        try:
+            _theme.apply_theme(app)
+            # Every remembered format: the button that starts ticked is the one
+            # measured short, so each must be the starting one once.
+            for pref in ("html", "pdf", "csv", "json", "xml"):
+                settings.setValue(mw._EXPORT_FORMAT_KEY, pref)
+                for backend in ("normal", "jm"):
+                    dd = mw._ExportScopeDialog(paths, None, "separate", 10, None, backend=backend)
+                    dd.show(); app.processEvents()
+                    bad = []
+                    for k in dd.available_formats():
+                        dd._fmt_buttons[k].setChecked(True); app.processEvents()
+                        bad += [f"{k} picked: {x}" for x in cut_names(dd._fmt_buttons.values())]
+                    check(f"{pref} remembered, {backend}: every format name shows in full whichever is picked",
+                          not bad, "; ".join(bad[:3]))
+                    dd.close()
+            for backend in ("normal", "jm"):
+                dd = mw._ExportScopeDialog(paths, None, "separate", 10, None, backend=backend)
+                dd.show(); app.processEvents()
+                # Same cause, same dialog: "Into one file" starts ticked, and
+                # lost its last letter once "One file per EVTX" was picked.
+                dd._rb_specific.setChecked(True); app.processEvents()
+                pair = (dd._rb_specific_one, dd._rb_specific_each)
+                for rb in (dd._rb_specific_each, dd._rb_specific_one):
+                    rb.setChecked(True); app.processEvents()
+                    bad = cut_names(pair)
+                    check(f"{backend}, '{rb.text()}' picked: both output choices show in full", not bad, "; ".join(bad))
+                dd.close()
+        finally:
+            # Leave the app as the rest of this file expects it (unthemed).
+            app.setStyleSheet(_saved[0]); app.setPalette(_saved[1]); app.setFont(_saved[2])
+        check("the app theme is restored after this section", app.styleSheet() == _saved[0])
         settings.setValue(mw._EXPORT_FORMAT_KEY, "pdf")
         dd = mw._ExportScopeDialog(paths, None, "separate", 10, None)
         dd.show(); app.processEvents()
