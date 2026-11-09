@@ -748,6 +748,87 @@ function switchTab(sectionId, tabId, btn) {
   if (btn) btn.classList.add('active');
 }
 
+// ─── Rows by event number ─────────────────────────────────────────────────────
+// One pass over the rows, cached while their number is unchanged.  Looking a
+// row up by a data-idx attribute selector scans the
+// whole page, so doing it per row made a field search (eid:, level:) take
+// 31 s on 10,655 events and minutes on 41,648.
+var _ROWS = null, _ROWS_N = -1, _LOADED = false;
+function _rowsByIdx() {
+  if (_ROWS && _LOADED) return _ROWS;        // all rows are in: no recount
+  var rows = document.querySelectorAll('tr.event-row');
+  if (_ROWS && _ROWS_N === rows.length) return _ROWS;
+  _ROWS = [];
+  rows.forEach(function(r){ _ROWS[+r.dataset.idx] = r; });
+  _ROWS_N = rows.length;
+  return _ROWS;
+}
+
+// ─── Detail data, written in chunks right after their rows ───────────────────
+// The detail row is built when ▶ is clicked -- writing every event's detail
+// panel into the page up front made a 41,648-event report 3.2 million
+// elements and 45 s to open.  Each chunk is _DDp([new strings, entries]);
+// an entry is [description, [13 event-property values in _CORE order],
+// [[name, value]...] or null, ATT&CK line], where a number stands for the
+// string at that position in _ST (values repeated across events -- source
+// file, provider, channel, descriptions -- are written once).
+var _DD = [], _ST = [], _PENDING = {};
+function _s(x) { return typeof x === 'number' ? _ST[x] : x; }
+function _DDp(c) {
+  var st = c[0], a = c[1], i;
+  for (i = 0; i < st.length; i++) _ST.push(st[i]);
+  for (i = 0; i < a.length; i++) _DD.push(a[i]);
+  // ▶ clicked before this event's data had arrived: fill it in now
+  for (var k in _PENDING) {
+    if (!_DD[k]) continue;
+    var old = document.getElementById('detail-' + k), nw = _detailRow(+k);
+    if (old && nw) { nw.style.display = old.style.display; old.parentNode.replaceChild(nw, old); }
+    delete _PENDING[k];
+  }
+}
+function _detailRow(idx) {
+  var d = _DD[idx];
+  if (!d) return null;
+  var T = function(t){ return document.createTextNode(t); };
+  var E = function(tag, cls, text){
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;   // text, never markup
+    return e;
+  };
+  var tr = E('tr', 'detail-row'); tr.id = 'detail-' + idx;
+  var td = E('td'); td.colSpan = window._DCOLS || 9; tr.appendChild(td);
+  var first = true;
+  var sep = function(){ if (!first) td.appendChild(T('\n')); first = false; };
+  if (_s(d[0])) {
+    sep();
+    td.appendChild(E('div', 'desc-box-title', '\uD83D\uDEC8 DESCRIPTION'));
+    td.appendChild(E('div', 'desc-box', _s(d[0])));
+  }
+  var section = function(title, pairs){
+    sep();
+    var sec = E('div', 'detail-section');
+    sec.appendChild(T('\n')); sec.appendChild(E('div', 'detail-section-title', title));
+    pairs.forEach(function(kv){
+      sec.appendChild(T('\n'));
+      sec.appendChild(E('span', 'detail-key', kv[0] + ':')); sec.appendChild(T(' '));
+      sec.appendChild(E('span', 'detail-val', kv[1])); sec.appendChild(E('br'));
+    });
+    sec.appendChild(T('\n'));
+    td.appendChild(sec);
+  };
+  var core = [];
+  (window._CORE || []).forEach(function(label, j){ var v = _s(d[1][j]); if (v) core.push([label, v]); });
+  section('\u2139\ufe0f Event Properties', core);
+  if (d[2]) section('\uD83D\uDCCB Event Data', d[2].map(function(kv){ return [_s(kv[0]), _s(kv[1])]; }));
+  if (_s(d[3])) {
+    var a = E('div'); a.style.marginTop = '6px'; a.style.color = '#7ecba1';
+    a.appendChild(E('b', null, 'ATT&CK:')); a.appendChild(T(' ' + _s(d[3])));
+    td.appendChild(a);
+  }
+  return tr;
+}
+
 // ─── Unified Filter State ─────────────────────────────────────────────────────
 // ALL filters (dropdowns, toggles, text, time range) live here.
 // applyFilters() reads _F and shows/hides rows in one pass.
@@ -790,6 +871,7 @@ function _checkRow(row) {
 function applyFilters() {
   var rows = document.querySelectorAll('tr.event-row');
   var total = rows.length;
+  var byIdx = _rowsByIdx();
 
   // Step 1: collect indices passing all non-text filters
   var candidateSet = new Set();
@@ -810,7 +892,7 @@ function applyFilters() {
     // Apply field-specific filters against candidateSet
     var _del = function(condFn) {
       candidateSet.forEach(function(i) {
-        var row = document.querySelector('tr.event-row[data-idx="' + i + '"]');
+        var row = byIdx[i];
         if (row && !condFn(row)) candidateSet.delete(i);
       });
     };
@@ -853,7 +935,7 @@ function applyFilters() {
 
     // Tier 3: DOM scan fallback
     candidateArr.forEach(function(i) {
-      var row = document.querySelector('tr.event-row[data-idx="' + i + '"]');
+      var row = byIdx[i];
       if (!row) return;
       var s = row.textContent.toLowerCase();
       if (generalTerms.every(function(t){ return s.indexOf(t) !== -1; })) finalSet.add(i);
@@ -909,18 +991,42 @@ function resetFilters() {
 }
 
 // ─── Search input wiring ──────────────────────────────────────────────────────
-document.getElementById('searchInput').addEventListener('input', function() {
-  _F.text = this.value.trim();
+// Delegated, so it works from the moment the box appears (this script now
+// runs in <head>, before the page body exists).
+document.addEventListener('input', function(e) {
+  if (!e.target || e.target.id !== 'searchInput') return;
+  _F.text = e.target.value.trim();
   clearTimeout(_debounceTimer);
   _debounceTimer = setTimeout(applyFilters, _F.text.length > 1 ? 80 : 220);
 });
 
+// ─── Page fully loaded ────────────────────────────────────────────────────────
+// A filter used while a big report was still loading covered only the rows
+// loaded so far: apply it again to all of them, and drop the notice.
+document.addEventListener('DOMContentLoaded', function() {
+  var l = document.getElementById('ehLoading');
+  if (l) l.style.display = 'none';
+  _ROWS = null; _LOADED = true;
+  if ([_F.text, _F.level, _F.channel, _F.computer, _F.eid, _F.tactic,
+       _F.suspOnly, _F.hasAttck, _F.hasPS, _F.timeFrom, _F.timeTo].some(Boolean)) applyFilters();
+});
+
 // ─── Expand/collapse detail rows ──────────────────────────────────────────────
 function toggleDetail(idx) {
-  var det = document.getElementById('detail-' + idx);
-  if (!det) return;
-  var parentRow = document.querySelector('tr.event-row[data-idx="' + idx + '"]');
+  var parentRow = _rowsByIdx()[idx];
   if (parentRow && parentRow.style.display === 'none') return;
+  var det = document.getElementById('detail-' + idx);
+  if (!det) {                                  // first click: build it
+    det = _detailRow(idx);
+    if (!det) {                                // its data is still loading
+      det = document.createElement('tr'); det.id = 'detail-' + idx; det.className = 'detail-row';
+      var td = document.createElement('td'); td.colSpan = window._DCOLS || 9;
+      td.textContent = 'Loading this event\u2019s details\u2026';
+      det.appendChild(td); _PENDING[idx] = true;
+    }
+    if (parentRow) parentRow.parentNode.insertBefore(det, parentRow.nextSibling);
+    return;
+  }
   det.style.display = det.style.display === 'none' ? '' : 'none';
 }
 
@@ -1012,6 +1118,15 @@ def _fmt_ts(ts: str) -> str:
     return ts.replace("T", " ").replace("Z", "").replace(" UTC", "")[:19] if ts else ""
 
 
+# Event properties in the HTML detail panel, in order; the browser gets the
+# labels once (window._CORE) and each event only its values.
+_DETAIL_CORE_LABELS = ("Event ID", "Timestamp", "Level", "Channel", "Provider", "Computer",
+                       "User / SID", "Record Number", "Event Record ID", "Activity ID",
+                       "Opcode", "Keywords", "Source File")
+# Positions whose values repeat across events: written once, in the string table.
+_DETAIL_CORE_TABLED = frozenset({2, 3, 4, 5, 6, 10, 11, 12})
+
+
 def export_html(
     events: list[dict],
     filepath: str,
@@ -1051,6 +1166,16 @@ def export_html(
                 _seen_tactics.add(t)
                 all_tactics.append(t)
 
+    # ── "PS: Has Analysis": the PowerShell events the PS extractor reads ──
+    try:
+        from evtx_tool.analysis.ps_extractor.constants import RELEVANT_EVENT_IDS as _PS_IDS
+    except Exception:
+        _PS_IDS = frozenset({4100, 4102, 4103, 4104, 53504, 300, 400, 403, 600, 800})
+
+    def _is_ps_analysed(e: dict) -> bool:
+        return (e.get("event_id") in _PS_IDS and "powershell" in
+                f"{e.get('channel') or ''} {e.get('provider') or ''}".lower())
+
     # ── Load event description function once (graceful if unavailable) ────
     try:
         from evtx_tool.analysis.event_descriptions import get_event_description as _get_desc
@@ -1066,6 +1191,10 @@ def export_html(
         title_str = "EventHawk — Report"
         f.write(f"<title>{_esc(title_str)}</title>")
         f.write(_HTML_STYLE)
+        # The functions go in <head>: written last, they did not exist until a
+        # big report had fully loaded, so ▶ and every filter did nothing for
+        # the first 45 s of a 41,648-event report.
+        f.write(_HTML_SCRIPT)
         f.write("</head><body>\n")
 
         # ── Header ────────────────────────────────────────────────────────
@@ -1333,8 +1462,14 @@ def export_html(
                 "<code>tactic:execution</code> &nbsp;"
                 "<code>tid:T1059</code> &nbsp;— combine freely with free text</div>\n")
 
-        f.write("<table>\n<thead><tr>")
         _cc_titles = list((events[0].get("custom_columns") or {}) if events else ())
+        f.write(f"<script>window._DCOLS={9 + len(_cc_titles)};"
+                f"window._CORE={fast_dumps(list(_DETAIL_CORE_LABELS))};</script>\n")
+        f.write("<div id='ehLoading' style='background:#3a2a00;border:1px solid #e6a700;color:#ffd666;"
+                "padding:6px 10px;border-radius:4px;margin:6px 0;font-size:0.85em'>"
+                f"Loading {len(events):,} events&hellip; &#9654; already works on the rows shown; "
+                "filters and search cover every event once loading finishes.</div>\n")
+        f.write("<table>\n<thead><tr>")
         col_headers = [
             ("#", False), ("Timestamp", True), ("EventID", True), ("Level", True),
             ("Channel", True), ("Computer", True), ("Source", True),
@@ -1348,6 +1483,27 @@ def export_html(
             else:
                 f.write(f"<th class='no-sort'>{col}</th>")
         f.write("</tr></thead>\n<tbody>\n")
+
+        _dd_buf: list = []
+        _st_index: dict = {}
+        _st_new: list = []
+
+        def _si(v: str) -> int:
+            """Position of *v* in the page's string table (added if new)."""
+            i = _st_index.get(v)
+            if i is None:
+                i = _st_index[v] = len(_st_index)
+                _st_new.append(v)
+            return i
+
+        def _flush_dd() -> None:
+            # Every 100 rows, right after them, so ▶ works while the rest still
+            # loads.  No raw "<", ">" or "&" inside <script> (see _SD below).
+            if _dd_buf:
+                f.write("<script>_DDp(" + fast_dumps([_st_new, _dd_buf]).replace("<", r"\u003c")
+                        .replace(">", r"\u003e").replace("&", r"\u0026") + ");</script>\n")
+                _dd_buf.clear()
+                _st_new.clear()
 
         for i, ev in enumerate(events):
             eid       = ev.get("event_id", 0)
@@ -1397,6 +1553,7 @@ def export_html(
                 f" data-atk-count='{len(attack_tags)}'"
                 f" data-tactics='{_esc(tactics_str)}'"
                 f" data-tids='{_esc(tids_str)}'"
+                f" data-has-ps='{'1' if _is_ps_analysed(ev) else '0'}'"
                 f" onclick='toggleDetail({i})'>\n"
             )
             f.write(f"  <td style='color:#484f58;font-size:0.8em'>{i+1}</td>\n")
@@ -1414,76 +1571,49 @@ def export_html(
             f.write(f"  <td><button class='expand-btn' title='Expand'>&#9654;</button></td>\n")
             f.write("</tr>\n")
 
-            # Detail row — include ALL event fields
-            detail_parts = []
-
-            # Section 0: Human-readable description (from event_descriptions.py)
+            # Detail data (the row itself is built in the browser on ▶):
+            # [description, event properties, event data or None, ATT&CK]
+            _desc = None
             if _get_desc is not None:
                 try:
                     _desc = _get_desc(ev)
                 except Exception:
                     _desc = None
-                if _desc:
-                    detail_parts.append(
-                        f"<div class='desc-box-title'>&#128712; DESCRIPTION</div>"
-                        f"<div class='desc-box'>{_esc(_desc)}</div>"
-                    )
-
-            # Section 1: Core Event Properties
-            detail_parts.append("<div class='detail-section'>")
-            detail_parts.append("<div class='detail-section-title'>\u2139\ufe0f Event Properties</div>")
-            core_fields = [
-                ("Event ID",    str(ev.get('event_id', ''))),
-                ("Timestamp",   ev.get('timestamp', '')),
-                ("Level",       ev.get('level_name', '')),
-                ("Channel",     ev.get('channel', '')),
-                ("Provider",    ev.get('provider', '')),
-                ("Computer",    ev.get('computer', '')),
-                ("User / SID",  ev.get('user_id', '')),
-                ("Record Number",   str(ev.get('record_id', ''))),
-                ("Event Record ID", "" if ev.get('event_record_id') is None
-                                    else str(ev.get('event_record_id'))),
-                ("Activity ID", ev.get('activity_id', '')),
-                ("Opcode",      ev.get('opcode', '')),
-                ("Keywords",    ev.get('keywords', '')),
-                ("Source File", ev.get('source_file', '')),
+            core_vals = [                       # _DETAIL_CORE_LABELS order
+                str(ev.get('event_id', '')),
+                ev.get('timestamp', ''),
+                ev.get('level_name', ''),
+                ev.get('channel', ''),
+                ev.get('provider', ''),
+                ev.get('computer', ''),
+                ev.get('user_id', ''),
+                str(ev.get('record_id', '')),
+                "" if ev.get('event_record_id') is None else str(ev.get('event_record_id')),
+                ev.get('activity_id', ''),
+                ev.get('opcode', ''),
+                ev.get('keywords', ''),
+                ev.get('source_file', ''),
             ]
-            for label, val in core_fields:
-                if val:
-                    detail_parts.append(
-                        f"<span class='detail-key'>{_esc(label)}:</span> "
-                        f"<span class='detail-val'>{_esc(str(val))}</span><br>")
-            detail_parts.append("</div>")
-
-            # Section 2: Event Data (payload)
             ed = ev.get("event_data", {}) or {}
-            if ed:
-                detail_parts.append("<div class='detail-section'>")
-                detail_parts.append("<div class='detail-section-title'>\U0001f4cb Event Data</div>")
-                for k, v in ed.items():
-                    if v is not None:
-                        val_str = event_data_text(v)
-                        detail_parts.append(
-                            f"<span class='detail-key'>{_esc(k)}:</span> "
-                            f"<span class='detail-val'>{_esc(val_str)}</span><br>")
-                detail_parts.append("</div>")
+            # _xml_text: a control byte is shown as backslash-x-hex, exactly as
+            # the old server-written detail rows (via _esc) and the XML export.
+            # Empty values are left out of the panel, as before ("if val").
+            core_out = []
+            for j, val in enumerate(core_vals):
+                sv = _xml_text(val) if val else ""
+                core_out.append(_si(sv) if sv and j in _DETAIL_CORE_TABLED else sv)
+            atk_line = _xml_text(" | ".join(f"{t['tid']} {t['name']} [{t['tactic']}]" for t in attack_tags))
+            _dd_buf.append([
+                _si(_xml_text(_desc)) if _desc else "",
+                core_out,
+                ([[_si(_xml_text(k)), _xml_text(event_data_text(v))] for k, v in ed.items() if v is not None]
+                 if ed else None),
+                _si(atk_line) if atk_line else "",
+            ])
+            if len(_dd_buf) >= 100:
+                _flush_dd()
 
-            detail_html = "\n".join(detail_parts)
-
-            # Full ATT&CK detail
-            atk_detail = ""
-            if attack_tags:
-                atk_detail = "<div style='margin-top:6px;color:#7ecba1'><b>ATT&amp;CK:</b> "
-                atk_detail += " | ".join(
-                    f"{_esc(t['tid'])} {_esc(t['name'])} [{_esc(t['tactic'])}]"
-                    for t in attack_tags
-                )
-                atk_detail += "</div>"
-
-            f.write(f"<tr id='detail-{i}' class='detail-row' style='display:none'>\n")
-            f.write(f"  <td colspan='{9 + len(_cc_titles)}'>{detail_html}{atk_detail}</td>\n")
-            f.write("</tr>\n")
-
+        _flush_dd()
         f.write("</tbody></table>\n")
         f.write("</div>\n")  # section
 
@@ -1512,7 +1642,6 @@ def export_html(
         if wasm_b64 and glue_js:
             f.write(_wasm_init_block(wasm_b64, glue_js))
 
-        f.write(_HTML_SCRIPT)
         f.write("</body></html>\n")
 
     logger.info("HTML export: %d events -> %s", len(events), filepath)
