@@ -93,6 +93,40 @@ class _WS:
         return r["result"].get("value")
 
 
+def _stop_browser(proc, port):
+    """Make the browser quit with all its processes.  proc.kill() ended only
+    the process we started -- Edge hands over to a new main process -- and
+    each run left a dozen renderer/GPU processes behind (482 of them, 7.3 GB,
+    after a day of runs).  Browser.close over DevTools ends them all; killing
+    the process tree is the fallback."""
+    if proc is None:
+        return
+    try:
+        ver = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=5))
+        _WS(ver["webSocketDebuggerUrl"]).call("Browser.close")
+    except Exception:
+        pass                          # the socket closes as the browser quits
+    for _ in range(50):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1)
+            time.sleep(0.2)
+        except Exception:
+            break                     # gone
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        import signal
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            proc.kill()
+    try:
+        proc.wait(10)
+    except Exception:
+        pass
+
+
 def _events(n):
     rnd = random.Random(7)
     evs = []
@@ -181,6 +215,7 @@ def main() -> int:
 
     work = tempfile.mkdtemp(prefix="htmlbrowser_")
     proc = None
+    port = 0
     try:
         evs = _events(2500)
         page = os.path.join(work, "r.html")
@@ -195,7 +230,8 @@ def main() -> int:
         prof = os.path.join(work, "profile")
         proc = subprocess.Popen([exe, "--headless=new", f"--remote-debugging-port={port}", f"--user-data-dir={prof}",
                                  "--no-first-run", "--disable-extensions", "about:blank"],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=(os.name != "nt"))
         tab = None
         for _ in range(150):
             try:
@@ -244,12 +280,7 @@ def main() -> int:
         check("sorting with panels open keeps each panel under its row", B["eidDesc"] and B["panelsNextToRows"], B)
         check("no script errors", not ws.errors, ws.errors[:3])
     finally:
-        if proc:
-            proc.kill()
-            try:
-                proc.wait(10)
-            except Exception:
-                pass
+        _stop_browser(proc, port)
         shutil.rmtree(work, ignore_errors=True)
 
     ok = sum(1 for _, o in res if o)
