@@ -190,7 +190,7 @@ def csv_row(event: dict, ed_pos: dict, width: int) -> list:
         row[ed_pos["EventData"]] = fast_dumps(ed)
     elif isinstance(ed, dict):
         for k, v in ed.items():
-            row[ed_pos[f"ED_{k}"]] = str(v) if v is not None else ""
+            row[ed_pos[f"ED_{k}"]] = event_data_text(v)
     return row
 
 
@@ -257,6 +257,83 @@ def _xml_text(v) -> str:
     return _XML_ILLEGAL.sub(lambda m: "\\x%02X" % ord(m.group()), str(v))
 
 
+# ── Nested event data ──────────────────────────────────────────────────────────
+# The parser keeps two kinds of event data nested:
+#   * unnamed <Data> items (Windows PowerShell 400/403/600/800, ...):
+#       {"#text": ["  Add-Type ...\n", "\tDetailSequence=1\r\n..."]}
+#   * structured UserData (Setup / CBS servicing, ...):
+#       {"#attributes": {"xmlns": "..."}, "Client": "...", "ErrorCode": "0x0"}
+# ``str()`` of those is a Python printout -- quotes, brackets and the two
+# characters backslash-r backslash-n instead of a line break -- which is what
+# XML, CSV and HTML used to contain.  JSON keeps the nesting and is unchanged.
+
+def event_data_text(v) -> str:
+    """One event-data value as readable text: CSV cells, HTML report, search.
+
+    Unnamed items are written verbatim, one per line; fields as
+    ``Name: value``; deeper levels as dotted names (``Outer.Inner: value``)
+    so no value is re-indented or otherwise altered; attributes last as
+    ``@name: value``.  Plain values are returned as ``str(v)``; None as "".
+    """
+    if v is None:
+        return ""
+    if not isinstance(v, (dict, list, tuple)):
+        return str(v)
+    lines: list[str] = []
+
+    def walk(x, name: str) -> None:
+        if isinstance(x, dict):
+            for k, y in x.items():
+                if k == "#attributes":
+                    continue
+                walk(y, name if k == "#text" else (f"{name}.{k}" if name else str(k)))
+            attrs = x.get("#attributes")
+            if isinstance(attrs, dict):
+                for k, y in attrs.items():
+                    lines.append(f"@{name + '.' if name else ''}{k}: {event_data_text(y)}")
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y, name)
+        else:
+            t = "" if x is None else str(x)
+            lines.append(f"{name}: {t}" if name else t)
+
+    walk(v, "")
+    return "\n".join(lines)
+
+
+def _xml_fill(el, v, sub) -> None:
+    """Write event-data value *v* into XML element *el* as data, not a printout.
+
+    Scalars become the element's text.  Unnamed items become ``<Item>``
+    children, fields ``<Field Name="...">`` children and XML attributes of the
+    original ``<Attribute Name="...">`` children, recursively -- every value
+    can be read back exactly.  *sub(parent, tag, name)* makes a child (lxml or
+    the stdlib writer's tree).
+    """
+    if isinstance(v, dict):
+        attrs = v.get("#attributes")
+        if isinstance(attrs, dict):
+            for k, x in attrs.items():
+                _xml_fill(sub(el, "Attribute", k), x, sub)
+        for k, x in v.items():
+            if k == "#attributes":
+                continue
+            if k == "#text":
+                if isinstance(x, (list, tuple)):
+                    for it in x:
+                        _xml_fill(sub(el, "Item", None), it, sub)
+                else:
+                    el.text = "" if x is None else _xml_text(x)
+                continue
+            _xml_fill(sub(el, "Field", k), x, sub)
+    elif isinstance(v, (list, tuple)):
+        for it in v:
+            _xml_fill(sub(el, "Item", None), it, sub)
+    else:
+        el.text = "" if v is None else _xml_text(v)
+
+
 def export_xml(events: list[dict], filepath: str, **_) -> int:
     os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
     try:
@@ -310,10 +387,13 @@ def _export_xml_lxml(events: list[dict], filepath: str) -> None:
         ed = ev.get("event_data", {}) or {}
         if ed:
             ed_el = etree.SubElement(event_el, "EventData")
+            def _sub(parent, tag, name):
+                child = etree.SubElement(parent, tag)
+                if name is not None:
+                    child.set("Name", _xml_text(name))
+                return child
             for k, v in ed.items():
-                data_el = etree.SubElement(ed_el, "Data")
-                data_el.set("Name", str(k))
-                data_el.text = _xml_text(v) if v is not None else ""
+                _xml_fill(_sub(ed_el, "Data", k), v, _sub)
     etree.ElementTree(root).write(filepath, xml_declaration=True,
                                   encoding="utf-8", pretty_print=True)
 
@@ -325,9 +405,36 @@ def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
         # quote=True also escapes the apostrophe (as &#x27;, a valid XML
         # numeric character reference) so the helper is safe in either
         # single- or double-quoted attributes.
+        # CR as &#13;: a raw CR is turned into LF by every XML reader, so a
+        # value "a\r\nb" read back as "a\n\nb" (with the old text-mode
+        # file, whose LF -> CRLF translation doubled it).
         import html as _html
-        return _html.escape(_xml_text(s), quote=True)
-    with open(filepath, "w", encoding="utf-8") as f:
+        return _html.escape(_xml_text(s), quote=True).replace("\r", "&#13;")
+
+    import xml.etree.ElementTree as _ET
+
+    def _sub(parent, tag, name):
+        child = _ET.SubElement(parent, tag)
+        if name is not None:
+            child.set("Name", str(name))
+        return child
+
+    def _write_el(f, el, indent):
+        """Serialise a value tree built by _xml_fill, indented like lxml."""
+        attr = f' Name="{_esc(el.get("Name"))}"' if el.get("Name") is not None else ""
+        kids = list(el)
+        text = _esc(el.text) if el.text else ""
+        if not kids:
+            f.write(f"{indent}<{el.tag}{attr}>{text}</{el.tag}>\n")
+            return
+        f.write(f"{indent}<{el.tag}{attr}>{text}\n" if not text else f"{indent}<{el.tag}{attr}>{text}")
+        if text:
+            f.write("\n")
+        for k in kids:
+            _write_el(f, k, indent + "  ")
+        f.write(f"{indent}</{el.tag}>\n")
+
+    with open(filepath, "w", encoding="utf-8", newline="") as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
         f.write(f'<EVTXParserResults generated="{datetime.now(timezone.utc).isoformat()}" '
                 f'totalEvents="{len(events)}">\n')
@@ -363,7 +470,12 @@ def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
             if ed:
                 f.write("    <EventData>\n")
                 for k, v in ed.items():
-                    f.write(f'      <Data Name="{_esc(k)}">{_esc(v)}</Data>\n')
+                    if not isinstance(v, (dict, list, tuple)):
+                        f.write(f'      <Data Name="{_esc(k)}">{"" if v is None else _esc(v)}</Data>\n')
+                        continue
+                    data_el = _sub(_ET.Element("EventData"), "Data", k)
+                    _xml_fill(data_el, v, _sub)
+                    _write_el(f, data_el, "      ")
                 f.write("    </EventData>\n")
             f.write("  </Event>\n")
         f.write("</EVTXParserResults>\n")
@@ -432,7 +544,7 @@ def _build_search_string(ev: dict) -> str:
     if isinstance(ed, dict):
         for v in list(ed.values())[:30]:
             if v is not None:
-                parts.append(str(v)[:200])
+                parts.append(event_data_text(v)[:200])
 
     return " ".join(p for p in parts if p).lower()
 
@@ -1350,7 +1462,7 @@ def export_html(
                 detail_parts.append("<div class='detail-section-title'>\U0001f4cb Event Data</div>")
                 for k, v in ed.items():
                     if v is not None:
-                        val_str = str(v)
+                        val_str = event_data_text(v)
                         detail_parts.append(
                             f"<span class='detail-key'>{_esc(k)}:</span> "
                             f"<span class='detail-val'>{_esc(val_str)}</span><br>")
