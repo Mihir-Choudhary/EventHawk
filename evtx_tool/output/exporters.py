@@ -190,7 +190,7 @@ def csv_row(event: dict, ed_pos: dict, width: int) -> list:
         row[ed_pos["EventData"]] = fast_dumps(ed)
     elif isinstance(ed, dict):
         for k, v in ed.items():
-            row[ed_pos[f"ED_{k}"]] = str(v) if v is not None else ""
+            row[ed_pos[f"ED_{k}"]] = event_data_text(v)
     return row
 
 
@@ -257,6 +257,88 @@ def _xml_text(v) -> str:
     return _XML_ILLEGAL.sub(lambda m: "\\x%02X" % ord(m.group()), str(v))
 
 
+# ── Nested event data ──────────────────────────────────────────────────────────
+# The parser keeps two kinds of event data nested:
+#   * unnamed <Data> items (Windows PowerShell 400/403/600/800, ...):
+#       {"#text": ["  Add-Type ...\n", "\tDetailSequence=1\r\n..."]}
+#   * structured UserData (Setup / CBS servicing, ...):
+#       {"#attributes": {"xmlns": "..."}, "Client": "...", "ErrorCode": "0x0"}
+# ``str()`` of those is a Python printout -- quotes, brackets and the two
+# characters backslash-r backslash-n instead of a line break -- which is what
+# XML, CSV and HTML used to contain.  JSON keeps the nesting and is unchanged.
+
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def event_data_text(v) -> str:
+    """One event-data value as readable text: CSV cells, HTML report, search.
+
+    Unnamed items are written verbatim, one per line; fields as
+    ``Name: value``; deeper levels as dotted names (``Outer.Inner: value``)
+    so no value is re-indented or otherwise altered; attributes last as
+    ``@name: value``.  Plain values are returned as ``str(v)``; None as "".
+    """
+    if v is None:
+        return ""
+    if not isinstance(v, (dict, list, tuple)):
+        return str(v)
+    lines: list[str] = []
+
+    def walk(x, name: str) -> None:
+        if isinstance(x, dict):
+            for k, y in x.items():
+                if k == "#attributes" and isinstance(y, dict):
+                    continue
+                walk(y, name if k == "#text" else (f"{name}.{k}" if name else str(k)))
+            attrs = x.get("#attributes")
+            if isinstance(attrs, dict):
+                for k, y in attrs.items():
+                    lines.append(f"@{name + '.' if name else ''}{k}: {event_data_text(y)}")
+        elif isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y, name)
+        else:
+            t = "" if x is None else str(x)
+            lines.append(f"{name}: {t}" if name else t)
+
+    walk(v, "")
+    # A lone surrogate (not encodable as UTF-8) is shown as \uXXXX, as the
+    # old printout did, instead of failing the CSV / HTML export.
+    return _LONE_SURROGATE.sub(lambda m: "\\u%04x" % ord(m.group()), "\n".join(lines))
+
+
+def _xml_fill(el, v, sub) -> None:
+    """Write event-data value *v* into XML element *el* as data, not a printout.
+
+    Scalars become the element's text.  Unnamed items become ``<Item>``
+    children, fields ``<Field Name="...">`` children and XML attributes of the
+    original ``<Attribute Name="...">`` children, recursively -- every value
+    can be read back exactly.  *sub(parent, tag, name)* makes a child (lxml or
+    the stdlib writer's tree).
+    """
+    if isinstance(v, dict):
+        attrs = v.get("#attributes")
+        if isinstance(attrs, dict):
+            for k, x in attrs.items():
+                _xml_fill(sub(el, "Attribute", k), x, sub)
+        for k, x in v.items():
+            if k == "#attributes" and isinstance(x, dict):
+                continue                    # an odd non-dict one is kept as a Field
+            if k == "#text":
+                if isinstance(x, (list, tuple)):
+                    for it in x:
+                        _xml_fill(sub(el, "Item", None), it, sub)
+                else:
+                    el.text = "" if x is None else _xml_text(x)
+                continue
+            _xml_fill(sub(el, "Field", k), x, sub)
+    elif isinstance(v, (list, tuple)):
+        for it in v:
+            _xml_fill(sub(el, "Item", None), it, sub)
+    else:
+        el.text = "" if v is None else _xml_text(v)
+
+
 def export_xml(events: list[dict], filepath: str, **_) -> int:
     os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
     try:
@@ -310,10 +392,13 @@ def _export_xml_lxml(events: list[dict], filepath: str) -> None:
         ed = ev.get("event_data", {}) or {}
         if ed:
             ed_el = etree.SubElement(event_el, "EventData")
+            def _sub(parent, tag, name):
+                child = etree.SubElement(parent, tag)
+                if name is not None:
+                    child.set("Name", _xml_text(name))
+                return child
             for k, v in ed.items():
-                data_el = etree.SubElement(ed_el, "Data")
-                data_el.set("Name", str(k))
-                data_el.text = _xml_text(v) if v is not None else ""
+                _xml_fill(_sub(ed_el, "Data", k), v, _sub)
     etree.ElementTree(root).write(filepath, xml_declaration=True,
                                   encoding="utf-8", pretty_print=True)
 
@@ -325,9 +410,44 @@ def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
         # quote=True also escapes the apostrophe (as &#x27;, a valid XML
         # numeric character reference) so the helper is safe in either
         # single- or double-quoted attributes.
+        # CR as &#13;: a raw CR is turned into LF by every XML reader, so a
+        # value "a\r\nb" read back as "a\n\nb" (with the old text-mode
+        # file, whose LF -> CRLF translation doubled it).
         import html as _html
-        return _html.escape(_xml_text(s), quote=True)
-    with open(filepath, "w", encoding="utf-8") as f:
+        return _html.escape(_xml_text(s), quote=True).replace("\r", "&#13;")
+
+    import xml.etree.ElementTree as _ET
+
+    def _sub(parent, tag, name):
+        child = _ET.SubElement(parent, tag)
+        if name is not None:
+            child.set("Name", str(name))
+        return child
+
+    def _write_el(f, el, indent):
+        """Serialise a value tree built by _xml_fill, indented like lxml."""
+        attr = f' Name="{_esc(el.get("Name"))}"' if el.get("Name") is not None else ""
+        kids = list(el)
+        text = _esc(el.text) if el.text else ""
+        if not kids:
+            f.write(f"{indent}<{el.tag}{attr}>{text}</{el.tag}>\n")
+            return
+        if text:
+            # Text next to child elements: no indentation inside it, or the
+            # whitespace would become part of the value (lxml does the same).
+            f.write(f"{indent}{_inline(el)}\n")
+            return
+        f.write(f"{indent}<{el.tag}{attr}>\n")
+        for k in kids:
+            _write_el(f, k, indent + "  ")
+        f.write(f"{indent}</{el.tag}>\n")
+
+    def _inline(el):
+        attr = f' Name="{_esc(el.get("Name"))}"' if el.get("Name") is not None else ""
+        return (f"<{el.tag}{attr}>{_esc(el.text) if el.text else ''}"
+                + "".join(_inline(k) for k in el) + f"</{el.tag}>")
+
+    with open(filepath, "w", encoding="utf-8", newline="") as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
         f.write(f'<EVTXParserResults generated="{datetime.now(timezone.utc).isoformat()}" '
                 f'totalEvents="{len(events)}">\n')
@@ -363,7 +483,12 @@ def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
             if ed:
                 f.write("    <EventData>\n")
                 for k, v in ed.items():
-                    f.write(f'      <Data Name="{_esc(k)}">{_esc(v)}</Data>\n')
+                    if not isinstance(v, (dict, list, tuple)):
+                        f.write(f'      <Data Name="{_esc(k)}">{"" if v is None else _esc(v)}</Data>\n')
+                        continue
+                    data_el = _sub(_ET.Element("EventData"), "Data", k)
+                    _xml_fill(data_el, v, _sub)
+                    _write_el(f, data_el, "      ")
                 f.write("    </EventData>\n")
             f.write("  </Event>\n")
         f.write("</EVTXParserResults>\n")
@@ -432,7 +557,7 @@ def _build_search_string(ev: dict) -> str:
     if isinstance(ed, dict):
         for v in list(ed.values())[:30]:
             if v is not None:
-                parts.append(str(v)[:200])
+                parts.append(event_data_text(v)[:200])
 
     return " ".join(p for p in parts if p).lower()
 
@@ -636,6 +761,87 @@ function switchTab(sectionId, tabId, btn) {
   if (btn) btn.classList.add('active');
 }
 
+// ─── Rows by event number ─────────────────────────────────────────────────────
+// One pass over the rows, cached while their number is unchanged.  Looking a
+// row up by a data-idx attribute selector scans the
+// whole page, so doing it per row made a field search (eid:, level:) take
+// 31 s on 10,655 events and minutes on 41,648.
+var _ROWS = null, _ROWS_N = -1, _LOADED = false;
+function _rowsByIdx() {
+  if (_ROWS && _LOADED) return _ROWS;        // all rows are in: no recount
+  var rows = document.querySelectorAll('tr.event-row');
+  if (_ROWS && _ROWS_N === rows.length) return _ROWS;
+  _ROWS = [];
+  rows.forEach(function(r){ _ROWS[+r.dataset.idx] = r; });
+  _ROWS_N = rows.length;
+  return _ROWS;
+}
+
+// ─── Detail data, written in chunks right after their rows ───────────────────
+// The detail row is built when ▶ is clicked -- writing every event's detail
+// panel into the page up front made a 41,648-event report 3.2 million
+// elements and 45 s to open.  Each chunk is _DDp([new strings, entries]);
+// an entry is [description, [13 event-property values in _CORE order],
+// [[name, value]...] or null, ATT&CK line], where a number stands for the
+// string at that position in _ST (values repeated across events -- source
+// file, provider, channel, descriptions -- are written once).
+var _DD = [], _ST = [], _PENDING = {};
+function _s(x) { return typeof x === 'number' ? _ST[x] : x; }
+function _DDp(c) {
+  var st = c[0], a = c[1], i;
+  for (i = 0; i < st.length; i++) _ST.push(st[i]);
+  for (i = 0; i < a.length; i++) _DD.push(a[i]);
+  // ▶ clicked before this event's data had arrived: fill it in now
+  for (var k in _PENDING) {
+    if (!_DD[k]) continue;
+    var old = document.getElementById('detail-' + k), nw = _detailRow(+k);
+    if (old && nw) { nw.style.display = old.style.display; old.parentNode.replaceChild(nw, old); }
+    delete _PENDING[k];
+  }
+}
+function _detailRow(idx) {
+  var d = _DD[idx];
+  if (!d) return null;
+  var T = function(t){ return document.createTextNode(t); };
+  var E = function(tag, cls, text){
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;   // text, never markup
+    return e;
+  };
+  var tr = E('tr', 'detail-row'); tr.id = 'detail-' + idx;
+  var td = E('td'); td.colSpan = window._DCOLS || 9; tr.appendChild(td);
+  var first = true;
+  var sep = function(){ if (!first) td.appendChild(T('\n')); first = false; };
+  if (_s(d[0])) {
+    sep();
+    td.appendChild(E('div', 'desc-box-title', '\uD83D\uDEC8 DESCRIPTION'));
+    td.appendChild(E('div', 'desc-box', _s(d[0])));
+  }
+  var section = function(title, pairs){
+    sep();
+    var sec = E('div', 'detail-section');
+    sec.appendChild(T('\n')); sec.appendChild(E('div', 'detail-section-title', title));
+    pairs.forEach(function(kv){
+      sec.appendChild(T('\n'));
+      sec.appendChild(E('span', 'detail-key', kv[0] + ':')); sec.appendChild(T(' '));
+      sec.appendChild(E('span', 'detail-val', kv[1])); sec.appendChild(E('br'));
+    });
+    sec.appendChild(T('\n'));
+    td.appendChild(sec);
+  };
+  var core = [];
+  (window._CORE || []).forEach(function(label, j){ var v = _s(d[1][j]); if (v) core.push([label, v]); });
+  section('\u2139\ufe0f Event Properties', core);
+  if (d[2]) section('\uD83D\uDCCB Event Data', d[2].map(function(kv){ return [_s(kv[0]), _s(kv[1])]; }));
+  if (_s(d[3])) {
+    var a = E('div'); a.style.marginTop = '6px'; a.style.color = '#7ecba1';
+    a.appendChild(E('b', null, 'ATT&CK:')); a.appendChild(T(' ' + _s(d[3])));
+    td.appendChild(a);
+  }
+  return tr;
+}
+
 // ─── Unified Filter State ─────────────────────────────────────────────────────
 // ALL filters (dropdowns, toggles, text, time range) live here.
 // applyFilters() reads _F and shows/hides rows in one pass.
@@ -678,6 +884,7 @@ function _checkRow(row) {
 function applyFilters() {
   var rows = document.querySelectorAll('tr.event-row');
   var total = rows.length;
+  var byIdx = _rowsByIdx();
 
   // Step 1: collect indices passing all non-text filters
   var candidateSet = new Set();
@@ -698,7 +905,7 @@ function applyFilters() {
     // Apply field-specific filters against candidateSet
     var _del = function(condFn) {
       candidateSet.forEach(function(i) {
-        var row = document.querySelector('tr.event-row[data-idx="' + i + '"]');
+        var row = byIdx[i];
         if (row && !condFn(row)) candidateSet.delete(i);
       });
     };
@@ -741,7 +948,7 @@ function applyFilters() {
 
     // Tier 3: DOM scan fallback
     candidateArr.forEach(function(i) {
-      var row = document.querySelector('tr.event-row[data-idx="' + i + '"]');
+      var row = byIdx[i];
       if (!row) return;
       var s = row.textContent.toLowerCase();
       if (generalTerms.every(function(t){ return s.indexOf(t) !== -1; })) finalSet.add(i);
@@ -797,18 +1004,43 @@ function resetFilters() {
 }
 
 // ─── Search input wiring ──────────────────────────────────────────────────────
-document.getElementById('searchInput').addEventListener('input', function() {
-  _F.text = this.value.trim();
+// Delegated, so it works from the moment the box appears (this script now
+// runs in <head>, before the page body exists).
+document.addEventListener('input', function(e) {
+  if (!e.target || e.target.id !== 'searchInput') return;
+  _F.text = e.target.value.trim();
   clearTimeout(_debounceTimer);
   _debounceTimer = setTimeout(applyFilters, _F.text.length > 1 ? 80 : 220);
 });
 
+// ─── Page fully loaded ────────────────────────────────────────────────────────
+// A filter used while a big report was still loading covered only the rows
+// loaded so far: apply it again to all of them, and drop the notice.
+document.addEventListener('DOMContentLoaded', function() {
+  var l = document.getElementById('ehLoading');
+  if (l) l.style.display = 'none';
+  _ROWS = null; _LOADED = true;
+  if ([_F.text, _F.level, _F.channel, _F.computer, _F.eid, _F.tactic,
+       _F.suspOnly, _F.hasAttck, _F.hasPS, _F.timeFrom, _F.timeTo].some(Boolean)) applyFilters();
+  if (_sortCol >= 0) _applySort();
+});
+
 // ─── Expand/collapse detail rows ──────────────────────────────────────────────
 function toggleDetail(idx) {
-  var det = document.getElementById('detail-' + idx);
-  if (!det) return;
-  var parentRow = document.querySelector('tr.event-row[data-idx="' + idx + '"]');
+  var parentRow = _rowsByIdx()[idx];
   if (parentRow && parentRow.style.display === 'none') return;
+  var det = document.getElementById('detail-' + idx);
+  if (!det) {                                  // first click: build it
+    det = _detailRow(idx);
+    if (!det) {                                // its data is still loading
+      det = document.createElement('tr'); det.id = 'detail-' + idx; det.className = 'detail-row';
+      var td = document.createElement('td'); td.colSpan = window._DCOLS || 9;
+      td.textContent = 'Loading this event\u2019s details\u2026';
+      det.appendChild(td); _PENDING[idx] = true;
+    }
+    if (parentRow) parentRow.parentNode.insertBefore(det, parentRow.nextSibling);
+    return;
+  }
   det.style.display = det.style.display === 'none' ? '' : 'none';
 }
 
@@ -821,6 +1053,12 @@ var _LEVEL_ORDER = {Critical:0, Error:1, Warning:2, Information:3, Verbose:4, Lo
 function sortTable(colIdx) {
   _sortDir = (_sortCol === colIdx) ? (_sortDir + 1) % 3 : 1;
   _sortCol = colIdx;
+  _setSortArrow();
+  _applySort();
+}
+
+function _setSortArrow() {
+  var colIdx = _sortCol;
   document.querySelectorAll('th .sort-arrow').forEach(function(a){
     a.classList.remove('active'); a.textContent = '\u2195';
   });
@@ -832,6 +1070,14 @@ function sortTable(colIdx) {
       arrow.textContent = _sortDir === 1 ? '\u25B2' : '\u25BC';
     }
   }
+}
+
+// Sort every row by the current column and direction.  Also run when a big
+// report finishes loading: a sort clicked while it loaded only covered the
+// rows that were there, and the rest arrived below them unsorted.
+function _applySort() {
+  var colIdx = _sortCol;
+  if (colIdx < 0) return;
   var tbody = document.querySelector('tbody');
   if (!tbody) return;
   var rows = Array.from(tbody.querySelectorAll('tr.event-row'));
@@ -900,6 +1146,15 @@ def _fmt_ts(ts: str) -> str:
     return ts.replace("T", " ").replace("Z", "").replace(" UTC", "")[:19] if ts else ""
 
 
+# Event properties in the HTML detail panel, in order; the browser gets the
+# labels once (window._CORE) and each event only its values.
+_DETAIL_CORE_LABELS = ("Event ID", "Timestamp", "Level", "Channel", "Provider", "Computer",
+                       "User / SID", "Record Number", "Event Record ID", "Activity ID",
+                       "Opcode", "Keywords", "Source File")
+# Positions whose values repeat across events: written once, in the string table.
+_DETAIL_CORE_TABLED = frozenset({2, 3, 4, 5, 6, 10, 11, 12})
+
+
 def export_html(
     events: list[dict],
     filepath: str,
@@ -939,6 +1194,21 @@ def export_html(
                 _seen_tactics.add(t)
                 all_tactics.append(t)
 
+    # ── "PS: Has Analysis": the PowerShell events the PS extractor reads ──
+    # Same rule as the extractor: a PowerShell channel and a relevant ID.
+    try:
+        from evtx_tool.analysis.ps_extractor.constants import (
+            ALL_PS_CHANNELS as _PS_CHANNELS, RELEVANT_EVENT_IDS as _PS_IDS)
+    except Exception:
+        _PS_CHANNELS, _PS_IDS = frozenset(), frozenset()
+
+    def _is_ps_analysed(e: dict) -> bool:
+        try:
+            eid = int(e.get("event_id"))
+        except (TypeError, ValueError):
+            return False
+        return eid in _PS_IDS and (e.get("channel") or "") in _PS_CHANNELS
+
     # ── Load event description function once (graceful if unavailable) ────
     try:
         from evtx_tool.analysis.event_descriptions import get_event_description as _get_desc
@@ -954,6 +1224,10 @@ def export_html(
         title_str = "EventHawk — Report"
         f.write(f"<title>{_esc(title_str)}</title>")
         f.write(_HTML_STYLE)
+        # The functions go in <head>: written last, they did not exist until a
+        # big report had fully loaded, so ▶ and every filter did nothing for
+        # the first 45 s of a 41,648-event report.
+        f.write(_HTML_SCRIPT)
         f.write("</head><body>\n")
 
         # ── Header ────────────────────────────────────────────────────────
@@ -1221,8 +1495,14 @@ def export_html(
                 "<code>tactic:execution</code> &nbsp;"
                 "<code>tid:T1059</code> &nbsp;— combine freely with free text</div>\n")
 
-        f.write("<table>\n<thead><tr>")
         _cc_titles = list((events[0].get("custom_columns") or {}) if events else ())
+        f.write(f"<script>window._DCOLS={9 + len(_cc_titles)};"
+                f"window._CORE={fast_dumps(list(_DETAIL_CORE_LABELS))};</script>\n")
+        f.write("<div id='ehLoading' style='background:#3a2a00;border:1px solid #e6a700;color:#ffd666;"
+                "padding:6px 10px;border-radius:4px;margin:6px 0;font-size:0.85em'>"
+                f"Loading {len(events):,} events&hellip; &#9654; already works on the rows shown; "
+                "filters and search cover every event once loading finishes.</div>\n")
+        f.write("<table>\n<thead><tr>")
         col_headers = [
             ("#", False), ("Timestamp", True), ("EventID", True), ("Level", True),
             ("Channel", True), ("Computer", True), ("Source", True),
@@ -1236,6 +1516,29 @@ def export_html(
             else:
                 f.write(f"<th class='no-sort'>{col}</th>")
         f.write("</tr></thead>\n<tbody>\n")
+
+        _dd_buf: list = []
+        _st_index: dict = {}
+        _st_new: list = []
+
+        def _si(v: str) -> int:
+            """Position of *v* in the page's string table (added if new)."""
+            i = _st_index.get(v)
+            if i is None:
+                i = _st_index[v] = len(_st_index)
+                _st_new.append(v)
+            return i
+
+        def _flush_dd() -> None:
+            # Every 1,000 rows, right after them, so ▶ works while the rest still
+            # loads.  Each <script> between rows makes the parser pause: every
+            # 100 rows took 38.7 s to load 41,648 events, every 1,000 rows
+            # 20.5 s -- the same as putting all of it after the table.  No raw "<", ">" or "&" inside <script> (see _SD below).
+            if _dd_buf:
+                f.write("<script>_DDp(" + fast_dumps([_st_new, _dd_buf]).replace("<", r"\u003c")
+                        .replace(">", r"\u003e").replace("&", r"\u0026") + ");</script>\n")
+                _dd_buf.clear()
+                _st_new.clear()
 
         for i, ev in enumerate(events):
             eid       = ev.get("event_id", 0)
@@ -1285,6 +1588,7 @@ def export_html(
                 f" data-atk-count='{len(attack_tags)}'"
                 f" data-tactics='{_esc(tactics_str)}'"
                 f" data-tids='{_esc(tids_str)}'"
+                f" data-has-ps='{'1' if _is_ps_analysed(ev) else '0'}'"
                 f" onclick='toggleDetail({i})'>\n"
             )
             f.write(f"  <td style='color:#484f58;font-size:0.8em'>{i+1}</td>\n")
@@ -1302,76 +1606,49 @@ def export_html(
             f.write(f"  <td><button class='expand-btn' title='Expand'>&#9654;</button></td>\n")
             f.write("</tr>\n")
 
-            # Detail row — include ALL event fields
-            detail_parts = []
-
-            # Section 0: Human-readable description (from event_descriptions.py)
+            # Detail data (the row itself is built in the browser on ▶):
+            # [description, event properties, event data or None, ATT&CK]
+            _desc = None
             if _get_desc is not None:
                 try:
                     _desc = _get_desc(ev)
                 except Exception:
                     _desc = None
-                if _desc:
-                    detail_parts.append(
-                        f"<div class='desc-box-title'>&#128712; DESCRIPTION</div>"
-                        f"<div class='desc-box'>{_esc(_desc)}</div>"
-                    )
-
-            # Section 1: Core Event Properties
-            detail_parts.append("<div class='detail-section'>")
-            detail_parts.append("<div class='detail-section-title'>\u2139\ufe0f Event Properties</div>")
-            core_fields = [
-                ("Event ID",    str(ev.get('event_id', ''))),
-                ("Timestamp",   ev.get('timestamp', '')),
-                ("Level",       ev.get('level_name', '')),
-                ("Channel",     ev.get('channel', '')),
-                ("Provider",    ev.get('provider', '')),
-                ("Computer",    ev.get('computer', '')),
-                ("User / SID",  ev.get('user_id', '')),
-                ("Record Number",   str(ev.get('record_id', ''))),
-                ("Event Record ID", "" if ev.get('event_record_id') is None
-                                    else str(ev.get('event_record_id'))),
-                ("Activity ID", ev.get('activity_id', '')),
-                ("Opcode",      ev.get('opcode', '')),
-                ("Keywords",    ev.get('keywords', '')),
-                ("Source File", ev.get('source_file', '')),
+            core_vals = [                       # _DETAIL_CORE_LABELS order
+                str(ev.get('event_id', '')),
+                ev.get('timestamp', ''),
+                ev.get('level_name', ''),
+                ev.get('channel', ''),
+                ev.get('provider', ''),
+                ev.get('computer', ''),
+                ev.get('user_id', ''),
+                str(ev.get('record_id', '')),
+                "" if ev.get('event_record_id') is None else str(ev.get('event_record_id')),
+                ev.get('activity_id', ''),
+                ev.get('opcode', ''),
+                ev.get('keywords', ''),
+                ev.get('source_file', ''),
             ]
-            for label, val in core_fields:
-                if val:
-                    detail_parts.append(
-                        f"<span class='detail-key'>{_esc(label)}:</span> "
-                        f"<span class='detail-val'>{_esc(str(val))}</span><br>")
-            detail_parts.append("</div>")
-
-            # Section 2: Event Data (payload)
             ed = ev.get("event_data", {}) or {}
-            if ed:
-                detail_parts.append("<div class='detail-section'>")
-                detail_parts.append("<div class='detail-section-title'>\U0001f4cb Event Data</div>")
-                for k, v in ed.items():
-                    if v is not None:
-                        val_str = str(v)
-                        detail_parts.append(
-                            f"<span class='detail-key'>{_esc(k)}:</span> "
-                            f"<span class='detail-val'>{_esc(val_str)}</span><br>")
-                detail_parts.append("</div>")
+            # _xml_text: a control byte is shown as backslash-x-hex, exactly as
+            # the old server-written detail rows (via _esc) and the XML export.
+            # Empty values are left out of the panel, as before ("if val").
+            core_out = []
+            for j, val in enumerate(core_vals):
+                sv = _xml_text(val) if val else ""
+                core_out.append(_si(sv) if sv and j in _DETAIL_CORE_TABLED else sv)
+            atk_line = _xml_text(" | ".join(f"{t['tid']} {t['name']} [{t['tactic']}]" for t in attack_tags))
+            _dd_buf.append([
+                _si(_xml_text(_desc)) if _desc else "",
+                core_out,
+                ([[_si(_xml_text(k)), _xml_text(event_data_text(v))] for k, v in ed.items() if v is not None]
+                 if ed else None),
+                _si(atk_line) if atk_line else "",
+            ])
+            if len(_dd_buf) >= 1000:
+                _flush_dd()
 
-            detail_html = "\n".join(detail_parts)
-
-            # Full ATT&CK detail
-            atk_detail = ""
-            if attack_tags:
-                atk_detail = "<div style='margin-top:6px;color:#7ecba1'><b>ATT&amp;CK:</b> "
-                atk_detail += " | ".join(
-                    f"{_esc(t['tid'])} {_esc(t['name'])} [{_esc(t['tactic'])}]"
-                    for t in attack_tags
-                )
-                atk_detail += "</div>"
-
-            f.write(f"<tr id='detail-{i}' class='detail-row' style='display:none'>\n")
-            f.write(f"  <td colspan='{9 + len(_cc_titles)}'>{detail_html}{atk_detail}</td>\n")
-            f.write("</tr>\n")
-
+        _flush_dd()
         f.write("</tbody></table>\n")
         f.write("</div>\n")  # section
 
@@ -1400,7 +1677,6 @@ def export_html(
         if wasm_b64 and glue_js:
             f.write(_wasm_init_block(wasm_b64, glue_js))
 
-        f.write(_HTML_SCRIPT)
         f.write("</body></html>\n")
 
     logger.info("HTML export: %d events -> %s", len(events), filepath)

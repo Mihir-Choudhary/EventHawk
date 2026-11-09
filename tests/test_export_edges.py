@@ -67,7 +67,15 @@ def main() -> int:
     out = os.path.join(d, "ctl.html")
     ctl = "A\x00B\x01C\x08D\x1fE"
     export([ev({"Payload": ctl})], out, None)
-    page = lhtml.fromstring(open(out, encoding="utf-8").read()).text_content()
+    _html = open(out, encoding="utf-8").read()
+    page = lhtml.fromstring(_html).text_content()
+    # The detail panel is built in the browser from the page's detail data
+    # (_DDp chunks) when the row is opened, with textContent: its values must
+    # carry the same visible escape, since the panel shows exactly that text.
+    for c in re.findall(r"<script>_DDp\((\[.*?\])\);</script>", _html, re.S):
+        strings, entries = json.loads(c)          # string table, then entries
+        flat = lambda x: [y for z in x for y in flat(z)] if isinstance(x, list) else [x] if isinstance(x, str) else []
+        page += "".join(strings) + "".join(flat(entries))
     want = "A\\x00B\\x01C\\x08D\\x1FE"
     check("HTML: control characters are shown as \\xNN, as in the XML export", want in page,
           repr(page[page.find("A"):page.find("A") + 30]) if "A" in page else "value not found")

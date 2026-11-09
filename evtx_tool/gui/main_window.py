@@ -40,6 +40,7 @@ def _jm_load_question(tool: str, n: int) -> str:
 # Every CSV this window writes is formula-safe (see exporters.csv_cell).
 from evtx_tool.output.exporters import safe_csv_writer as _safe_csv_writer  # noqa: E402
 from evtx_tool.output.exporters import SafeDictWriter as _SafeDictWriter    # noqa: E402
+from evtx_tool.output.exporters import event_data_text as _event_data_text  # noqa: E402
 
 from PySide6.QtCore import (
     QEvent, QModelIndex, QPoint, QSortFilterProxyModel, Qt, QThread, QTimer, Signal, Slot,
@@ -15032,26 +15033,43 @@ class MainWindow(QMainWindow):
           ['v1', 'v2']            →  'v1\nv2'
           None                    →  None  (skip)
           'plain string'          →  'plain string'
+
+        and structured UserData (e.g. Setup / CBS servicing events), one
+        ``Name: value`` line per field, deeper levels as dotted names -- the
+        same text the CSV / HTML exports write (event_data_text):
+          {'#attributes': {...}, 'Client': 'X', 'ErrorCode': '0x0'}
+                                  →  'Client: X\nErrorCode: 0x0'
+        It used to be str(dict), a Python printout.  At every level, XML
+        attributes such as xmlns and other '#' keys stay hidden and empty
+        values are skipped, as for top-level fields.  A single value is
+        trimmed, as before; unnamed items keep their own spacing.
         """
+        def _clean(x):
+            if isinstance(x, dict):
+                out = {}
+                for k2, x2 in x.items():
+                    if k2 != "#text" and str(k2).startswith("#"):
+                        continue
+                    x2 = _clean(x2)
+                    if x2 is not None:
+                        out[k2] = x2
+                return out or None
+            if isinstance(x, (list, tuple)):
+                out = [y for y in (_clean(x2) for x2 in x) if y is not None]
+                return out or None
+            if x is None or not str(x).strip():
+                return None
+            return x
+
+        v = _clean(v)
+        if isinstance(v, dict) and list(v) == ["#text"]:
+            v = v["#text"]
         if v is None:
             return None
-        if isinstance(v, dict):
-            text = v.get("#text")
-            if text is not None:
-                if isinstance(text, list):
-                    parts = [str(x) for x in text if x is not None and str(x).strip()]
-                    return "\n".join(parts) or None
-                s = str(text).strip()
-                return s or None
-            # dict without #text — show non-# keys only
-            non_hash = {k2: v2 for k2, v2 in v.items()
-                        if not k2.startswith("#") and v2 is not None}
-            return str(non_hash) if non_hash else None
-        if isinstance(v, list):
-            parts = [str(x) for x in v if x is not None and str(x).strip()]
-            return "\n".join(parts) or None
-        s = str(v).strip()
-        return s or None
+        if not isinstance(v, (dict, list, tuple)):
+            return str(v).strip()
+        s = _event_data_text(v)
+        return s if s.strip() else None
 
     def _render_event_detail(self, ev: dict) -> None:
         # Skip re-render when the same event + display mode is already shown.
