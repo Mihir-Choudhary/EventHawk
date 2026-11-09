@@ -97,6 +97,33 @@ def _collect_evtx_files(paths: list[str], recursive: bool = True) -> list[str]:
 
 # ── Filter builder ────────────────────────────────────────────────────────────
 
+def _cli_dt(value: str, what: str):
+    """An aware UTC datetime from an ISO 8601 date/time: 'Z' or an offset is
+    converted to UTC (it was stripped, choosing the wrong interval: Codex
+    DOC-2); no offset means UTC."""
+    s = str(value).strip()
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        raise click.BadParameter(f"Cannot read {what} '{value}'. Use e.g. 2026-02-21T14:30:00, "
+                                 "optionally with Z or an offset such as +02:00.")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _cli_bound(value: str, what: str) -> str:
+    """A --date-from / --date-to bound as whole-second UTC text.  The date filter
+    compares whole seconds, so a fraction would be silently dropped: refuse it."""
+    dt = _cli_dt(value, what)
+    if dt.microsecond:
+        raise click.BadParameter(f"{what} '{value}' has a fraction of a second; the date filter compares "
+                                 "whole seconds. Give whole seconds.")
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def _build_filter(
     event_id, level, date_from, date_to,
     user, computer, source, search, search_mode,
@@ -123,7 +150,20 @@ def _build_filter(
             fc["event_ids"] = ids
 
     if exclude_id:
-        excl = [int(x.strip()) for x in ",".join(exclude_id).split(",") if x.strip().isdigit()]
+        # Ranges too, as for --event-id (a range excluded nothing: Codex DOC-3).
+        excl: list[int] = []
+        for spec in ",".join(exclude_id).split(","):
+            spec = spec.strip()
+            if "-" in spec:
+                lo, hi = spec.split("-", 1)
+                try:
+                    excl.extend(range(int(lo), int(hi) + 1))
+                except ValueError:
+                    click.echo(f"Warning: unrecognised event-ID spec '{spec}' — skipped", err=True)
+            elif spec.isdigit():
+                excl.append(int(spec))
+            elif spec:
+                click.echo(f"Warning: unrecognised event-ID spec '{spec}' — skipped", err=True)
         if excl:
             fc["exclude_event_ids"] = excl
 
@@ -142,8 +182,8 @@ def _build_filter(
         if levels:
             fc["levels"] = list(set(levels))
 
-    if date_from: fc["date_from"] = date_from
-    if date_to:   fc["date_to"]   = date_to
+    if date_from: fc["date_from"] = _cli_bound(date_from, "--date-from")
+    if date_to:   fc["date_to"]   = _cli_bound(date_to, "--date-to")
     if user:      fc["users"]     = list(user)
     if computer:  fc["computers"] = list(computer)
     if source:    fc["sources"]   = list(source)
@@ -155,20 +195,8 @@ def _build_filter(
 
 def _resolve_timeline(anchor: str, before_mins: int, after_mins: int) -> tuple[str, str]:
     """Parse anchor timestamp + window into ISO date_from / date_to."""
-    clean = anchor.strip().rstrip("Z")
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
-                "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
-                "%Y-%m-%d"):
-        try:
-            dt = datetime.strptime(clean, fmt).replace(tzinfo=timezone.utc)
-            break
-        except ValueError:
-            continue
-    else:
-        raise click.BadParameter(
-            f"Cannot parse timeline anchor '{anchor}'. "
-            "Use: 2026-02-21T14:30:00  or  '2026-02-21 14:30:00'"
-        )
+    # Offsets are converted to UTC (they were rejected: Codex DOC-2).
+    dt = _cli_dt(anchor, "timeline anchor")
     date_from = (dt - timedelta(minutes=before_mins)).strftime("%Y-%m-%dT%H:%M:%S")
     date_to   = (dt + timedelta(minutes=after_mins)).strftime("%Y-%m-%dT%H:%M:%S")
     return date_from, date_to

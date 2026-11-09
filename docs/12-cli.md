@@ -23,7 +23,7 @@ py -3.12 evtx_tool.py parse .\logs --profile .\process-profile.json --save-filte
 py -3.12 evtx_tool.py parse .\logs --filter-file .\saved-filter.json --no-tui -o .\reloaded.json
 ```
 
-Use UTC for CLI boundaries. --timeline-anchor accepts the documented date/time forms with an optional trailing Z, but not numeric timezone offsets. Its computed bounds use whole seconds. --date-from/--date-to also compare whole seconds and do not convert numeric offsets; do not rely on offset or subsecond filtering here.
+Times without an offset are UTC; a trailing Z or an offset such as +02:00 is converted to UTC. --date-from and --date-to compare whole seconds, so a value with a fraction of a second is refused with an error. --timeline-anchor may carry a fraction; its window bounds are whole seconds.
 
 The JSON profile example is defined in [profiles](14-profiles.md). Supply a time that overlaps your own data; a valid time window can return no events.
 
@@ -32,9 +32,9 @@ The JSON profile example is defined in [profiles](14-profiles.md). Supply a time
 | -p / --profile | Repeat names/JSON paths, or use all; profiles restrict matched output |
 | -F / --filter-file | Load JSON filter restrictions |
 | -e / --event-id | Include comma-separated IDs or ranges |
-| --exclude-id | Exclude comma-separated integer IDs; ranges are not supported here |
+| --exclude-id | Exclude Event IDs or ranges, e.g. 4625 or 4600-4650 |
 | -l / --level | critical, error, warning, info, verbose |
-| --date-from, --date-to | UTC wall-time boundaries, compared at whole-second granularity; convert offsets to UTC yourself |
+| --date-from, --date-to | Time range, compared at whole seconds; Z or an offset is converted to UTC, a fraction of a second is refused |
 | -u / --user, -c / --computer, -s / --source | Identity/provider restrictions |
 | -q / --search, --search-mode | Text terms; AND, OR, NOT; default AND |
 | --timeline-anchor, --timeline-before, --timeline-after | Time pivot; default 5 minutes before / 30 after |
