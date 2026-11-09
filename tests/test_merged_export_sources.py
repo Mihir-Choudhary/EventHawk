@@ -81,6 +81,9 @@ def run(mw, view_mode, scope):
         def specific_separate(self):
             return True
 
+        def selected_format(self):       # chosen in the dialog (was a JSON prompt)
+            return "json"
+
     real = mw._ExportScopeDialog
     mw._ExportScopeDialog = FakeScope
     boxes = []

@@ -62,6 +62,7 @@ def main() -> int:
             for chk, fp in self._file_checks:
                 chk.setChecked(fp in choice.get("files", ()))
             (self._rb_specific_each if choice.get("each") else self._rb_specific_one).setChecked(True)
+            self._fmt_buttons["csv"].setChecked(True)   # chosen in the dialog (was a CSV prompt)
             self._on_ok()
             return QDialog.DialogCode.Accepted
 
