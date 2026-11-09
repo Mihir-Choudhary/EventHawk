@@ -20,7 +20,7 @@ The script checks the downloaded python.exe's Authenticode status and Python Sof
 
 Copying the sentinel package does not install optional pySigma: the script installs the main requirements, not sentinel/requirements.txt. Sentinel's heuristic pre-tagging therefore requires separate dependency preparation if advertised; non-Sigma analysis has its own path.
 
-When 7-Zip is found, the script produces EventHawk-portable.7z; a self-extracting portable EXE also depends on its SFX module. Inno Setup uses EventHawk.iss and currently names the installer EventHawk-1.3.0-Setup.exe. These names/defaults come from source; do not infer the next release version or availability from them. No package-size guarantee is made.
+When 7-Zip is found, the script produces EventHawk-portable.7z; a self-extracting portable EXE also depends on its SFX module. Inno Setup uses EventHawk.iss and currently names the installer EventHawk-2.0.0-Setup.exe. These names/defaults come from source; do not infer the next release version or availability from them. No package-size guarantee is made.
 
 ## Verify the actual artifact
 
