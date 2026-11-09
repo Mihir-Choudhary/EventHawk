@@ -57,6 +57,18 @@ jobs:
           Copy-Item install.bat        $rel/
           Copy-Item run.bat            $rel/
           Copy-Item README.md          $rel/
+          Copy-Item LICENSE            $rel/
+          # The application itself: launcher.py starts evtx_tool.py, which must
+          # sit next to EventHawk.exe with its packages (the ZIP had only the
+          # launcher, so a release could not start).
+          Copy-Item evtx_tool.py       $rel/
+          foreach ($pkg in "evtx_tool", "sentinel") {
+            Copy-Item $pkg "$rel/$pkg" -Recurse
+            Get-ChildItem "$rel/$pkg" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+          }
+          if (-not (Test-Path "$rel/evtx_tool.py") -or -not (Test-Path "$rel/evtx_tool/__init__.py")) {
+            throw "release staging is missing the application"
+          }
           New-Item -ItemType Directory -Force -Path "$rel/profiles/defaults" | Out-Null
           Copy-Item evtx_tool/profiles/defaults/* "$rel/profiles/defaults/"
           # Tag builds use the tag name; manual runs fall back to "dev".
