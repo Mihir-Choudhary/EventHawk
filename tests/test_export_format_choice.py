@@ -119,6 +119,33 @@ def main() -> int:
             bad = clipped(dd)
             check(f"{backend}: every format's hint shows in full in every scope", not bad, "; ".join(bad[:4]))
             dd.close()
+        print("\n=== 1c. no format name is cut off (app theme applied) ===")
+        from PySide6.QtGui import QImage
+
+        def cut_names(dlg):
+            # Draw each button at its real width and with 40 px to spare: ink
+            # past the real width in the wide drawing is text the dialog cuts.
+            bad = []
+            for k, b in dlg._fmt_buttons.items():
+                w, h = b.width(), b.height()
+                b.resize(w + 40, h)
+                img = b.grab().toImage().convertToFormat(QImage.Format.Format_RGB32)
+                b.resize(w, h)
+                bg = img.pixel(img.width() - 1, h // 2)
+                ink = [x for x in range(w, img.width()) for y in range(h) if img.pixel(x, y) != bg]
+                if ink:
+                    bad.append(f"{b.text()} (width {w}, text reaches {max(ink) + 1})")
+            return bad
+        from evtx_tool.gui import theme as _theme
+        _theme.apply_theme(app)
+        for backend in ("normal", "jm"):
+            dd = mw._ExportScopeDialog(paths, None, "separate", 10, None, backend=backend)
+            dd.show(); app.processEvents()
+            for k in dd.available_formats():
+                dd._fmt_buttons[k].setChecked(True); app.processEvents()
+                bad = cut_names(dd)
+                check(f"{backend}, {k} picked: every format name shows in full", not bad, "; ".join(bad))
+            dd.close()
         settings.setValue(mw._EXPORT_FORMAT_KEY, "pdf")
         dd = mw._ExportScopeDialog(paths, None, "separate", 10, None)
         dd.show(); app.processEvents()

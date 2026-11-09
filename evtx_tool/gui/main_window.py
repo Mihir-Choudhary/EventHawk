@@ -8143,11 +8143,19 @@ class _ExportScopeDialog(QDialog):
         self._lbl_fmt_hint.setText(next(h for k, _l, h in _EXPORT_FORMATS if k == key))
 
     def _fit_hint_width(self) -> None:
-        """Make room for the widest hint, so picking a format never resizes the box."""
+        """Make room for the widest hint, so picking a format never resizes the box.
+
+        Also give each format button a few pixels past its size hint: with the
+        app's stylesheet the hint is a pixel or two short, which cut the last
+        letter ("CSV" drawn as "CSv").
+        """
         lab = self._lbl_fmt_hint
         lab.ensurePolished()
         fm = lab.fontMetrics()
         lab.setMinimumWidth(max(fm.horizontalAdvance(h) for _k, _l, h in _EXPORT_FORMATS) + 4)
+        for rb in self._fmt_buttons.values():
+            rb.ensurePolished()
+            rb.setMinimumWidth(rb.sizeHint().width() + 4)
 
     def showEvent(self, event) -> None:  # noqa: N802
         # Fonts are final here (the dialog's stylesheet is set last in __init__).
