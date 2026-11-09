@@ -10,7 +10,7 @@
 #endif
 
 #define MyAppName        "EventHawk"
-#define MyAppVersion     "1.3.0"
+#define MyAppVersion     "2.0.0"
 #define MyAppPublisher   "Mihir Singh Choudhary"
 #define MyAppURL         "https://github.com/Mihir-Choudhary/EventHawk"
 #define MyAppExeName     "pythonw.exe"

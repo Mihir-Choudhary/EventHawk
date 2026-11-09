@@ -1,5 +1,5 @@
 """
-CLI entry point for EventHawk v1.3.
+CLI entry point for EventHawk v2.0.
 
 Commands:
   parse       - Parse EVTX files with profiles/filters + analysis pipeline
@@ -285,9 +285,9 @@ def _run_analysis(
 # ── CLI root ──────────────────────────────────────────────────────────────────
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.version_option("1.3.0", prog_name="EventHawk")
+@click.version_option("2.0.0", prog_name="EventHawk")
 def cli():
-    """EventHawk v1.3 -- High-performance DFIR EVTX analysis."""
+    """EventHawk v2.0 -- High-performance DFIR EVTX analysis."""
     pass
 
 
@@ -829,7 +829,7 @@ def interactive(paths):
     pm        = ProfileManager()
     all_names = pm.list_names()
 
-    console.print("[bold cyan]EventHawk v1.3 -- Interactive Mode[/bold cyan]\n")
+    console.print("[bold cyan]EventHawk v2.0 -- Interactive Mode[/bold cyan]\n")
 
     if not paths:
         path_input = click.prompt("Path to EVTX file(s) or directory")

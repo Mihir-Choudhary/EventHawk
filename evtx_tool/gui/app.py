@@ -340,7 +340,7 @@ def launch(initial_paths: list[str] | None = None) -> None:
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("EventHawk")
-    app.setApplicationVersion("1.3")
+    app.setApplicationVersion("2.0")
     app.setOrganizationName("DFIR Tools")
 
     # ── Set application-level icon (taskbar + title bar) ──────────────────
