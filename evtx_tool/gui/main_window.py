@@ -12662,6 +12662,8 @@ class MainWindow(QMainWindow):
         self._iocs     = iocs
         self._chains   = chains or []
         self._chains_ran = chains is not None   # 0 chains found vs correlation not run
+        for _st in self._file_tabs.values():    # per-file IOC views come from these results
+            _st.iocs = None
         # In Juggernaut Mode the analysis subprocess runs with events=[] so
         # build_metadata() returns all-empty dicts.  _load_jm_metadata() has
         # already populated self._metadata from DuckDB — don't overwrite it.
@@ -15022,6 +15024,30 @@ class MainWindow(QMainWindow):
             self._ioc_tabs.removeTab(0)
 
         iocs = self._iocs
+        # "This File" in the separate view: the IOCs of that tab's own events
+        # (it showed the collection's: Codex DOC-5), extracted once per tab;
+        # scores and threat-intel verdicts are taken from the collection's
+        # entry of the same value.  A tab without its events in memory
+        # (Juggernaut) keeps the collection's IOCs.
+        if (iocs and self._view_mode == "separate" and self._analysis_scope == "file"
+                and self._active_file_tab):
+            _st = self._file_tabs.get(self._active_file_tab)
+            if _st is not None and _st.events:
+                if _st.iocs is None:
+                    from evtx_tool.analysis.ioc_extractor import extract_iocs
+                    _mine = extract_iocs(_st.events)
+                    for _cat, _lst in _mine.items():
+                        if not isinstance(_lst, list):
+                            continue
+                        _glob = {e.get("value"): e for e in (iocs.get(_cat) or []) if isinstance(e, dict)}
+                        for _en in _lst:
+                            _g = _glob.get(_en.get("value"))
+                            if _g is not None:
+                                for _k in ("score", "score_reasons", "threat_intel"):
+                                    if _k in _g:
+                                        _en[_k] = _g[_k]
+                    _st.iocs = _mine
+                iocs = _st.iocs
         if not iocs:
             self._lbl_ioc_summary.setText("No IOC data — run with IOC Extraction enabled.")
             self._btn_export_iocs.setEnabled(False)

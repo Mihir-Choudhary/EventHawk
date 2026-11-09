@@ -1,6 +1,6 @@
 # Analysis tabs
 
-The analysis area has **ATT&CK**, **IOCs**, **Chains**, and **Bookmarks** tabs. Results depend on the analysis run's inputs, rather than automatically following later grid filters. In separate view, Analysis > This File / All Files changes the ATT&CK summary for a file tab. The IOC tab still reads the stored collection result, and chains remain the correlation run's results. Do not treat This File as a per-file restriction on every analysis tab.
+The analysis area has **ATT&CK**, **IOCs**, **Chains**, and **Bookmarks** tabs. Results depend on the analysis run's inputs, rather than automatically following later grid filters. In separate view, Analysis > This File / All Files switches the ATT&CK summary and the IOC tab between the file tab's own events and the whole collection (in Normal Mode; a Juggernaut file tab shows the collection's IOCs). Per-file IOCs keep the collection's scores and threat-intel verdicts. Chains remain the correlation run's results for the whole collection.
 
 ## ATT&CK
 
