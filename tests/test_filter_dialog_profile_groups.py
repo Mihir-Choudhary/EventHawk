@@ -92,6 +92,24 @@ def main() -> int:
         check("after Clear the dialog no longer says so",
               getattr(dlg2, "_lbl_hidden", None) is not None and dlg2._lbl_hidden.isHidden())
 
+        # Codex DOC-4: a CLI-saved text search is a list with a mode
+        # (--search alpha --search beta --search-mode OR); Load crashed.
+        txt = dict(saved, text_search=["alpha", "beta"], search_mode="OR")
+        try:
+            dlg4 = FilterDialog(metadata={}, current_filter=txt)
+            c4 = dlg4.get_filter_config()
+            ok4 = c4.get("text_search") == ["alpha", "beta"] and c4.get("search_mode") == "OR"
+            shown4 = "alpha" in dlg4._lbl_hidden.text() and not dlg4._lbl_hidden.isHidden()
+            dlg4._inp_text.setText("gamma")
+            c5 = dlg4.get_filter_config()
+            typed = c5.get("text_search") == "gamma"
+            one = FilterDialog(metadata={}, current_filter=dict(saved, text_search=["solo"], search_mode="AND"))
+            single = one._inp_text.text() == "solo"
+        except Exception as exc:                                     # noqa: BLE001
+            ok4 = shown4 = typed = single = False
+            print("   ", repr(exc))
+        check("a CLI-saved multi-term text search loads, is kept and shown", ok4 and shown4)
+        check("typing a text search replaces it; a single saved term goes in the field", typed and single)
         also = build_combined_filter(saved, [B])                         # a file holding both sets
         dlg3 = FilterDialog(metadata={}, current_filter=also)
         c3 = dlg3.get_filter_config()

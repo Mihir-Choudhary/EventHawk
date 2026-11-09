@@ -822,6 +822,10 @@ class FilterDialog(QDialog):
             parts.append(f"excluded Event IDs {', '.join(map(str, h['exclude_event_ids'][:12]))}")
         if h.get("task_categories"):
             parts.append(f"task categories {', '.join(map(str, h['task_categories'][:12]))}")
+        if h.get("text_search"):
+            j = {"OR": " OR ", "NOT": " / "}.get(h.get("search_mode", "AND"), " AND ")
+            parts.append(("text search NOT containing " if h.get("search_mode") == "NOT" else "text search ")
+                         + j.join(repr(x) for x in h["text_search"]) + " (typing a text search replaces it)")
         self._lbl_hidden.setText("This filter also applies, from a loaded filter file (no field here): "
                                  + "; ".join(parts) + ". Clear removes them.")
         self._lbl_hidden.setVisible(bool(parts))
@@ -960,7 +964,21 @@ class FilterDialog(QDialog):
         self._chk_eid_exclude.setChecked(cfg.get("event_id_exclude", False))
 
         # Text
-        self._inp_text.setText(cfg.get("text_search", ""))
+        # A CLI-saved search is a list of terms with a mode (--search-mode);
+        # the field holds one search, so one term goes in the field and more
+        # (or NOT) are kept as a shown restriction (Codex DOC-4: Load crashed).
+        _ts = cfg.get("text_search", "")
+        _mode = str(cfg.get("search_mode") or "AND").upper()
+        if isinstance(_ts, (list, tuple)):
+            _terms = [str(x) for x in _ts if str(x).strip()]
+            if len(_terms) > 1 or (_terms and _mode == "NOT"):
+                self._hidden["text_search"] = _terms
+                self._hidden["search_mode"] = _mode
+                self._show_hidden()
+                _ts = ""
+            else:
+                _ts = _terms[0] if _terms else ""
+        self._inp_text.setText(str(_ts or ""))
         self._chk_regex.setChecked(cfg.get("text_regex", False))
         self._chk_text_exclude.setChecked(cfg.get("text_exclude", False))
 
@@ -1013,6 +1031,15 @@ class FilterDialog(QDialog):
         self._chk_case_sensitive.setChecked(cfg.get("case_sensitive", False))
 
     def get_filter_config(self) -> dict:
+        cfg = self._fields_config()
+        h = getattr(self, "_hidden", {})
+        # A kept multi-term search applies unless a search was typed in the field.
+        if h.get("text_search") and not cfg.get("text_search"):
+            cfg["text_search"] = h["text_search"]
+            cfg["search_mode"] = h.get("search_mode", "AND")
+        return cfg
+
+    def _fields_config(self) -> dict:
         """
         Read dialog state into a filter config dict.
 
@@ -1058,7 +1085,8 @@ class FilterDialog(QDialog):
                     "value":    value_text,
                 })
 
-        hidden = {k: v for k, v in getattr(self, "_hidden", {}).items() if v}
+        hidden = {k: v for k, v in getattr(self, "_hidden", {}).items()
+                  if v and k not in ("text_search", "search_mode")}
         return {
             **hidden,
             # Levels

@@ -14,7 +14,7 @@ GUI date/time boundaries use the selected display time zone and are converted to
 
 A CLI-saved filter may contain restrictions with no editable dialog field: `profile_groups`, `profile_groups_also`, `event_ids`, `exclude_event_ids`, and `task_categories`. The dialog preserves these on Load, shows an explanatory line, and carries them through Save/OK. **Clear removes them**. A JSON null list does not itself invalidate a CLI-saved filter.
 
-**Current interoperability limit:** CLI --search stores a list, but the dialog restores text through a single-string widget. Loading such a CLI-saved file currently fails; it is not a lossless editor for arbitrary CLI text modes. Keep those files in the CLI workflow. The preserved hidden restrictions above do not establish compatibility for every filter field.
+**CLI text searches:** CLI --search stores a list of terms with a mode. Loading such a file puts a single term in the text field; several terms (or NOT) are kept as a restriction named under the dialog's fields, saved again by Save, replaced when you type a text search, and removed by Clear.
 
 Applied GUI profiles and restrictions from a loaded filter intersect. Applying another profile must not widen a loaded file's existing profile constraints. See [profile matching](14-profiles.md).
 
