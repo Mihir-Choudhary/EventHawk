@@ -267,6 +267,9 @@ def _xml_text(v) -> str:
 # characters backslash-r backslash-n instead of a line break -- which is what
 # XML, CSV and HTML used to contain.  JSON keeps the nesting and is unchanged.
 
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
 def event_data_text(v) -> str:
     """One event-data value as readable text: CSV cells, HTML report, search.
 
@@ -284,7 +287,7 @@ def event_data_text(v) -> str:
     def walk(x, name: str) -> None:
         if isinstance(x, dict):
             for k, y in x.items():
-                if k == "#attributes":
+                if k == "#attributes" and isinstance(y, dict):
                     continue
                 walk(y, name if k == "#text" else (f"{name}.{k}" if name else str(k)))
             attrs = x.get("#attributes")
@@ -299,7 +302,9 @@ def event_data_text(v) -> str:
             lines.append(f"{name}: {t}" if name else t)
 
     walk(v, "")
-    return "\n".join(lines)
+    # A lone surrogate (not encodable as UTF-8) is shown as \uXXXX, as the
+    # old printout did, instead of failing the CSV / HTML export.
+    return _LONE_SURROGATE.sub(lambda m: "\\u%04x" % ord(m.group()), "\n".join(lines))
 
 
 def _xml_fill(el, v, sub) -> None:
@@ -317,8 +322,8 @@ def _xml_fill(el, v, sub) -> None:
             for k, x in attrs.items():
                 _xml_fill(sub(el, "Attribute", k), x, sub)
         for k, x in v.items():
-            if k == "#attributes":
-                continue
+            if k == "#attributes" and isinstance(x, dict):
+                continue                    # an odd non-dict one is kept as a Field
             if k == "#text":
                 if isinstance(x, (list, tuple)):
                     for it in x:
@@ -427,12 +432,20 @@ def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
         if not kids:
             f.write(f"{indent}<{el.tag}{attr}>{text}</{el.tag}>\n")
             return
-        f.write(f"{indent}<{el.tag}{attr}>{text}\n" if not text else f"{indent}<{el.tag}{attr}>{text}")
         if text:
-            f.write("\n")
+            # Text next to child elements: no indentation inside it, or the
+            # whitespace would become part of the value (lxml does the same).
+            f.write(f"{indent}{_inline(el)}\n")
+            return
+        f.write(f"{indent}<{el.tag}{attr}>\n")
         for k in kids:
             _write_el(f, k, indent + "  ")
         f.write(f"{indent}</{el.tag}>\n")
+
+    def _inline(el):
+        attr = f' Name="{_esc(el.get("Name"))}"' if el.get("Name") is not None else ""
+        return (f"<{el.tag}{attr}>{_esc(el.text) if el.text else ''}"
+                + "".join(_inline(k) for k in el) + f"</{el.tag}>")
 
     with open(filepath, "w", encoding="utf-8", newline="") as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
@@ -1009,6 +1022,7 @@ document.addEventListener('DOMContentLoaded', function() {
   _ROWS = null; _LOADED = true;
   if ([_F.text, _F.level, _F.channel, _F.computer, _F.eid, _F.tactic,
        _F.suspOnly, _F.hasAttck, _F.hasPS, _F.timeFrom, _F.timeTo].some(Boolean)) applyFilters();
+  if (_sortCol >= 0) _applySort();
 });
 
 // ─── Expand/collapse detail rows ──────────────────────────────────────────────
@@ -1039,6 +1053,12 @@ var _LEVEL_ORDER = {Critical:0, Error:1, Warning:2, Information:3, Verbose:4, Lo
 function sortTable(colIdx) {
   _sortDir = (_sortCol === colIdx) ? (_sortDir + 1) % 3 : 1;
   _sortCol = colIdx;
+  _setSortArrow();
+  _applySort();
+}
+
+function _setSortArrow() {
+  var colIdx = _sortCol;
   document.querySelectorAll('th .sort-arrow').forEach(function(a){
     a.classList.remove('active'); a.textContent = '\u2195';
   });
@@ -1050,6 +1070,14 @@ function sortTable(colIdx) {
       arrow.textContent = _sortDir === 1 ? '\u25B2' : '\u25BC';
     }
   }
+}
+
+// Sort every row by the current column and direction.  Also run when a big
+// report finishes loading: a sort clicked while it loaded only covered the
+// rows that were there, and the rest arrived below them unsorted.
+function _applySort() {
+  var colIdx = _sortCol;
+  if (colIdx < 0) return;
   var tbody = document.querySelector('tbody');
   if (!tbody) return;
   var rows = Array.from(tbody.querySelectorAll('tr.event-row'));
@@ -1167,14 +1195,19 @@ def export_html(
                 all_tactics.append(t)
 
     # ── "PS: Has Analysis": the PowerShell events the PS extractor reads ──
+    # Same rule as the extractor: a PowerShell channel and a relevant ID.
     try:
-        from evtx_tool.analysis.ps_extractor.constants import RELEVANT_EVENT_IDS as _PS_IDS
+        from evtx_tool.analysis.ps_extractor.constants import (
+            ALL_PS_CHANNELS as _PS_CHANNELS, RELEVANT_EVENT_IDS as _PS_IDS)
     except Exception:
-        _PS_IDS = frozenset({4100, 4102, 4103, 4104, 53504, 300, 400, 403, 600, 800})
+        _PS_CHANNELS, _PS_IDS = frozenset(), frozenset()
 
     def _is_ps_analysed(e: dict) -> bool:
-        return (e.get("event_id") in _PS_IDS and "powershell" in
-                f"{e.get('channel') or ''} {e.get('provider') or ''}".lower())
+        try:
+            eid = int(e.get("event_id"))
+        except (TypeError, ValueError):
+            return False
+        return eid in _PS_IDS and (e.get("channel") or "") in _PS_CHANNELS
 
     # ── Load event description function once (graceful if unavailable) ────
     try:
@@ -1497,8 +1530,10 @@ def export_html(
             return i
 
         def _flush_dd() -> None:
-            # Every 100 rows, right after them, so ▶ works while the rest still
-            # loads.  No raw "<", ">" or "&" inside <script> (see _SD below).
+            # Every 1,000 rows, right after them, so ▶ works while the rest still
+            # loads.  Each <script> between rows makes the parser pause: every
+            # 100 rows took 38.7 s to load 41,648 events, every 1,000 rows
+            # 20.5 s -- the same as putting all of it after the table.  No raw "<", ">" or "&" inside <script> (see _SD below).
             if _dd_buf:
                 f.write("<script>_DDp(" + fast_dumps([_st_new, _dd_buf]).replace("<", r"\u003c")
                         .replace(">", r"\u003e").replace("&", r"\u0026") + ");</script>\n")
@@ -1610,7 +1645,7 @@ def export_html(
                  if ed else None),
                 _si(atk_line) if atk_line else "",
             ])
-            if len(_dd_buf) >= 100:
+            if len(_dd_buf) >= 1000:
                 _flush_dd()
 
         _flush_dd()

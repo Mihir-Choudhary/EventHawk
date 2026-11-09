@@ -35,6 +35,9 @@ CBS = {"#attributes": {"xmlns": "http://manifests.microsoft.com/win/2004/08/wind
        "PackageIdentifier": "KB5058411"}
 HOSTILE = {"#text": ["</Data><evil>x</evil>", "O'Brien \"q\" & <b>", "ctrl\x01byte", "=cmd|' /C calc'!A0"]}
 DEEP = {"Outer": {"Inner": {"#text": ["one", "two"]}, "Count": 2}, "List": ["a", {"k": "v"}]}
+# text next to child elements (mixed content), and an #attributes that is not a dict
+MIXED = {"Mix": {"#text": "T\r\n", "#attributes": {"a": "1"}}, "Mix2": {"#text": "T", "F": "x"},
+         "BadAttr": {"#attributes": "STR", "F": "x"}}
 
 EVENTS = [
     {"event_id": 800, "timestamp": "2026-06-23T16:38:49.381261Z", "channel": "Windows PowerShell",
@@ -48,6 +51,8 @@ EVENTS = [
     {"event_id": 9, "timestamp": "2026-08-09T17:28:00Z", "channel": "Test", "provider": "T", "computer": "HOST-01",
      "level": 4, "level_name": "Information", "source_file": "t.evtx", "event_record_id": 3,
      "event_data": {"Hostile": HOSTILE, "Deep": DEEP, "Plain": "a\r\nb\tc", "Zero": 0, "Empty": "", "Nothing": None}},
+    {"event_id": 10, "timestamp": "2026-08-09T17:29:00Z", "channel": "Test", "provider": "T", "computer": "HOST-01",
+     "level": 4, "level_name": "Information", "source_file": "t.evtx", "event_record_id": 4, "event_data": MIXED},
 ]
 PRINTOUT = re.compile(r"\{'|\['|'#text'|'#attributes'|\\r\\n")
 
@@ -78,6 +83,7 @@ def main() -> int:
             d = text(DEEP)
             check("deeper nesting: every leaf value present, no printout",
                   all(s in d for s in ("one", "two", "Count: 2", "a", "k: v")) and not PRINTOUT.search(d), repr(d))
+            check("an #attributes that is not a dict is kept, not dropped", "STR" in text(MIXED["BadAttr"]), repr(text(MIXED["BadAttr"])))
             check("plain values unchanged", text("a\r\nb\tc") == "a\r\nb\tc" and text(0) == "0" and text("") == "" and text(None) == "")
 
         # ── XML: both writers, structured, exact, identical ─────────────────
@@ -109,6 +115,15 @@ def main() -> int:
                   and root.find(".//evil") is None, hostile)
             check(f"XML {label}: plain value exact, CR kept", ed3.get("Plain") is not None and ed3["Plain"].text == "a\r\nb\tc",
                   repr(ed3.get("Plain") is not None and ed3["Plain"].text))
+            ed4 = {d.get("Name"): d for d in evs[3].findall("EventData/Data")} if len(evs) > 3 else {}
+            mix = ed4.get("Mix")
+            check(f"XML {label}: text next to child elements is exact (no added whitespace)",
+                  mix is not None and mix.text == "T\r\n" and [(a.get("Name"), a.text) for a in mix.findall("Attribute")] == [("a", "1")]
+                  and ed4["Mix2"].text == "T" and [(f.get("Name"), f.text) for f in ed4["Mix2"].findall("Field")] == [("F", "x")],
+                  repr(mix is not None and mix.text))
+            bad = ed4.get("BadAttr")
+            check(f"XML {label}: an #attributes that is not a dict is kept",
+                  bad is not None and "STR" in [x.text for x in bad.iter()], ET.tostring(bad) if bad is not None else None)
             check(f"XML {label}: 0 stays 0, empty and None stay empty",
                   ed3["Zero"].text == "0" and not (ed3["Empty"].text or "") and not (ed3["Nothing"].text or ""))
 
@@ -175,6 +190,18 @@ def main() -> int:
         check("HTML: no printout in the page's data (decoded)", strings and not bad, repr(bad[:1])[:200])
         sd = ex._build_search_string(EVENTS[0])
         check("HTML search index: finds the command text, no printout", "add-type -typedefinition" in sd and not PRINTOUT.search(sd), sd[:160])
+
+        # ── a lone surrogate inside a nested value: shown, not a crash ───────
+        sur = [{**EVENTS[0], "event_data": {"D": {"#text": ["a\ud800b"]}}}]
+        for fmt, fn in (("csv", ex.export_csv), ("html", ex.export_html), ("xml", ex.export_xml)):
+            p = os.path.join(work, "sur." + fmt)
+            try:
+                fn(sur, p)
+                body = open(p, encoding="utf-8-sig").read()
+                check(f"{fmt.upper()}: a lone surrogate in a nested value is shown as \\ud800, no crash",
+                      "\\ud800" in body or "\\\\ud800" in body or "\\xD800" in body or "\\\\xD800" in body, body[-300:])
+            except Exception as e:      # noqa: BLE001
+                check(f"{fmt.upper()}: a lone surrogate in a nested value is shown as \\ud800, no crash", False, repr(e)[:160])
 
         # ── JSON: the reference, unchanged ───────────────────────────────────
         p = os.path.join(work, "x.json")

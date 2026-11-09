@@ -25,8 +25,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def ev(i, eid, channel, provider="P", data=None, tags=None):
-    return {"event_id": eid, "timestamp": f"2026-01-01T00:{i // 60 % 60:02d}:{i % 60:02d}Z", "channel": channel,
+def ev(i, eid, channel, provider="P", data=None, tags=None, ps=False):
+    return {"_want_ps": ps, "event_id": eid, "timestamp": f"2026-01-01T00:{i // 60 % 60:02d}:{i % 60:02d}Z", "channel": channel,
             "provider": provider, "computer": "HOST-01", "level": 4, "level_name": "Information",
             "source_file": rf"C:\case\{channel}.evtx", "event_record_id": i + 1, "record_id": i + 1,
             "event_data": data or {"N": str(i)}, "attack_tags": tags or []}
@@ -74,10 +74,10 @@ def main() -> int:
     for i in range(3000):
         k = i % 6
         if k == 0:
-            events.append(ev(i, 800, "Windows PowerShell", "PowerShell", {"Data": {"#text": [f"Get-Item {i}\n", "\tHostApplication=powershell.exe\r\n"]}}))
+            events.append(ev(i, 800, "Windows PowerShell", "PowerShell", {"Data": {"#text": [f"Get-Item {i}\n", "\tHostApplication=powershell.exe\r\n"]}}, ps=True))
         elif k == 1:
             events.append(ev(i, 4104, "Microsoft-Windows-PowerShell/Operational", "Microsoft-Windows-PowerShell",
-                             {"ScriptBlockText": f"Write-Host {i}"}, [{"tid": "T1059.001", "name": "PowerShell", "tactic": "Execution"}]))
+                             {"ScriptBlockText": f"Write-Host {i}"}, [{"tid": "T1059.001", "name": "PowerShell", "tactic": "Execution"}], ps=True))
         elif k == 2:
             events.append(ev(i, 4624, "Security", "Microsoft-Windows-Security-Auditing", {"TargetUserName": f"user{i}"}))
         elif k == 3:
@@ -86,6 +86,14 @@ def main() -> int:
             events.append(ev(i, 1, "Test", "T", {"Evil": hostile}))
         else:
             events.append(ev(i, 4688, "Security", "Microsoft-Windows-Security-Auditing", {"CommandLine": f"cmd /c {i}"}))
+    # The PS extractor's own rule: channel in ALL_PS_CHANNELS and the event ID
+    # in RELEVANT_EVENT_IDS -- not "powershell" anywhere in channel/provider.
+    events += [
+        ev(3000, 4104, "Microsoft-Windows-PowerShell-DesiredStateConfiguration-FileDownloadManager/Operational",
+           "Microsoft-Windows-PowerShell-DesiredStateConfiguration-FileDownloadManager"),
+        ev(3001, 400, "Application", "PowerShell"),
+        ev(3002, "4104", "Microsoft-Windows-PowerShell/Operational", "Microsoft-Windows-PowerShell", ps=True),
+    ]
     work = tempfile.mkdtemp(prefix="htmlbig_")
     try:
         p = os.path.join(work, "r.html")
@@ -111,11 +119,15 @@ def main() -> int:
         check("page elements per event is small (was ~77)", per_event < 20, f"{per_event:.1f}")
         chunks = re.findall(r"<script>_DDp\((\[.*?\])\);</script>", html, flags=re.S)
         dd = detail_entries(html, ex._DETAIL_CORE_LABELS)
-        check("detail data for every event, in order, next to its rows (every 100)",
-              len(dd) == len(events) and len(chunks) == 30, f"{len(dd)} entries in {len(chunks)} chunks")
+        # Every 1,000 rows: as fast to load as putting all of it after the table
+        # (20.5 s vs 20.6 s on 41,648 real events), while every 100 rows took
+        # 38.7 s -- each <script> between rows costs the parser a pause.
+        check("detail data for every event, in order, next to its rows (every 1,000)",
+              len(dd) == len(events) and len(chunks) == -(-len(events) // 1000), f"{len(dd)} entries in {len(chunks)} chunks")
         between = html.split("<script>_DDp(")
-        check("…each chunk follows its own 100 rows", all(seg.count("<tr class='event-row") == 100 for seg in between[1:-1])
-              and between[0].count("<tr class='event-row") == 100, [seg.count("<tr class='event-row") for seg in between[:4]])
+        per = [seg.count("<tr class='event-row") for seg in between]
+        check("…each chunk follows its own 1,000 rows (the last one the rest)",
+              all(n == 1000 for n in per[:-2]) and per[-2] == (len(events) % 1000 or 1000) and per[-1] == 0, per)
         repeated = html.count("Microsoft-Windows-Security-Auditing")
         check("values repeated across events are written once in the detail data", repeated <= 2, repeated)
         if len(dd) == len(events):
@@ -142,10 +154,14 @@ def main() -> int:
 
         # ── PS: Has Analysis has something to filter on ─────────────────────
         ps_flags = [r.get("data-has-ps") for r in s.rows]
-        want = ["1" if e["event_id"] in (800, 4104) and "powershell" in (e["channel"] + e["provider"]).lower() else "0" for e in events]
+        want = ["1" if e["_want_ps"] else "0" for e in events]
         check("every row says whether it is a PowerShell event the analysis reads", ps_flags == want,
               f"{sum(1 for x in ps_flags if x == '1')} flagged, want {want.count('1')}")
         check("…an event ID 800 that is not PowerShell is not flagged", s.rows[3].get("data-has-ps") == "0")
+        check("…nor a PowerShell-named channel the extractor does not read, nor ID 400 on Application",
+              s.rows[3000].get("data-has-ps") == "0" and s.rows[3001].get("data-has-ps") == "0",
+              (s.rows[3000].get("data-has-ps"), s.rows[3001].get("data-has-ps")))
+        check("…an event ID given as text (\"4104\") on the Operational channel is flagged", s.rows[3002].get("data-has-ps") == "1")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
