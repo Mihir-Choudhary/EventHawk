@@ -10652,7 +10652,10 @@ class MainWindow(QMainWindow):
                     else:
                         bits.append(f"parse ABORTED mid-file ({v['stream_error']})")
                 if v.get("open_error"):
-                    bits.append("file could not be opened")
+                    # Keep the OS's own reason ("Access is denied. (os error
+                    # 5)"): without it a locked file and a missing one read the
+                    # same, and the explanation below keys on it.
+                    bits.append(f"file could not be opened ({v['open_error']})")
                 if v.get("rows_lost_to_write_failure"):
                     bits.append(
                         f"{v['rows_lost_to_write_failure']:,} row(s) lost to shard-write failure"
@@ -10680,6 +10683,14 @@ class MainWindow(QMainWindow):
                     _problems.append(f"{_name}: {desc}")
 
             if _problems:
+                from evtx_tool.core.open_errors import explain_open_errors
+                _why = explain_open_errors(
+                    str(v.get("open_error")) for v in _stats.values()
+                    if isinstance(v, dict) and v.get("open_error"))
+                # The ABORT note describes a parse that stopped mid-file; shown
+                # for a file that never opened, it misdescribes what happened.
+                _aborted = any(isinstance(v, dict) and v.get("stream_error")
+                               for v in _stats.values())
                 self._warn_blocking(
                     "Parse Integrity Warning",
                     "Some evidence did NOT fully load — results may be "
@@ -10687,9 +10698,10 @@ class MainWindow(QMainWindow):
                     + "\n".join(_problems[:15])
                     + (f"\n…and {len(_problems) - 15:,} more (see parse_stats.json)"
                        if len(_problems) > 15 else "")
-                    + "\n\nA parse ABORT means all records after the failure "
-                    "point are missing from this session.\n"
-                    "Details: parse_stats.json in the session directory.",
+                    + (f"\n\n{_why}" if _why else "")
+                    + ("\n\nA parse ABORT means all records after the failure "
+                       "point are missing from this session.\n" if _aborted else "\n\n")
+                    + "Details: parse_stats.json in the session directory.",
                 )
         except Exception as _ie:
             # The integrity check failing invisibly is worse than any single
@@ -12417,13 +12429,16 @@ class MainWindow(QMainWindow):
             _pe = list(getattr(self._worker, "parse_errors", []))
             if _pw or _pe:
                 _lines = _pe + _pw
+                from evtx_tool.core.open_errors import explain_open_errors, engine_error_text
+                _why = explain_open_errors(engine_error_text(x) for x in _pe)
                 self._warn_blocking(
                     "Parse Integrity Warning",
                     "Some evidence did NOT fully load — results may be "
                     "incomplete:\n\n"
                     + "\n".join(_lines[:15])
                     + (f"\n…and {len(_lines) - 15:,} more (see the log)"
-                       if len(_lines) > 15 else ""),
+                       if len(_lines) > 15 else "")
+                    + (f"\n\n{_why}" if _why else ""),
                 )
         except Exception as _ie:
             # The integrity check failing invisibly is worse than any single

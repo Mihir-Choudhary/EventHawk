@@ -132,10 +132,13 @@ class ParseWorker(QThread):
         # single small file (the first time the normal-mode path is exercised).
         # Route real errors to error() so _on_parse_error shows a dialog.
         if self.parse_errors and not events:
+            from evtx_tool.core.open_errors import explain_open_errors, engine_error_text
+            _why = explain_open_errors(engine_error_text(x) for x in self.parse_errors)
             self.error.emit(
                 "Parsing failed — no events were produced.\n\n"
                 + "\n".join(self.parse_errors[:15])
                 + ("\n…" if len(self.parse_errors) > 15 else "")
+                + (f"\n\n{_why}" if _why else "")
                 + "\n\nDetails are in eventhawk_gui.log, in "
                 + __import__("evtx_tool.core.logsetup", fromlist=["log_directory"]).log_directory()
                 + " (Help > Open Log Folder)."
