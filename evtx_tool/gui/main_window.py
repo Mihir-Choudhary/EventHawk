@@ -7996,6 +7996,7 @@ class _ExportScopeDialog(QDialog):
         files_layout.addWidget(self._lbl_file_count)
 
         scroll = QScrollArea()
+        self._file_scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFixedHeight(min(180, 32 * max(1, len(all_file_paths))))
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -8005,16 +8006,29 @@ class _ExportScopeDialog(QDialog):
         inner_layout.setSpacing(2)
         inner_layout.setContentsMargins(0, 0, 0, 0)
 
+        # Shift+click ticks or unticks a range in one go (see eventFilter):
+        # the anchor is the last row clicked or toggled with Space.
+        self._anchor: int | None = None
         for fp in all_file_paths:
             chk = QCheckBox(os.path.basename(fp))
             chk.setChecked(True)
             chk.setToolTip(fp)
             chk.toggled.connect(self._update_file_count)
+            chk.setProperty("_export_row", len(self._file_checks))   # O(1) row lookup
+            chk.installEventFilter(self)
             inner_layout.addWidget(chk)
             self._file_checks.append((chk, fp))
 
         scroll.setWidget(inner)
         files_layout.addWidget(scroll)
+        self._lbl_range_tip = QLabel("Click a file, then Shift+click another to tick or untick all between.")
+        self._lbl_range_tip.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 8pt;")
+        self._lbl_range_tip.setToolTip(
+            "Mouse: click ticks or unticks one file; Shift+click gives every shown file\n"
+            "between the last click and this one the same state.\n"
+            "Keyboard: Up/Down move, Space ticks or unticks, Shift+Up/Down carry the\n"
+            "tick to the next file, Ctrl+A ticks every shown file.")
+        files_layout.addWidget(self._lbl_range_tip)
 
         # Select All / None mini-buttons inside the box
         mini_row = QHBoxLayout()
@@ -8129,10 +8143,93 @@ class _ExportScopeDialog(QDialog):
         self._update_file_count()
 
     def _update_file_count(self, *_args) -> None:
+        if getattr(self, "_bulk", False):
+            return
         shown = sum(1 for chk, _ in self._file_checks if not chk.isHidden())
         self._lbl_file_count.setText(
             f"{shown} of {len(self._file_checks)} shown, "
             f"{len(self.selected_files())} selected")
+
+    # ── Ranges and keyboard ───────────────────────────────────────────────
+    #
+    # One kind of selection only: the tick (= will be exported).  A range is
+    # applied to the rows the filter shows; hidden rows keep their tick.
+
+    _ROW_EVENTS = (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick,
+                   QEvent.Type.MouseButtonRelease, QEvent.Type.KeyPress)
+
+    def _shown_rows(self) -> list[int]:
+        return [i for i, (c, _fp) in enumerate(self._file_checks) if not c.isHidden()]
+
+    def _set_range(self, a: int, b: int, checked: bool) -> None:
+        lo, hi = sorted((a, b))
+        self._bulk = True             # one count update at the end, not one per row
+        try:
+            for i in range(lo, hi + 1):
+                c = self._file_checks[i][0]
+                if not c.isHidden():
+                    c.setChecked(checked)
+        finally:
+            self._bulk = False
+        self._update_file_count()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        # Every row is watched, and rows get many events (paint, resize, ...):
+        # leave everything but clicks and key presses at once, and find the
+        # row from its property, so thousands of files stay fast.
+        et = event.type()
+        if et not in self._ROW_EVENTS:
+            return super().eventFilter(obj, event)
+        i = obj.property("_export_row") if isinstance(obj, QCheckBox) else None
+        if i is None or i >= len(self._file_checks) or self._file_checks[i][0] is not obj:
+            return super().eventFilter(obj, event)
+        if et != QEvent.Type.KeyPress:
+            if event.button() != Qt.MouseButton.LeftButton:
+                return super().eventFilter(obj, event)
+            if not obj.hitButton(event.position().toPoint()):
+                return super().eventFilter(obj, event)    # blank part of the row: as before
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            if shift and et == QEvent.Type.MouseButtonDblClick:
+                # The second press of a quick double Shift+click: the first one
+                # already applied the range, so it must not toggle this row too.
+                return True
+            anchor = self._anchor
+            if (shift and anchor is not None and anchor != i
+                    and not self._file_checks[anchor][0].isHidden()):
+                # Every shown row from the anchor to here takes the anchor's
+                # state: None, click file 1, Shift+click file 10 = those 10.
+                # (An anchor the filter hides counts as none: its state is
+                # not on screen.)
+                if et == QEvent.Type.MouseButtonPress:
+                    self._set_range(anchor, i, self._file_checks[anchor][0].isChecked())
+                    self._anchor = i
+                    obj.setFocus()
+                return True
+            if et == QEvent.Type.MouseButtonPress:
+                self._anchor = i          # a plain click ticks / unticks as before
+            return False
+        key, mods = event.key(), event.modifiers()
+        if key == Qt.Key.Key_A and mods == Qt.KeyboardModifier.ControlModifier:
+            self._tick_shown(True)
+            return True
+        if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            shown = self._shown_rows()
+            if not shown:
+                return False
+            pos = shown.index(i) if i in shown else 0
+            nxt = shown[max(0, pos - 1)] if key == Qt.Key.Key_Up else shown[min(len(shown) - 1, pos + 1)]
+            if mods & Qt.KeyboardModifier.ShiftModifier:
+                # Carry this row's tick on to the next one; a Shift+click
+                # afterwards ranges from where this ended.
+                self._file_checks[nxt][0].setChecked(obj.isChecked())
+                self._anchor = nxt
+            target = self._file_checks[nxt][0]
+            target.setFocus()
+            self._file_scroll.ensureWidgetVisible(target)
+            return True
+        if key == Qt.Key.Key_Space:
+            self._anchor = i              # the checkbox toggles itself
+        return super().eventFilter(obj, event)
 
 
 # ── Main Window ───────────────────────────────────────────────────────────────
