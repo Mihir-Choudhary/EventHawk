@@ -14632,21 +14632,36 @@ class MainWindow(QMainWindow):
         same text the CSV / HTML exports write (event_data_text):
           {'#attributes': {...}, 'Client': 'X', 'ErrorCode': '0x0'}
                                   →  'Client: X\nErrorCode: 0x0'
-        It used to be str(dict), a Python printout.  XML attributes such as
-        xmlns stay hidden, as before.
+        It used to be str(dict), a Python printout.  At every level, XML
+        attributes such as xmlns and other '#' keys stay hidden and empty
+        values are skipped, as for top-level fields.  A single value is
+        trimmed, as before; unnamed items keep their own spacing.
         """
+        def _clean(x):
+            if isinstance(x, dict):
+                out = {}
+                for k2, x2 in x.items():
+                    if k2 != "#text" and str(k2).startswith("#"):
+                        continue
+                    x2 = _clean(x2)
+                    if x2 is not None:
+                        out[k2] = x2
+                return out or None
+            if isinstance(x, (list, tuple)):
+                out = [y for y in (_clean(x2) for x2 in x) if y is not None]
+                return out or None
+            if x is None or not str(x).strip():
+                return None
+            return x
+
+        v = _clean(v)
+        if isinstance(v, dict) and list(v) == ["#text"]:
+            v = v["#text"]
         if v is None:
             return None
-        if isinstance(v, dict):
-            v = {k2: v2 for k2, v2 in v.items()
-                 if v2 is not None and (k2 == "#text" or not str(k2).startswith("#"))}
-            if isinstance(v.get("#text"), (list, tuple)):
-                v["#text"] = [x for x in v["#text"] if x is not None and str(x).strip()]
-        elif isinstance(v, (list, tuple)):
-            v = [x for x in v if x is not None and str(x).strip()]
+        if not isinstance(v, (dict, list, tuple)):
+            return str(v).strip()
         s = _event_data_text(v)
-        if "\n" not in s:
-            s = s.strip()
         return s if s.strip() else None
 
     def _render_event_detail(self, ev: dict) -> None:

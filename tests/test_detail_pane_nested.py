@@ -39,7 +39,8 @@ EVENTS = [
      "computer": "HOST-01", "level": 4, "level_name": "Information", "source_file": "t.evtx",
      "event_record_id": 3, "record_id": 3,
      "event_data": {"Deep": DEEP, "Plain": "value 1", "Zero": 0, "Empty": "", "Nothing": None,
-                    "OnlyAttr": {"#attributes": {"xmlns": "x"}}}},
+                    "OnlyAttr": {"#attributes": {"xmlns": "x"}},
+                    "HostApp": "powershell.exe -nop\r\n"}},
 ]
 
 
@@ -53,7 +54,12 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
     import evtx_tool.gui.main_window as mw
-    f = mw.MainWindow._flatten_ev_val
+    def f(v):
+        """The helper; an exception is a result (a failed check), not the end of the run."""
+        try:
+            return mw.MainWindow._flatten_ev_val(v)
+        except Exception as e:  # noqa: BLE001
+            return f"<{type(e).__name__}: {e}>"
 
     # ── the value helper ────────────────────────────────────────────────────
     s = f(CBS)
@@ -76,6 +82,29 @@ def main() -> int:
     check("0 is shown (unchanged)", f(0) == "0")
     for v in (None, "", "   ", {}, [], {"#text": None}, {"#attributes": {"xmlns": "x"}}, {"#text": []}):
         check(f"skipped: {v!r} (unchanged)", f(v) is None, f(v))
+    # a value ending in a line break is trimmed, as before (one line in the pane)
+    check("CRLF-ended string trimmed (unchanged)", f("powershell.exe -nop\r\n") == "powershell.exe -nop",
+          f("powershell.exe -nop\r\n"))
+    check("multi-line string trimmed at both ends (unchanged)", f("\r\n  a\nb \n") == "a\nb", f("\r\n  a\nb \n"))
+    check("multi-line #text trimmed (unchanged)", f({"#text": "  a\nb \n"}) == "a\nb", f({"#text": "  a\nb \n"}))
+    check("unnamed items keep their own spacing (unchanged)", f({"#text": ["  x\n", "\ty"]}) == "  x\n\n\ty",
+          f({"#text": ["  x\n", "\ty"]}))
+    # XML attributes and other '#' keys stay hidden at every level
+    check("nested xmlns hidden", f({"O": {"#attributes": {"xmlns": "u"}, "A": "1"}}) == "O.A: 1",
+          f({"O": {"#attributes": {"xmlns": "u"}, "A": "1"}}))
+    check("nested attributes-only skipped", f({"O": {"#attributes": {"xmlns": "u"}}}) is None,
+          f({"O": {"#attributes": {"xmlns": "u"}}}))
+    check("#text holding fields + attributes", f({"#text": {"#attributes": {"xmlns": "u"}, "A": "1"}}) == "A: 1",
+          f({"#text": {"#attributes": {"xmlns": "u"}, "A": "1"}}))
+    check("nested '#comment' hidden", f({"O": {"#comment": "c", "A": "1"}}) == "O.A: 1",
+          f({"O": {"#comment": "c", "A": "1"}}))
+    check("nested non-dict #attributes hidden", f({"O": {"#attributes": "x", "A": "1"}}) == "O.A: 1",
+          f({"O": {"#attributes": "x", "A": "1"}}))
+    # empty values are skipped at every level, like top-level fields
+    check("nested None field skipped", f({"O": {"A": None, "B": "x"}}) == "O.B: x", f({"O": {"A": None, "B": "x"}}))
+    check("empty #text next to a field", f({"#text": "", "F": "x"}) == "F: x", f({"#text": "", "F": "x"}))
+    check("None inside a nested list skipped", f([["a", None], "b"]) == "a\nb", f([["a", None], "b"]))
+    check("non-string keys work", f({1: "a", 2: {"k": "v"}}) == "1: a\n2.k: v", f({1: "a", 2: {"k": "v"}}))
 
     # ── the rendered pane (Full mode) ───────────────────────────────────────
     w = mw.MainWindow()
@@ -100,6 +129,8 @@ def main() -> int:
         check("pane misc: 0 shown, empty fields skipped", "Zero" in misc and "Empty" not in misc
               and "Nothing" not in misc and "OnlyAttr" not in misc, misc[-400:])
         check("pane misc: no printout", not PRINTOUT.search(misc), misc[-400:])
+        check("pane misc: CRLF-ended value on one line", "HostApp : powershell.exe -nop\n" in misc + "\n",
+              misc[-400:])
     finally:
         w.close()
         app.processEvents()
