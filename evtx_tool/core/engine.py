@@ -132,6 +132,7 @@ def _worker_parse_file(task: dict) -> dict:
                         break
                     total += 1
                     salvaged += 1
+                    emitted.add(record["event_record_id"])
                     try:
                         data = fast_loads(record["data"])
                         event = _extract_event_inline(
@@ -157,9 +158,13 @@ def _worker_parse_file(task: dict) -> dict:
         # inside an otherwise-valid chunk — invisible to every per-record hook).
         missing_vs_expected = 0
         try:
-            from evtx_tool.core.chunk_salvage import expected_record_count
-            _expected, _dmg_chunks = expected_record_count(filepath)
-            _got = emitted.total() + salvaged
+            from evtx_tool.core.chunk_salvage import expected_ranges
+            # Only IDs read inside the declared ranges count: a record with no
+            # declared range (salvaged from a sentinel-header chunk) must not
+            # offset a declared one that was lost.
+            _ranges = expected_ranges(filepath)
+            _expected = sum(hi - lo + 1 for lo, hi in _ranges)
+            _got = emitted.count_within(_ranges)
             if _expected > 0 and _got < _expected:
                 missing_vs_expected = _expected - _got
         except Exception:
