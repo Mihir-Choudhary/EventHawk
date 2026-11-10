@@ -54,6 +54,25 @@ logger = logging.getLogger(__name__)
 _PROCESS_CREATE_IDS    = {4688, 1}
 _PROCESS_TERMINATE_IDS = {4689, 5}
 _ALL_TARGET_IDS        = {4688, 4689, 1, 5, 8, 10}
+# Each ID means something only from the provider that defines it: Event ID 1 is
+# a process creation only from Sysmon (other providers use 1 for unrelated
+# events), and 2,392 such events were scored as process creations on six real
+# logs (Codex FO-11).
+_SECURITY_PROVIDER     = "microsoft-windows-security-auditing"
+_SYSMON_PROVIDER       = "microsoft-windows-sysmon"
+_PROVIDER_FOR_ID       = {4688: _SECURITY_PROVIDER, 4689: _SECURITY_PROVIDER,
+                          1: _SYSMON_PROVIDER, 5: _SYSMON_PROVIDER,
+                          8: _SYSMON_PROVIDER, 10: _SYSMON_PROVIDER}
+
+
+def _is_target(eid: int, system: dict) -> bool:
+    """True when *eid* is a target ID AND comes from its defining provider."""
+    want = _PROVIDER_FOR_ID.get(eid)
+    if want is None:
+        return False
+    prov = system.get("Provider")
+    name = (prov.get("#attributes") or {}).get("Name", "") if isinstance(prov, dict) else ""
+    return str(name).strip().lower() == want
 
 
 def parse_evtx_files(
@@ -202,7 +221,7 @@ def _parse_path_worker(path_str: str) -> tuple[int, int, list, dict]:
                 system = event_node.get("System", {})
                 eid_raw = system.get("EventID", 0)
                 eid = int(eid_raw.get("#text", 0) if isinstance(eid_raw, dict) else eid_raw)
-                if eid not in _TARGET_IDS:
+                if eid not in _TARGET_IDS or not _is_target(eid, system):
                     continue
                 ts_raw = record.get("timestamp", "")
                 records_out.append({"data": data, "ts_raw": ts_raw, "file": path.name,
@@ -390,7 +409,7 @@ def _parse_record(data: dict, ts_raw: str) -> RawEvent | None:
     else:
         event_id = int(event_id_raw)
 
-    if event_id not in _ALL_TARGET_IDS:
+    if event_id not in _ALL_TARGET_IDS or not _is_target(event_id, system):
         return None
 
     # Timestamp — prefer System/TimeCreated/@SystemTime from the event itself;
