@@ -50,11 +50,95 @@ _C_ACCENT     = (0.06, 0.19, 0.38)   # #0f3460
 _C_CHAIN_TITLE = _C_WHITE
 
 
+# ── Fonts for text Helvetica cannot draw ─────────────────────────────────────
+# Helvetica (WinAnsi) has no Cyrillic, CJK, Korean, Indic or emoji glyphs: a
+# computer named in Cyrillic printed as black boxes while every other export
+# kept it (Codex FO-12).  Each such character is drawn from the first of these
+# Windows fonts that has it; one no font has is written as U+XXXX, never a box.
+_FALLBACK_FONTS = (
+    ("EHSegoeUI", "segoeui.ttf"), ("EHYaHei", "msyh.ttc"), ("EHMalgun", "malgun.ttf"),
+    ("EHYuGothic", "YuGothR.ttc"), ("EHNirmala", "Nirmala.ttc"), ("EHEbrima", "ebrima.ttf"),
+    ("EHSegoeSymbol", "seguisym.ttf"), ("EHSegoeEmoji", "seguiemj.ttf"),
+)
+_fonts_loaded: list | None = None      # [(name, set_of_codepoints)]
+_font_for_cp: dict = {}
+
+
+def _fallback_fonts() -> list:
+    global _fonts_loaded
+    if _fonts_loaded is None:
+        _fonts_loaded = []
+        fdir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+        try:
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+        except Exception:
+            return _fonts_loaded
+        for name, fn in _FALLBACK_FONTS:
+            path = os.path.join(fdir, fn)
+            if not os.path.exists(path):
+                continue
+            try:
+                f = TTFont(name, path, subfontIndex=0) if fn.lower().endswith(".ttc") else TTFont(name, path)
+                pdfmetrics.registerFont(f)
+                _fonts_loaded.append((name, set(f.face.charToGlyph)))
+            except Exception:
+                continue
+    return _fonts_loaded
+
+
+def _font_of(ch: str) -> str | None:
+    """'' for Helvetica, a fallback font name, or None when no font has *ch*."""
+    cp = ord(ch)
+    if cp in _font_for_cp:
+        return _font_for_cp[cp]
+    if cp > 0xFFFF:
+        # Beyond the BMP (most emoji): ReportLab draws the glyph but records a
+        # truncated code point in the PDF text layer (U+1F642 copies as U+1F64),
+        # so a copy or search would read a different character.  Written as
+        # U+XXXX instead, which reads the same both ways.
+        _font_for_cp[cp] = None
+        return None
+    try:
+        ch.encode("cp1252")
+        r = ""
+    except UnicodeEncodeError:
+        r = next((name for name, cps in _fallback_fonts() if cp in cps), None)
+    _font_for_cp[cp] = r
+    return r
+
+
 def _x(v) -> str:
     """Event text for a Paragraph: exact, never read as markup.  A "<" or "&"
     in a rule name, user, description or IOC value stopped the whole export
-    (ReportLab parse error) or changed the text.  None reads as ""."""
-    return _xml_escape("" if v is None else str(v))
+    (ReportLab parse error) or changed the text.  None reads as "".  Characters
+    Helvetica cannot draw switch to a font that can (see _FALLBACK_FONTS)."""
+    s = "" if v is None else str(v)
+    try:
+        s.encode("cp1252")
+        return _xml_escape(s)          # the common case: Helvetica draws all of it
+    except UnicodeEncodeError:
+        pass
+    out, run, cur = [], [], ""
+
+    def flush():
+        if run:
+            txt = _xml_escape("".join(run))
+            out.append(f'<font face="{cur}">{txt}</font>' if cur else txt)
+            run.clear()
+    for ch in s:
+        f = _font_of(ch)
+        if f is None:                  # no font has it: say which character it was
+            flush()
+            cur = ""
+            out.append(f"U+{ord(ch):04X}")
+            continue
+        if f != cur:
+            flush()
+            cur = f
+        run.append(ch)
+    flush()
+    return "".join(out)
 
 _SEV_COLORS = {
     "critical": _C_CRITICAL,
@@ -283,7 +367,7 @@ def export_pdf(
     if top_comps:
         story.append(Spacer(1, 0.4*cm))
         story.append(Paragraph("Most Active Computers", s_h2))
-        comp_data = [["Computer", "Events"]] + [[c, f"{n:,}"] for c, n in top_comps]
+        comp_data = [["Computer", "Events"]] + [[Paragraph(_x(c), s_cell), f"{n:,}"] for c, n in top_comps]
         comp_table = Table(comp_data, colWidths=[9*cm, 3*cm])
         comp_table.setStyle(TableStyle([
             ("BACKGROUND",  (0,0), (-1,0),  rl_colors.Color(*_C_ACCENT)),
