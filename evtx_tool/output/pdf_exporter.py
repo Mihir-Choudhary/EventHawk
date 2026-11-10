@@ -32,8 +32,12 @@ _BY_COUNT_DESC = _operator.itemgetter(1)  # key for sorted(..., reverse=True) on
 # ── Colour palette ────────────────────────────────────────────────────────────
 
 _C_DARK_BG    = (0.10, 0.10, 0.18)   # #1a1a2e
-_C_HEADER     = (0.31, 0.76, 0.97)   # #4fc3f7
-_C_TEXT       = (0.88, 0.88, 0.88)
+_C_HEADER     = (0.00, 0.42, 0.62)   # #006b9e: titles on white (the light cyan #4fc3f7 was ~2:1)
+_C_TEXT       = (0.88, 0.88, 0.88)   # light: text on the dark chain cards only
+# Text on the white pages.  _C_TEXT was used there too: near-white on white,
+# unreadable on screen and in print (Codex FO-4).
+_C_PAGE_TEXT  = (0.13, 0.13, 0.18)
+_C_PAGE_META  = (0.36, 0.36, 0.42)
 _C_CRITICAL   = (0.72, 0.11, 0.11)
 _C_HIGH       = (0.78, 0.32, 0.00)
 _C_MEDIUM     = (0.55, 0.28, 0.00)
@@ -127,10 +131,15 @@ def export_pdf(
 
     s_title   = _style("T", fontSize=26, textColor=colors.Color(*_C_HEADER),
                         leading=32, spaceAfter=6)
-    s_sub     = _style("Sub", fontSize=13, textColor=colors.Color(*_C_TEXT),
+    s_sub     = _style("Sub", fontSize=13, textColor=colors.Color(*_C_PAGE_TEXT),
                         leading=18, spaceAfter=4)
-    s_meta    = _style("Meta", fontSize=9,  textColor=colors.Color(0.6,0.6,0.6),
+    s_meta    = _style("Meta", fontSize=9,  textColor=colors.Color(*_C_PAGE_META),
                         leading=13, spaceAfter=2)
+    # Light styles for the dark chain cards.
+    s_card_meta = _style("CardMeta", fontSize=9, textColor=colors.Color(0.75,0.75,0.78),
+                         leading=13, spaceAfter=2)
+    s_card_body = _style("CardBody", fontSize=9, textColor=colors.Color(*_C_TEXT),
+                         leading=13, spaceAfter=3)
     s_h1      = _style("H1", fontSize=16, textColor=colors.Color(*_C_HEADER),
                         leading=22, spaceBefore=14, spaceAfter=6,
                         borderPadding=(0,0,4,0))
@@ -139,7 +148,7 @@ def export_pdf(
     s_chain   = _style("ChainTitle", fontSize=12, textColor=colors.Color(*_C_CHAIN_TITLE),
                         leading=16, spaceBefore=8, spaceAfter=4, fontName="Helvetica-Bold")
     s_cell    = _style("Cell", fontSize=7, leading=8.5, textColor=colors.black)
-    s_body    = _style("Body", fontSize=9, textColor=colors.Color(*_C_TEXT),
+    s_body    = _style("Body", fontSize=9, textColor=colors.Color(*_C_PAGE_TEXT),
                         leading=13, spaceAfter=3)
     s_mono    = _style("Mono", fontSize=8, fontName="Courier",
                         textColor=colors.Color(0.7,0.9,0.7), leading=11)
@@ -230,10 +239,13 @@ def export_pdf(
 
     # Level summary table
     level_data = [["Level", "Count"]]
-    for lvl in ["Critical", "Error", "Warning", "Information", "Verbose"]:
+    # Every level that occurs, so the table sums to the event total.  LogAlways
+    # (level 0: most Security and Setup events) was left out (Codex FO-3).
+    _known = ["Critical", "Error", "Warning", "Information", "Verbose", "LogAlways"]
+    for lvl in _known + sorted(k for k in by_level if k not in _known):
         cnt = by_level.get(lvl, 0)
         if cnt:
-            level_data.append([lvl, f"{cnt:,}"])
+            level_data.append([lvl or "(no level)", f"{cnt:,}"])
     lvl_table = Table(level_data, colWidths=[5*cm, 3*cm])
     lvl_table.setStyle(TableStyle([
         ("BACKGROUND",  (0,0), (-1,0),  rl_colors.Color(*_C_ACCENT)),
@@ -373,10 +385,10 @@ def export_pdf(
                     f"Tactic: {_x(chain['tactic'])}  |  "
                     f"Events: {chain['event_count']}  |  "
                     f"Time: {_x(_fmt_ts(chain['first_ts']))} - {_x(_fmt_ts(chain['last_ts']))}",
-                    s_meta
+                    s_card_meta
                 )],
-                [Paragraph(_x(chain["description"]), s_body)],
-                [Paragraph(f"Affected: {_x(computers)}  |  Users: {_x(users)}", s_meta)],
+                [Paragraph(_x(chain["description"]), s_card_body)],
+                [Paragraph(f"Affected: {_x(computers)}  |  Users: {_x(users)}", s_card_meta)],
             ]
             chain_table = Table(header_parts, colWidths=[17*cm])
             bg_color = rl_colors.Color(
