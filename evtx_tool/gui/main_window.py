@@ -16109,8 +16109,11 @@ class MainWindow(QMainWindow):
                                     label,
                                     entry.get("value", ""),
                                     entry.get("count", 1),
-                                    (entry.get("first_seen") or "")[:19],
-                                    (entry.get("last_seen")  or "")[:19],
+                                    # Exact, as analysed: slicing to 19 chars
+                                    # dropped the fraction and the UTC "Z"
+                                    # (Codex FO-5).
+                                    entry.get("first_seen") or "",
+                                    entry.get("last_seen")  or "",
                                     entry.get("score", 0),
                                 ])
                             else:
