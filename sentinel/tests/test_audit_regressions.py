@@ -31,6 +31,9 @@ T0 = datetime(2026, 2, 11, 13, 39, 14, tzinfo=timezone.utc)
 def _event_4688(system_time="2026-02-17T20:49:12.724603Z", eid=4688):
     return {"Event": {
         "System": {"EventID": eid, "Computer": "HOST",
+                   # A real 4688 always names its provider; Sentinel now reads an
+                   # ID only from the provider that defines it (Codex FO-11).
+                   "Provider": {"#attributes": {"Name": "Microsoft-Windows-Security-Auditing"}},
                    "TimeCreated": {"#attributes": {"SystemTime": system_time}}},
         "EventData": {"NewProcessName": r"C:\Windows\System32\cmd.exe",
                       "ParentProcessName": r"C:\Windows\explorer.exe",
