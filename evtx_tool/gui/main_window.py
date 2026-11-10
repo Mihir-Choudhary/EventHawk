@@ -17111,12 +17111,20 @@ class MainWindow(QMainWindow):
                     "Export from the All Events tab, a file tab or another Around tab "
                     "instead.")
                 return
-            # The tab's WHERE belongs to the tab's own table: an around tab made
-            # from a filtered snapshot holds a subset, and running its WHERE over
-            # the full table exported events the tab does not show.
-            table = _export_model._full_table
-            where_sql, params = _export_model._combined_where()
-            total = _export_model._total_rows   # current filtered count
+            # Export exactly the rows the view shows: the model's own filtered
+            # result.  Re-running only its SQL WHERE missed the full-text and
+            # field-condition phases, which run over the Parquet shards: with a
+            # text search, CSV/JSON wrote every event and HTML/XML the right
+            # number of the wrong ones (Codex FO-9).
+            if _export_model.filter_pending() or _export_model._display_table is None:
+                QMessageBox.information(
+                    self, "Export",
+                    "The filter is still being applied. Export again when the view "
+                    "has finished updating.")
+                return
+            table = _export_model._display_table
+            where_sql, params = "1=1", []
+            total = len(table)
             order_model = _export_model
         elif scope == "specific":
             table = full

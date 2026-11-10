@@ -912,6 +912,11 @@ class ArrowTableModel(QAbstractTableModel):
 
     # ── Filter core ───────────────────────────────────────────────────────────
 
+    def filter_pending(self) -> bool:
+        """True while a filter request has not yet produced its result, i.e.
+        _display_table may not be what the current filter will show."""
+        return self._generation != getattr(self, "_done_generation", self._generation)
+
     def _combined_where(self) -> tuple[str, list[Any]]:
         """Merge all four filter layers with AND. Cached until _invalidate()."""
         if self._cached_where is not None:
@@ -975,6 +980,7 @@ class ArrowTableModel(QAbstractTableModel):
         # change, not just on header clicks.
         self._display_table = filtered_table
         self._total_rows    = len(filtered_table)
+        self._done_generation = generation
         self._cache_dict    = {}
         self._cache_start   = self._cache_end = 0
         self.beginResetModel()
