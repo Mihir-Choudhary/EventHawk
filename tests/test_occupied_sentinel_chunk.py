@@ -202,8 +202,16 @@ def main() -> int:
         open(dup, "wb").write(d3)
         r2 = _worker_parse_file({"filepath": dup, "filter_config": {}})
         ids2 = [e["event_record_id"] for e in r2["events"]]
-        check("Normal: a hidden chunk holding another chunk's records adds no duplicate rows",
-              len(ids2) == len(set(ids2)), f"{len(ids2) - len(set(ids2))} duplicates")
+        # The copy is physically in the file twice, and the reader returns both
+        # copies when the primary pass reads through (no abort here, so no
+        # salvage): showing both is faithful to the file, and dropping one would
+        # hide a possible sign of tampering (Claude ruling R33).  What must hold:
+        # no row beyond the records the file holds.
+        from evtx import PyEvtxParser
+        physical = sum(1 for _ in PyEvtxParser(dup).records_json())
+        check("Normal: a hidden chunk holding another chunk's records adds no rows beyond the file's",
+              len(ids2) == physical, f"{len(ids2)} rows vs {physical} records in the file "
+              f"({len(ids2) - len(set(ids2))} physically duplicated)")
 
         print("\n=== 3. through the real window, both modes ===")
         from PySide6.QtWidgets import QApplication, QMessageBox
