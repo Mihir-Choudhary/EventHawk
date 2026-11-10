@@ -81,6 +81,19 @@ def main() -> int:
                 check(f"[{tzname}] {name}: Normal view after Load = the CLI's own result",
                       got == want and 0 < len(want) < len(evs),
                       f"got {len(got)} vs {len(want)} of {len(evs)}")
+        # FO-10: Load after Load starts from a clear dialog.  A saved file
+        # that does not set a field (null) kept the previous Load's value:
+        # Error preset, then a provider-only preset -> still Error.
+        models.set_tz_config("utc")
+        nothing = dict(base, sources=["P"])
+        for first in ("FO-6 level Error (saved as [2])", "FO-8 date range (saved as UTC ISO)",
+                      "FO-7 NOT search"):
+            dlg = FilterDialog(metadata={}, current_filter=cases[first])
+            dlg._restore_state(nothing)
+            want = {e["record_id"] for e in evs if passes_filter(e, nothing)}
+            got = normal_view(dlg.get_filter_config(), evs)
+            check(f"FO-10 Load after '{first}': nothing of it is kept", got == want,
+                  f"got {len(got)} vs {len(want)}")
     finally:
         models.set_tz_config("utc")
     n = sum(ok for _, ok in CHECKS)

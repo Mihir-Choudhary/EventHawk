@@ -835,6 +835,8 @@ class FilterDialog(QDialog):
     def _clear_all(self) -> None:
         """Reset every filter field to default."""
         self._hidden = {}
+        self._extra_levels = []
+        self._open_from = self._open_to = False
         self._show_hidden()
         for chk in self._level_checks.values():
             chk.setChecked(True)
@@ -933,6 +935,10 @@ class FilterDialog(QDialog):
         """Populate dialog widgets from a filter config dict."""
         if not cfg:
             return
+        # Start from a clear dialog: a field the file does not set (null or
+        # absent) kept the PREVIOUS Load's value -- an Error preset, then a
+        # provider-only preset, still filtered on Error (Codex FO-10).
+        self._clear_all()
         # A CLI-saved filter writes null for every list it does not set; those
         # failed the whole Load ("can only join an iterable").
         cfg = {k: v for k, v in cfg.items() if v is not None}
