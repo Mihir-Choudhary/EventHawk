@@ -329,7 +329,10 @@ def write_scriptblock_files(
 
         try:
             content = _format_scriptblock_file(acc, result)
-            outpath.write_text(content, encoding="utf-8", errors="replace")
+            # newline="": written exactly.  Text mode turned every LF into CRLF
+            # on Windows, so the script's own CRLF became CR CR LF and the file
+            # no longer held the script's exact text (Codex FO-13).
+            outpath.write_text(content, encoding="utf-8", errors="replace", newline="")
         except OSError as exc:
             msg = f"Failed to write {outpath}: {exc}"
             if errors is not None:
