@@ -822,6 +822,8 @@ class FilterDialog(QDialog):
             parts.append(f"excluded Event IDs {', '.join(map(str, h['exclude_event_ids'][:12]))}")
         if h.get("task_categories"):
             parts.append(f"task categories {', '.join(map(str, h['task_categories'][:12]))}")
+        if h.get("levels"):
+            parts.append(f"level(s) {', '.join(map(str, h['levels']))} (no box for them; kept)")
         if h.get("text_search"):
             j = {"OR": " OR ", "NOT": " / "}.get(h.get("search_mode", "AND"), " AND ")
             parts.append(("text search NOT containing " if h.get("search_mode") == "NOT" else "text search ")
@@ -945,9 +947,24 @@ class FilterDialog(QDialog):
                 for chk in self._level_checks.values():
                     chk.setChecked(True)
             else:
-                level_set = set(levels)
+                # The CLI saves level NUMBERS (--level error -> [2]); they ticked
+                # no box, i.e. no level restriction (Codex FO-6).
+                _num = {0: "LogAlways", 1: "Critical", 2: "Error", 3: "Warning",
+                        4: "Information", 5: "Verbose"}
+                level_set = set()
+                for lv in levels:
+                    s = str(lv).strip()
+                    level_set.add(_num.get(int(s), s) if s.lstrip("-").isdigit() else s)
                 for name, chk in self._level_checks.items():
                     chk.setChecked(name in level_set)
+                # A level with no box (e.g. 6..15) is kept, not silently dropped.
+                self._extra_levels = [lv for lv in levels
+                                      if (_num.get(int(str(lv).strip()), str(lv).strip())
+                                          if str(lv).strip().lstrip("-").isdigit() else str(lv).strip())
+                                      not in self._level_checks]
+                if self._extra_levels:
+                    self._hidden["levels"] = list(self._extra_levels)
+                    self._show_hidden()
 
         # Source / Category / User / Computer
         self._inp_source.setText(", ".join(cfg.get("sources", [])))
@@ -996,10 +1013,14 @@ class FilterDialog(QDialog):
         self._chk_date_enable.setChecked(cfg.get("date_enabled", False))
         self._chk_time_enable.setChecked(cfg.get("time_enabled", False))
         self._chk_separately.setChecked(cfg.get("separately_enabled", False))
-        if cfg.get("date_from"):
-            self._dt_from.setDateTime(QDateTime.fromString(cfg["date_from"], "yyyy-MM-dd HH:mm:ss"))
-        if cfg.get("date_to"):
-            self._dt_to.setDateTime(QDateTime.fromString(cfg["date_to"], "yyyy-MM-dd HH:mm:ss"))
+        self._open_from = self._open_to = False
+        if self._load_utc_bounds(cfg):
+            pass
+        else:
+            if cfg.get("date_from"):
+                self._dt_from.setDateTime(QDateTime.fromString(cfg["date_from"], "yyyy-MM-dd HH:mm:ss"))
+            if cfg.get("date_to"):
+                self._dt_to.setDateTime(QDateTime.fromString(cfg["date_to"], "yyyy-MM-dd HH:mm:ss"))
         self._chk_date_exclude.setChecked(cfg.get("date_exclude", False))
 
         self._spn_days.setValue(cfg.get("relative_days", 0))
@@ -1030,10 +1051,54 @@ class FilterDialog(QDialog):
 
         self._chk_case_sensitive.setChecked(cfg.get("case_sensitive", False))
 
+    def _load_utc_bounds(self, cfg: dict) -> bool:
+        """Put CLI-saved UTC date bounds into the pickers (Codex FO-8).
+
+        The CLI saves --date-from/--date-to as UTC "YYYY-MM-DDTHH:MM:SS" with
+        no dialog flags; the pickers hold display-zone wall time in another
+        format, so the bounds were not read and the range was off.  Converted
+        to the display zone and switched on as a date+time range; a missing
+        side stays open.  Returns False for the dialog's own format."""
+        df, dt_ = cfg.get("date_from"), cfg.get("date_to")
+        if not any(isinstance(x, str) and "T" in x for x in (df, dt_)):
+            return False
+        if cfg.get("date_enabled") or cfg.get("time_enabled") or cfg.get("specific_day_enabled"):
+            return False
+        from datetime import datetime as _dt, timezone as _tzu
+        from evtx_tool.gui.models import utc_to_display_naive
+
+        def _q(s):
+            s = str(s).strip().replace(" ", "T")
+            if s.endswith(("Z", "z")):
+                s = s[:-1] + "+00:00"
+            d = _dt.fromisoformat(s)
+            d = d.replace(tzinfo=_tzu.utc) if d.tzinfo is None else d
+            n = utc_to_display_naive(d)
+            return QDateTime(QDate(n.year, n.month, n.day), QTime(n.hour, n.minute, n.second))
+
+        # Boxes first: ticking Date while Time is unticked zeroes the times.
+        self._chk_separately.setChecked(False)
+        self._chk_time_enable.setChecked(True)
+        self._chk_date_enable.setChecked(True)
+        if df:
+            self._dt_from.setDateTime(_q(df))
+        else:
+            self._dt_from.setDateTime(self._dt_from.minimumDateTime())
+            self._open_from = True
+        if dt_:
+            self._dt_to.setDateTime(_q(dt_))
+        else:
+            self._dt_to.setDateTime(self._dt_to.maximumDateTime())
+            self._open_to = True
+        return True
+
     def get_filter_config(self) -> dict:
         cfg = self._fields_config()
         h = getattr(self, "_hidden", {})
         # A kept multi-term search applies unless a search was typed in the field.
+        if h.get("levels"):
+            names = [n for n, c in self._level_checks.items() if c.isChecked()]
+            cfg["levels"] = names + [x for x in h["levels"] if x not in names]
         if h.get("text_search") and not cfg.get("text_search"):
             cfg["text_search"] = h["text_search"]
             cfg["search_mode"] = h.get("search_mode", "AND")
@@ -1069,6 +1134,11 @@ class FilterDialog(QDialog):
         elif self._chk_date_enable.isChecked() or self._chk_time_enable.isChecked():
             date_from = self._dt_from.dateTime().toString("yyyy-MM-dd HH:mm:ss")
             date_to = self._dt_to.dateTime().toString("yyyy-MM-dd HH:mm:ss")
+            # A loaded one-sided bound stays open while its picker is untouched.
+            if getattr(self, "_open_from", False) and self._dt_from.dateTime() == self._dt_from.minimumDateTime():
+                date_from = None
+            if getattr(self, "_open_to", False) and self._dt_to.dateTime() == self._dt_to.maximumDateTime():
+                date_to = None
 
         # Custom conditions
         conditions = []
@@ -1086,7 +1156,7 @@ class FilterDialog(QDialog):
                 })
 
         hidden = {k: v for k, v in getattr(self, "_hidden", {}).items()
-                  if v and k not in ("text_search", "search_mode")}
+                  if v and k not in ("text_search", "search_mode", "levels")}
         return {
             **hidden,
             # Levels

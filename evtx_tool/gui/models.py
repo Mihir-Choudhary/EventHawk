@@ -137,6 +137,27 @@ _tz_state: dict = {
 }
 
 
+def utc_to_display_naive(dt):
+    """The display-zone wall time (naive) of aware UTC datetime *dt* -- the
+    inverse of the boundary conversion in set_advanced_filter, for putting a
+    UTC bound (a CLI-saved filter) into the date pickers."""
+    from datetime import timezone as _utc_tz
+    dt = dt.astimezone(_utc_tz.utc)
+    mode = _tz_state.get("mode")
+    if mode == "local":
+        return dt.astimezone().replace(tzinfo=None)
+    if mode == "specific":
+        try:
+            from zoneinfo import ZoneInfo
+            return dt.astimezone(ZoneInfo(_tz_state["specific"])).replace(tzinfo=None)
+        except Exception:
+            return dt.replace(tzinfo=None)
+    if mode == "custom":
+        from datetime import timedelta as _tdl
+        return (dt + _tdl(minutes=_tz_state.get("custom_offset_min", 0))).replace(tzinfo=None)
+    return dt.replace(tzinfo=None)
+
+
 def set_tz_config(
     mode: str,
     specific: str = "Asia/Kolkata",
@@ -1994,10 +2015,19 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 found = False
             elif self._adv_text_mode == "OR":
                 found = any(hits)
+            elif self._adv_text_mode == "NOT":
+                # NOT = none of the terms (the CLI and Juggernaut meaning); it
+                # was taken as AND, showing the opposite events (Codex FO-7).
+                # NOT is already the exclusion, so text_exclude is ignored.
+                if any(hits):
+                    return False
+                found = None
             else:
                 found = all(hits)
 
-            if self._adv_text_exclude:
+            if found is None:
+                pass
+            elif self._adv_text_exclude:
                 if found: return False
             else:
                 if not found: return False
