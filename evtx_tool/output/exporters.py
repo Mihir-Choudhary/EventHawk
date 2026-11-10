@@ -534,7 +534,9 @@ def _build_search_string(ev: dict) -> str:
     Fields included (in order):
         event_id, timestamp (truncated), channel, provider, computer,
         level_name, source filename, ATT&CK tids + names + tactics,
-        all event_data values (first 30, capped at 200 chars each).
+        every event_data value, in full.  It was the first 30 values, cut
+        to 200 characters: the report's search then hid an event whose
+        detail holds the word (Codex FO-2).
     """
     ed   = ev.get("event_data", {}) or {}
     tags = ev.get("attack_tags") or []
@@ -555,9 +557,9 @@ def _build_search_string(ev: dict) -> str:
         parts.append(tag.get("tactic", ""))
 
     if isinstance(ed, dict):
-        for v in list(ed.values())[:30]:
+        for v in ed.values():
             if v is not None:
-                parts.append(event_data_text(v)[:200])
+                parts.append(event_data_text(v))
 
     return " ".join(p for p in parts if p).lower()
 
