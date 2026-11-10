@@ -43,6 +43,8 @@ from typing import Callable
 
 import orjson
 
+from evtx_tool.core.record_json import load_record
+
 from evtx_tool.core.filters import flatten_searchable_values, flatten_fields, event_description_text
 
 logger = logging.getLogger(__name__)
@@ -777,7 +779,7 @@ def _hw_worker_stream(
         if rid is not None:
             emitted.add(rid)
         try:
-            parsed = orjson.loads(record["data"])
+            parsed = load_record(record["data"])   # keeps repeated names (FO-1)
         except Exception as exc:
             n_json_errors += 1
             if first_json_err is None:

@@ -74,6 +74,7 @@ def _worker_parse_file(task: dict) -> dict:
 
     try:
         from evtx_tool.core._json_compat import fast_loads
+        from evtx_tool.core.record_json import load_record
         from evtx_tool.core.filters import compile_filter as _compile_filter
         from evtx import PyEvtxParser
 
@@ -100,7 +101,7 @@ def _worker_parse_file(task: dict) -> dict:
                 total += 1
                 try:
                     emitted.add(record["event_record_id"])
-                    data = fast_loads(record["data"])
+                    data = load_record(record["data"])   # keeps repeated names (FO-1)
                     event = _extract_event_inline(
                         data, record["event_record_id"], record["timestamp"], filepath
                     )
@@ -134,7 +135,7 @@ def _worker_parse_file(task: dict) -> dict:
                     salvaged += 1
                     emitted.add(record["event_record_id"])
                     try:
-                        data = fast_loads(record["data"])
+                        data = load_record(record["data"])   # keeps repeated names (FO-1)
                         event = _extract_event_inline(
                             data, record["event_record_id"], record["timestamp"], filepath
                         )

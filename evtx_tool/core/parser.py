@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Generator, Iterator
 
 from evtx_tool.core._json_compat import fast_loads
+from evtx_tool.core.record_json import load_record
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,7 @@ def iter_events(filepath: str) -> Generator[dict, None, None]:
     skipped = 0
     for record in parser.records_json():
         try:
-            data = fast_loads(record["data"])
+            data = load_record(record["data"])   # keeps repeated names (FO-1)
             yield _extract_from_json(data, record["event_record_id"], record["timestamp"], filepath)
         except Exception as exc:
             skipped += 1
