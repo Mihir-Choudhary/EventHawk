@@ -73,13 +73,13 @@ def _refresh_theme_colors(_theme: str | None = None) -> None:
         "Error":       qc("#a01800"),
         "Warning":     qc("#7a4c00"),
         "Information": qc("#1e1a14"),
-        "Verbose":     qc("#9a8878"),
-        "LogAlways":   qc("#9a8878"),
+        "Verbose":     qc("#5a4e42"),
+        "LogAlways":   qc("#5a4e42"),
     }
     _BG_NORMAL   = qc("#f5f0e8")
     _BG_ALT      = qc("#ede8d8")
     _BG_BOOKMARK = qc("#e8c96e")   # amber highlight for bookmarked rows
-    _COLOR_GRAY  = qc("#9a8878")
+    _COLOR_GRAY  = qc("#5a4e42")   # readable on both row colours, both themes (audit UX-3)
 
 
 _LEVEL_FG: dict = {}

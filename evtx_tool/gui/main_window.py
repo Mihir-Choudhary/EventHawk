@@ -3137,7 +3137,10 @@ class _LogonSessionDialog(QDialog):
     def _update_summary(self, sessions: list) -> None:
         total     = len(sessions)
         with_4624 = sum(1 for s in sessions if s["logon_ev"])
-        active    = sum(1 for s in sessions if s["scope_start_ts"] and not s["scope_end_ts"])
+        # Counted as the End column shows it ("Not logged").  It used to count
+        # sessions with no END OF SCOPE, which is a different thing: 30
+        # sessions all showing End "Not logged" were summed up as "0 active".
+        no_logoff = sum(1 for s in sessions if not s.get("logoff_ts"))
         dangerous = sum(1 for s in sessions if s["has_dangerous"])
         danger_txt = (
             f"<span style='color:{tc('#a01800')};font-weight:bold;'>⚠ {dangerous} with dangerous privileges</span>"
@@ -3147,7 +3150,7 @@ class _LogonSessionDialog(QDialog):
         self._lbl_summary.setText(
             f"<b>{total}</b> session(s) &nbsp;│&nbsp; "
             f"<b>{with_4624}</b> with logon event &nbsp;│&nbsp; "
-            f"<b>{active}</b> active (no logoff recorded) &nbsp;│&nbsp; "
+            f"<b>{no_logoff}</b> with no logoff recorded &nbsp;│&nbsp; "
             f"{danger_txt}"
         )
 
@@ -7956,7 +7959,9 @@ def _export_save_path(parent, title: str, fmt: str,
     existing file -- that question is asked here.
     """
     while True:
-        path, _ = QFileDialog.getSaveFileName(parent, title, "", _EXPORT_FILTERS[fmt])
+        # Offer a name: the box used to be empty.
+        _name = f"EventHawk_export_{time.strftime('%Y%m%d_%H%M%S')}.{fmt}"
+        path, _ = QFileDialog.getSaveFileName(parent, title, _name, _EXPORT_FILTERS[fmt])
         if not path:
             return "", fmt
         typed = os.path.splitext(path)[1].lstrip(".").lower()
@@ -7998,6 +8003,7 @@ class _ExportScopeDialog(QDialog):
         total_events: int,
         parent=None,
         backend: str = "normal",
+        view_filtered: bool = False,
     ):
         super().__init__(parent)
         self.setWindowTitle("Export")
@@ -8045,7 +8051,9 @@ class _ExportScopeDialog(QDialog):
             self._btn_grp.addButton(rb, i)
             root.addWidget(rb)
 
-        self._rb_combined.setChecked(True)
+        # With a filter on, offer what the analyst is looking at; "All files"
+        # was preselected even then and exported everything (audit UX-7).
+        (self._rb_view if view_filtered else self._rb_combined).setChecked(True)
 
         # ── File checklist (revealed when "Specific" is chosen) ────────────
         self._files_box = QGroupBox("Select files to export:")
@@ -8914,7 +8922,7 @@ class MainWindow(QMainWindow):
 
         # ── ANALYSIS ──────────────────────────────────────────────────────
         layout.addWidget(_section_label("Analysis"))
-        self._chk_attack   = QCheckBox("ATT&CK Mapping")
+        self._chk_attack   = QCheckBox("ATT&&CK Mapping")
         self._chk_attack.setChecked(True)
         self._chk_ioc      = QCheckBox("IOC Extraction")
         self._chk_correlate = QCheckBox("Correlation Engine")
@@ -9381,7 +9389,7 @@ class MainWindow(QMainWindow):
 
         hdr = table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        hdr.setStretchLastSection(False)
+        hdr.setStretchLastSection(True)     # no blank strip right of the last column
         hdr.setSectionsClickable(True)
         hdr.sectionClicked.connect(self._on_col_header_clicked)
 
@@ -9543,7 +9551,7 @@ class MainWindow(QMainWindow):
 
         # ATT&CK tab
         self._tab_attack = self._build_attack_tab()
-        self._analysis_tabs.addTab(self._tab_attack, "ATT&CK")
+        self._analysis_tabs.addTab(self._tab_attack, "ATT&&CK")
 
         # IOCs tab
         self._tab_iocs = self._build_iocs_tab()
@@ -9577,7 +9585,7 @@ class MainWindow(QMainWindow):
         _atk_hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)  # all cols user-draggable
         _atk_hdr.setStretchLastSection(False)
         self._tbl_attack.setColumnWidth(0, 160)  # Tactic
-        self._tbl_attack.setColumnWidth(1, 65)   # Events
+        self._tbl_attack.setColumnWidth(1, 80)   # Events
         self._tbl_attack.setColumnWidth(2, 200)  # Top Technique
         self._tbl_attack.setColumnWidth(3, 90)   # TID
         self._tbl_attack.verticalHeader().setVisible(False)
@@ -10209,6 +10217,10 @@ class MainWindow(QMainWindow):
         existing = [self._file_list.item(i).data(Qt.ItemDataRole.UserRole)
                     for i in range(self._file_list.count())]
         if path in existing:
+            return
+        if os.path.isfile(path) and not path.lower().endswith(".evtx"):
+            # It was listed and only refused at Parse (audit UX-6).
+            self._set_status(f"Not added: {os.path.basename(path)} is not an .evtx file")
             return
         item = QListWidgetItem(os.path.basename(path) if os.path.isfile(path) else path)
         item.setData(Qt.ItemDataRole.UserRole, path)
@@ -13232,6 +13244,29 @@ class MainWindow(QMainWindow):
 
     # ── Advanced Filter Dialog ────────────────────────────────────────────
 
+    def _loaded_time_range(self) -> "tuple[str, str] | None":
+        """First and last timestamp of the loaded events, as the table shows
+        them ("YYYY-MM-DD HH:MM:SS" in the display time zone), or None."""
+        try:
+            if self._hw_model is not None:
+                import pyarrow.compute as _pc
+                col = self._hw_model._full_table["timestamp_utc"]
+                col = col.filter(_pc.not_equal(col, ""))
+                if len(col) == 0:
+                    return None
+                mm = _pc.min_max(col).as_py()
+                lo, hi = (str(mm[k]).replace(" ", "T") + "Z" for k in ("min", "max"))
+            else:
+                stamps = [e.get("timestamp") for e in (self._events or []) if e.get("timestamp")]
+                if not stamps:
+                    return None
+                lo, hi = min(stamps), max(stamps)
+            lo, hi = apply_tz(lo)[:19], apply_tz(hi)[:19]
+            return (lo, hi) if len(lo) == 19 and len(hi) == 19 else None
+        except Exception:
+            logger.warning("could not read the loaded time range", exc_info=True)
+            return None
+
     def _on_advanced_filter_clicked(self) -> None:
         """Open the ELE-style advanced filter dialog."""
         # In Juggernaut Mode, guarantee metadata is populated before opening
@@ -13246,6 +13281,7 @@ class MainWindow(QMainWindow):
             current_filter=self._adv_filter_cfg,
             parent=self,
             juggernaut_mode=(self._hw_model is not None),
+            time_range=self._loaded_time_range(),
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -15345,8 +15381,14 @@ class MainWindow(QMainWindow):
         original, unchanged values -- nothing in the old text is edited.
         """
         try:
+            # The pane skips redrawing the event it already shows, so after a
+            # theme switch it kept the old theme's colours (dark values on the
+            # dark pane) until another event was selected (audit UX-1).
+            self._last_detail_key = None
             if self._btn_detail_mode is not None:
                 self._on_detail_mode_toggled(not self._detail_full_mode)
+            # The ATT&CK tab's tactic colours are set when it is filled.
+            QTimer.singleShot(0, self._refresh_attack_tab)
         except RuntimeError:
             pass          # window being torn down
 
@@ -16899,6 +16941,7 @@ class MainWindow(QMainWindow):
             view_mode=self._view_mode,
             total_events=len(self._events),
             parent=self,
+            view_filtered=self._active_proxy.rowCount() < self._active_proxy.sourceModel().rowCount(),
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -17093,6 +17136,7 @@ class MainWindow(QMainWindow):
             all_file_paths=all_files, active_file=_active_fp,
             view_mode=self._view_mode, total_events=len(full), parent=self,
             backend="jm",
+            view_filtered=bool(getattr(_export_model, "has_filter", lambda: False)()),
         )
         if scope_dlg.exec() != QDialog.DialogCode.Accepted:
             return

@@ -233,12 +233,16 @@ class FilterDialog(QDialog):
         current_filter: dict | None = None,
         parent=None,
         juggernaut_mode: bool = False,
+        time_range: "tuple[str, str] | None" = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Filter")
         self.resize(680, 720)
         self.setMinimumSize(580, 550)
         self._metadata = metadata
+        # First and last loaded event ("yyyy-MM-dd HH:mm:ss", display zone):
+        # where From and To start.
+        self._time_range = time_range
         self._current = current_filter or {}
         # Restrictions a loaded filter file holds that have no field here
         # (CLI --save-filter: applied profiles, Event ID lists).  Kept through
@@ -320,6 +324,8 @@ class FilterDialog(QDialog):
         fields_grid.addWidget(_lbl("Source:"), 0, 0)
         self._inp_source = QLineEdit()
         self._inp_source.setPlaceholderText("Provider name")
+        self._inp_source.setToolTip("Events whose provider or channel name contains this text.\n"
+                                    "Several values: separate them with commas.")
         fields_grid.addWidget(self._inp_source, 0, 1)
         self._btn_source = QPushButton("...")
         self._btn_source.setFixedWidth(28)
@@ -330,13 +336,15 @@ class FilterDialog(QDialog):
         fields_grid.addWidget(self._chk_source_exclude, 0, 3)
 
         # Category
-        fields_grid.addWidget(_lbl("Category:"), 1, 0)
+        fields_grid.addWidget(_lbl("Channel:"), 1, 0)
         self._inp_category = QLineEdit()
         self._inp_category.setPlaceholderText("Channel name")
+        self._inp_category.setToolTip("Events whose channel (log) name contains this text, e.g. Security.\n"
+                                      "Several values: separate them with commas.")
         fields_grid.addWidget(self._inp_category, 1, 1)
         self._btn_category = QPushButton("...")
         self._btn_category.setFixedWidth(28)
-        self._btn_category.setToolTip("Browse available categories")
+        self._btn_category.setToolTip("Browse available channels")
         self._btn_category.clicked.connect(lambda: self._open_picker("category", "Select categories", self._inp_category))
         fields_grid.addWidget(self._btn_category, 1, 2)
         self._chk_category_exclude = QCheckBox("Exclude")
@@ -346,6 +354,8 @@ class FilterDialog(QDialog):
         fields_grid.addWidget(_lbl("User:"), 2, 0)
         self._inp_user = QLineEdit()
         self._inp_user.setPlaceholderText("User / SID")
+        self._inp_user.setToolTip("Events whose user name or SID contains this text.\n"
+                                  "Several values: separate them with commas.")
         fields_grid.addWidget(self._inp_user, 2, 1)
         self._btn_user = QPushButton("...")
         self._btn_user.setFixedWidth(28)
@@ -359,6 +369,8 @@ class FilterDialog(QDialog):
         fields_grid.addWidget(_lbl("Computer:"), 3, 0)
         self._inp_computer = QLineEdit()
         self._inp_computer.setPlaceholderText("Hostname")
+        self._inp_computer.setToolTip("Events whose Computer name contains this text.\n"
+                                      "Several values: separate them with commas.")
         fields_grid.addWidget(self._inp_computer, 3, 1)
         self._btn_computer = QPushButton("...")
         self._btn_computer.setFixedWidth(28)
@@ -378,6 +390,9 @@ class FilterDialog(QDialog):
         eid_row.addWidget(_lbl("Event ID(s):"))
         self._inp_event_ids = QLineEdit()
         self._inp_event_ids.setPlaceholderText("1-19,100,250-450!10,255")
+        self._inp_event_ids.setToolTip("Event ID numbers and ranges, separated by commas.\n"
+                                       "After an exclamation mark: IDs to leave out.\n"
+                                       "Example: 4624,4634-4648!4647")
         eid_row.addWidget(self._inp_event_ids, stretch=1)
         self._chk_eid_exclude = QCheckBox("Exclude")
         eid_row.addWidget(self._chk_eid_exclude)
@@ -387,6 +402,7 @@ class FilterDialog(QDialog):
                        "use exclamation mark to exclude criteria (e.g. 1-19,100,250-450!10,255)")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{COLORS['text_dim']}; font-size:7pt;")
+        hint.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)   # no empty gap around it
         body.addWidget(hint)
 
         body.addWidget(_styled_line())
@@ -438,15 +454,24 @@ class FilterDialog(QDialog):
         dt_row = QHBoxLayout()
         dt_row.addWidget(_lbl("From:"))
         self._dt_from = _DateTimePickerEdit()
-        self._dt_from.setDisplayFormat("dd-MM-yyyy HH:mm:ss")
+        # Year-month-day, as the event table shows dates.
+        self._dt_from.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         # Default time to 00:00:00 — user sets time explicitly via the "Time" checkbox
         self._dt_from.setDateTime(QDateTime(QDateTime.currentDateTime().addYears(-1).date(), QTime(0, 0, 0)))
         self._dt_from.setEnabled(False)
         dt_row.addWidget(self._dt_from)
         dt_row.addWidget(_lbl("To:"))
         self._dt_to = _DateTimePickerEdit()
-        self._dt_to.setDisplayFormat("dd-MM-yyyy HH:mm:ss")
+        self._dt_to.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         self._dt_to.setDateTime(QDateTime(QDateTime.currentDateTime().date(), QTime(0, 0, 0)))
+        # Start at the loaded events' own days.  "One year ago .. today" showed
+        # nothing as soon as Date was ticked on older logs (audit UX-5).
+        if self._time_range:
+            _lo = QDateTime.fromString(self._time_range[0], "yyyy-MM-dd HH:mm:ss")
+            _hi = QDateTime.fromString(self._time_range[1], "yyyy-MM-dd HH:mm:ss")
+            if _lo.isValid() and _hi.isValid():
+                self._dt_from.setDateTime(QDateTime(_lo.date(), QTime(0, 0, 0)))
+                self._dt_to.setDateTime(QDateTime(_hi.date(), QTime(23, 59, 59)))
         self._dt_to.setEnabled(False)
         dt_row.addWidget(self._dt_to)
         self._chk_date_exclude = QCheckBox("Exclude")
@@ -485,7 +510,11 @@ class FilterDialog(QDialog):
         self._de_specific_day = QDateEdit()
         self._de_specific_day.setCalendarPopup(True)
         self._de_specific_day.setDate(QDate.currentDate())
-        self._de_specific_day.setDisplayFormat("dd-MM-yyyy")
+        self._de_specific_day.setDisplayFormat("yyyy-MM-dd")
+        if self._time_range:
+            _day = QDate.fromString(self._time_range[1][:10], "yyyy-MM-dd")
+            if _day.isValid():
+                self._de_specific_day.setDate(_day)
         self._de_specific_day.setEnabled(False)
         specific_day_row.addWidget(self._de_specific_day)
         specific_day_row.addStretch()

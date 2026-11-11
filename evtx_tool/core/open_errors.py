@@ -61,6 +61,16 @@ _CAUSES: list[tuple[str, re.Pattern, tuple[int, ...], str]] = [
         "renamed, or is on a drive or network share that is no longer "
         "connected. Add it again from where it is now.",
     ),
+    (
+        "not_evtx",
+        re.compile(r"failed to read EVTX file header|failed to fill whole buffer|"
+                   r"invalid EVTX file header|InvalidEvtxFileHeaderMagic", re.I),
+        (),
+        "“Not an event log”: the file is empty, cut short, or is not an EVTX "
+        "file at all (for example another kind of file with the .evtx ending, or "
+        "a copy that stopped part-way). Check its size and where it came from; "
+        "if it should be a log, take a fresh copy and check the copy’s hash.",
+    ),
 ]
 
 _CODE_RE = re.compile(r"\(os error (\d+)\)|\[WinError (\d+)\]", re.I)
@@ -82,7 +92,7 @@ def engine_error_text(line: str) -> str:
 
 
 def open_error_causes(text: str, windows: bool | None = None) -> list[str]:
-    """The cause keys ("access", "in_use", "missing") found in *text*."""
+    """The cause keys ("access", "in_use", "missing", "not_evtx") found in *text*."""
     if windows is None:
         windows = os.name == "nt"
     text = str(text or "")

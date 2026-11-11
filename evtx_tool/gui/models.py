@@ -100,15 +100,17 @@ def _refresh_theme_colors(_theme: str | None = None) -> None:
         "Error":       qc("#a01800"),
         "Warning":     qc("#7a4c00"),
         "Information": qc("#1e1a14"),
-        "Verbose":     qc("#9a8878"),
-        "LogAlways":   qc("#9a8878"),
+        "Verbose":     qc("#5a4e42"),
+        "LogAlways":   qc("#5a4e42"),
     }
 
     _BG_NORMAL    = qc("#f5f0e8")
     _BG_ALT       = qc("#ede8d8")
     _BG_SEL       = qc("#ddd4bc")
     _BG_BOOKMARK  = qc("#e8c96e")   # amber highlight for bookmarked rows
-    _FG_MUTED     = qc("#9a8878")
+    # Readable, not just visible: #9a8878 was 3.0:1 on the row colour, and
+    # it is the colour of every cell of a LogAlways row (audit UX-3).
+    _FG_MUTED     = qc("#5a4e42")
     _FG_ACCENT    = qc("#7a5c1e")
 
 
