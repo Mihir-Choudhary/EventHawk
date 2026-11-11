@@ -28,9 +28,11 @@ logger = logging.getLogger(__name__)
 
 # ── Common install locations ──────────────────────────────────────────────────
 
+# Only folders that belong to the analyst or to administrators.  C:\hayabusa
+# and C:\Tools\hayabusa were searched too, but any signed-in Windows user may
+# create a folder in C:\ and so could plant the program EventHawk then runs
+# (audit SA-4).  A Hayabusa kept there is chosen once with Browse.
 _COMMON_PATHS_WIN = [
-    r"C:\Tools\hayabusa\hayabusa.exe",
-    r"C:\hayabusa\hayabusa.exe",
     r"C:\Program Files\hayabusa\hayabusa.exe",
     os.path.expanduser(r"~\hayabusa\hayabusa.exe"),
     os.path.expanduser(r"~\Desktop\hayabusa\hayabusa.exe"),
@@ -93,6 +95,7 @@ def run_hayabusa(
     cancel_event: Any = None,
     min_level: str = "low",
     progress_callback: Any = None,
+    problems: list | None = None,
 ) -> list[dict]:
     """
     Run Hayabusa against EVTX files and return detections as chain dicts.
@@ -109,14 +112,21 @@ def run_hayabusa(
         Minimum severity level (low/medium/high/critical).
     progress_callback : callable or None
         Called with status strings for progress updates.
+    problems : list or None
+        Receives one sentence for everything that makes the result incomplete
+        or missing: the program not found, a failing exit code, unreadable
+        output.  An empty result alone looks like "no detections" (audit SA-2).
 
     Returns
     -------
     list[dict]
         Chain dicts compatible with the correlator output format.
     """
+    if problems is None:
+        problems = []
     if not hayabusa_path or not os.path.isfile(hayabusa_path):
         logger.warning("Hayabusa binary not found: %s", hayabusa_path)
+        problems.append(f"Hayabusa was not run: program not found ({hayabusa_path})")
         return []
 
     if not evtx_paths:
@@ -124,7 +134,7 @@ def run_hayabusa(
 
     # Determine input: if single file, use -f; if multiple or directory, use -d
     # Build a temp dir with symlinks/copies if needed, or find common parent
-    input_arg, input_val, tmp_dir = _resolve_input(evtx_paths)
+    input_arg, input_val, tmp_dir = _resolve_input(evtx_paths, problems=problems)
 
     # Create temp file for JSONL output
     fd, output_path = tempfile.mkstemp(suffix=".jsonl", prefix="hayabusa_")
@@ -184,11 +194,14 @@ def run_hayabusa(
                 stderr_text = stderr_file.read()
                 logger.warning("Hayabusa exited with code %d: %s", returncode, stderr_text[:500])
                 # Hayabusa may still produce partial output — try to parse it
+                _why = " ".join(stderr_text.split())[:300]
+                problems.append(f"Hayabusa failed with exit code {returncode}; its detections may be "
+                                f"missing or incomplete" + (f" ({_why})" if _why else ""))
 
         if progress_callback:
             progress_callback("Parsing Hayabusa results…")
 
-        return parse_hayabusa_jsonl(output_path)
+        return parse_hayabusa_jsonl(output_path, problems=problems)
 
     finally:
         # Cleanup temp files
@@ -203,7 +216,7 @@ def run_hayabusa(
                 pass
 
 
-def _resolve_input(evtx_paths: list[str]) -> tuple[str, str, str | None]:
+def _resolve_input(evtx_paths: list[str], problems: list | None = None) -> tuple[str, str, str | None]:
     """
     Resolve EVTX paths into a Hayabusa input argument.
 
@@ -211,7 +224,15 @@ def _resolve_input(evtx_paths: list[str]) -> tuple[str, str, str | None]:
       - Single file: ("-f", filepath, None)
       - Single directory: ("-d", dirpath, None)
       - Multiple files: ("-d", tmp_dir_with_symlinks, tmp_dir)
+
+    Nothing is ever created in the folder that holds the logs, and no hard
+    link to a log is made: both change the evidence (audit SA-3).
     """
+    if problems is None:
+        problems = []
+    missing = [p for p in evtx_paths if not os.path.exists(p)]
+    if missing:
+        problems.append(f"Hayabusa did not scan {len(missing)} selected path(s) that no longer exist")
     if len(evtx_paths) == 1:
         p = evtx_paths[0]
         if os.path.isdir(p):
@@ -219,47 +240,24 @@ def _resolve_input(evtx_paths: list[str]) -> tuple[str, str, str | None]:
         else:
             return "-f", p, None
 
-    # Check if all files share a common parent directory. Most common case.
-    parents = {str(Path(p).parent) for p in evtx_paths if os.path.isfile(p)}
-    if len(parents) == 1:
-        parent = parents.pop()
-        
-        # FATAL BUG FIX: If we just return "-d parent", Hayabusa scans ALL .evtx files
-        # in that directory, not just the ones the user selected! 
-        # Check if the folder contains ONLY our selected files.
-        try:
-            all_evtx = [f for f in os.listdir(parent) if f.lower().endswith(".evtx")]
-        except OSError as _exc:
-            logger.warning("Hayabusa: cannot list directory %s: %s", parent, _exc)
-            all_evtx = []
-            
-        if len(all_evtx) == len(evtx_paths):
-            # The folder contains exact parity — safe to scan the whole folder
-            return "-d", parent, None
+    # Every selected path is a log in one folder that holds exactly these
+    # logs: scan the folder in place.  Compared by NAME: comparing counts let
+    # a selection with a missing path scan a log that was not selected
+    # (audit SA-5).
+    if all(os.path.isfile(p) for p in evtx_paths):
+        parents = {os.path.normcase(os.path.abspath(str(Path(p).parent))) for p in evtx_paths}
+        if len(parents) == 1:
+            parent = str(Path(evtx_paths[0]).parent)
+            try:
+                all_evtx = {os.path.normcase(f) for f in os.listdir(parent) if f.lower().endswith(".evtx")}
+            except OSError as _exc:
+                logger.warning("Hayabusa: cannot list directory %s: %s", parent, _exc)
+                all_evtx = set()
+            if all_evtx == {os.path.normcase(os.path.basename(p)) for p in evtx_paths}:
+                return "-d", parent, None
 
-        # Unsafe! There are unselected files. We must isolate our selection.
-        # Create a temp dir in the SAME directory so we can use Hard Links (os.link).
-        # Hard links require no Admin/Dev privileges on Windows and take 0 bytes/0 seconds,
-        # but they ONLY work on the same NTFS volume.
-        # If the source directory is read-only (e.g., forensic image), this will raise OSError.
-        try:
-            tmp_dir = tempfile.mkdtemp(prefix=".hayabusa_tmp_", dir=parent)
-            for i, src in enumerate(evtx_paths):
-                if os.path.isfile(src):
-                    dst = os.path.join(tmp_dir, f"{i:04d}_{os.path.basename(src)}")
-                    try:
-                        os.link(src, dst)  # Instant, 0-byte hard link
-                    except OSError:
-                        try:
-                            os.symlink(src, dst)
-                        except OSError:
-                            shutil.copy2(src, dst)  # Desperate fallback
-            return "-d", tmp_dir, tmp_dir
-        except OSError:
-            # Fall back to the system %TEMP% directory below
-            pass
-
-    # Scattered across multiple drives/dirs or read-only parent -> use generic temp dir in %TEMP%
+    # Otherwise isolate the selection in a folder under %TEMP%: links where
+    # Windows allows them, else copies.  Never inside the evidence folder.
     tmp_dir = tempfile.mkdtemp(prefix="hayabusa_input_")
     for i, src in enumerate(evtx_paths):
         if os.path.isfile(src):
@@ -287,7 +285,7 @@ def _get_creation_flags() -> int:
     return 0
 
 
-def parse_hayabusa_jsonl(jsonl_path: str) -> list[dict]:
+def parse_hayabusa_jsonl(jsonl_path: str, problems: list | None = None) -> list[dict]:
     """
     Parse Hayabusa JSONL output and convert to our chain dict format.
 
@@ -309,11 +307,15 @@ def parse_hayabusa_jsonl(jsonl_path: str) -> list[dict]:
             "source": "hayabusa",    # distinguishes from correlator chains
         }
     """
+    if problems is None:
+        problems = []
     if not os.path.isfile(jsonl_path):
+        problems.append("Hayabusa wrote no result file")
         return []
 
     # Parse all detections
     detections: list[dict] = []
+    bad_lines = 0
     try:
         with open(jsonl_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -324,10 +326,16 @@ def parse_hayabusa_jsonl(jsonl_path: str) -> list[dict]:
                     det = json.loads(line)
                     detections.append(det)
                 except json.JSONDecodeError:
+                    bad_lines += 1
                     continue
     except OSError as exc:
         logger.warning("Failed to read Hayabusa output: %s", exc)
+        problems.append(f"Hayabusa's result could not be read: {exc}")
         return []
+    if bad_lines:
+        logger.warning("Hayabusa: %d result line(s) could not be read", bad_lines)
+        problems.append(f"{bad_lines} line(s) of Hayabusa's result could not be read; "
+                        f"those detections are missing")
 
     if not detections:
         return []

@@ -421,13 +421,18 @@ def _run_pipeline(
 
         try:
             from evtx_tool.analysis.hayabusa_runner import run_hayabusa
+            _hayabusa_problems: list = []
             hayabusa_chains = run_hayabusa(
                 hayabusa_path=hayabusa_path,
                 evtx_paths=evtx_paths,
                 cancel_event=cancel_event,
                 progress_callback=_hayabusa_heartbeat,
+                problems=_hayabusa_problems,
             )
             chains.extend(hayabusa_chains)
+            if _hayabusa_problems:
+                # An empty or short result must not read as "no detections".
+                errors["Hayabusa"] = "; ".join(_hayabusa_problems)
         except Exception as exc:
             logger.warning("Hayabusa scan failed: %s", exc)
             errors["Hayabusa"] = f"{type(exc).__name__}: {exc}"
