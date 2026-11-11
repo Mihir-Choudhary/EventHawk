@@ -19,6 +19,33 @@ import threading
 from PySide6.QtCore import QThread, Signal
 
 
+_SESSION_PREFIX = "evtx_jm_session_"
+
+
+def _remove_orphan_session_dirs() -> None:
+    """Remove Juggernaut data folders left by an EventHawk that no longer runs.
+
+    A folder is named evtx_jm_session_<process id>_<random>.  Only a folder
+    whose process is gone is removed; without psutil nothing is removed.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return
+    tmp = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return
+    for name in names:
+        if not name.startswith(_SESSION_PREFIX):
+            continue
+        pid = name[len(_SESSION_PREFIX):].split("_", 1)[0]
+        if not pid.isdigit() or psutil.pid_exists(int(pid)):
+            continue
+        shutil.rmtree(os.path.join(tmp, name), ignore_errors=True)
+
+
 class HeavyweightParseWorker(QThread):
     """Run HeavyweightEngine on a background thread."""
 
@@ -45,21 +72,20 @@ class HeavyweightParseWorker(QThread):
         self.parse_stats: dict = {}   # per-source integrity counters (read after finished)
 
     def run(self) -> None:
+        pq_dir = None
         try:
             from evtx_tool.core.heavyweight.engine import HeavyweightEngine
             import logging as _logging
             _log = _logging.getLogger(__name__)
 
-            # Create a fresh session parquet directory each run.
-            # Stale directories from a previous run are removed first.
-            pq_dir = os.path.join(tempfile.gettempdir(), "evtx_jm_session")
-            if os.path.isdir(pq_dir):
-                try:
-                    shutil.rmtree(pq_dir)
-                except Exception as exc:
-                    _log.warning("Could not remove stale session dir %s: %s", pq_dir, exc)
-
-            os.makedirs(pq_dir, exist_ok=True)
+            # A folder of its own for every parse.  One fixed folder, deleted
+            # at the start of each parse, let a second EventHawk window delete
+            # the first window's shards and write its own under the same
+            # names: the first window then read the other case's events
+            # (audit SA-1).  The window deletes the folder when it leaves
+            # Juggernaut mode; what a crashed EventHawk left is removed here.
+            _remove_orphan_session_dirs()
+            pq_dir = tempfile.mkdtemp(prefix=f"{_SESSION_PREFIX}{os.getpid()}_")
 
             self._engine = HeavyweightEngine(
                 parquet_dir=pq_dir,
@@ -90,10 +116,14 @@ class HeavyweightParseWorker(QThread):
                 )
 
             if self._stop_event.is_set():
+                # Nobody uses a stopped parse's folder.
+                shutil.rmtree(pq_dir, ignore_errors=True)
                 self.cancelled.emit()
             else:
                 self.finished.emit(result)
         except Exception as exc:
+            if pq_dir:
+                shutil.rmtree(pq_dir, ignore_errors=True)
             if self._engine is not None:
                 try:
                     self._engine.stop()
