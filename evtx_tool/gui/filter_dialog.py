@@ -248,7 +248,8 @@ class FilterDialog(QDialog):
         # Retained for callers/back-compat; no longer gates any control.
         self._juggernaut_mode = bool(juggernaut_mode)
         self._build_ui()
-        self._restore_state(self._current)
+        if self._current:
+            self._restore_state(self._current)
         self._apply_styles()
         # Text-in-description used to be disabled in Juggernaut Mode because the
         # JM filter pipeline searched the Arrow metadata columns only, so the
@@ -933,8 +934,9 @@ class FilterDialog(QDialog):
 
     def _restore_state(self, cfg: dict) -> None:
         """Populate dialog widgets from a filter config dict."""
-        if not cfg:
-            return
+        # An empty preset ({}) is "no restriction": it clears the dialog
+        # instead of keeping the previous Load's filter (Codex RA-2).
+        cfg = cfg or {}
         # Start from a clear dialog: a field the file does not set (null or
         # absent) kept the PREVIOUS Load's value -- an Error preset, then a
         # provider-only preset, still filtered on Error (Codex FO-10).
@@ -1023,10 +1025,20 @@ class FilterDialog(QDialog):
         if self._load_utc_bounds(cfg):
             pass
         else:
+            # Save writes an open side of a date range as null; it stays open
+            # instead of taking the picker's default date (Codex RA-1).
+            ranged = ((cfg.get("date_enabled") or cfg.get("time_enabled"))
+                      and not cfg.get("specific_day_enabled"))
             if cfg.get("date_from"):
                 self._dt_from.setDateTime(QDateTime.fromString(cfg["date_from"], "yyyy-MM-dd HH:mm:ss"))
+            elif ranged:
+                self._dt_from.setDateTime(self._dt_from.minimumDateTime())
+                self._open_from = True
             if cfg.get("date_to"):
                 self._dt_to.setDateTime(QDateTime.fromString(cfg["date_to"], "yyyy-MM-dd HH:mm:ss"))
+            elif ranged:
+                self._dt_to.setDateTime(self._dt_to.maximumDateTime())
+                self._open_to = True
         self._chk_date_exclude.setChecked(cfg.get("date_exclude", False))
 
         self._spn_days.setValue(cfg.get("relative_days", 0))
