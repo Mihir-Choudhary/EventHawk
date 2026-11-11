@@ -1399,6 +1399,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         # Correct by re-interpreting the parsed datetime in the display timezone
         # and converting to true UTC, so the comparison vs event timestamps
         # (stored as UTC) matches what the user actually sees in the table.
+        self._adv_local_parts = False
         if self._adv_date_from or self._adv_date_to:
             # _tz / _td are the module-level imports.  Re-importing them here
             # made them local to this whole method, so a relative-time filter
@@ -1425,7 +1426,15 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 display_tz = _tz(offset=_td(minutes=_tz_state["custom_offset_min"]))
             # mode == "utc" → display_tz stays None → no conversion needed.
 
-            if display_tz is not None or use_system_local:
+            if (display_tz is not None or use_system_local) and \
+                    self._adv_dt_mode in ("date_only", "time_only", "separate"):
+                # Date-only / Time-only / Separately compare the DISPLAYED date
+                # and clock time: the bounds stay display wall time and each
+                # event is converted to the display zone in filterAcceptsRow.
+                # (Forcing a datetime range lost the rest of the last day and
+                # ignored the daily clock window -- Codex DF-1.)
+                self._adv_local_parts = True
+            elif display_tz is not None or use_system_local:
                 # Re-interpret: read the boundary in the display timezone, then
                 # convert to true UTC.
                 def _boundary_to_utc(_d):
@@ -1438,15 +1447,6 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                     self._adv_date_from = _boundary_to_utc(self._adv_date_from)
                 if self._adv_date_to:
                     self._adv_date_to = _boundary_to_utc(self._adv_date_to)
-                # Force to "range" mode.  The date_only / time_only / separate
-                # modes extract .date() / .time() from the UTC-converted
-                # boundaries, but those parts do NOT correspond to the user's
-                # display-TZ calendar date or clock time.  Example: midnight
-                # IST (+5:30) → 18:30 UTC on the PREVIOUS day, so .date() is
-                # off by 1 and .time() inverts (18:30 > 18:29 → always False).
-                # The full datetime range comparison is correct after conversion.
-                if self._adv_dt_mode in ("date_only", "time_only", "separate"):
-                    self._adv_dt_mode = "range"
 
         # Pre-extract date/time parts to avoid per-row method calls in filterAcceptsRow()
         self._adv_date_from_d = self._adv_date_from.date() if self._adv_date_from else None
@@ -2039,6 +2039,17 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             if event_ts is None:
                 return not self._adv_date_exclude
             mode = self._adv_dt_mode
+            if mode != "range" and getattr(self, "_adv_local_parts", False):
+                # Partial modes in a non-UTC display zone: the date and clock
+                # time the table shows for this event (DST of its own date).
+                if event_ts.tzinfo is None:
+                    event_ts = event_ts.replace(tzinfo=_tz.utc)
+                try:
+                    event_ts = utc_to_display_naive(event_ts)
+                except (OSError, OverflowError, ValueError):
+                    # Windows cannot convert a pre-1970 instant to local time;
+                    # the table shows it unconverted (apply_tz's fallback).
+                    event_ts = event_ts.astimezone(_tz.utc).replace(tzinfo=None)
             if mode == "date_only":
                 # Compare only the calendar date — time-of-day is ignored
                 ev_d    = event_ts.date()

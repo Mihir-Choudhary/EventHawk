@@ -465,6 +465,76 @@ def _level_to_int(x) -> "int | None":
     return None
 
 
+_OFFSET_SEGMENTS_CACHE: dict = {}
+
+
+def _display_offset_segments() -> list:
+    """[(utc_start or None, offset_minutes), ...] of the display zone, 1970-2100.
+
+    The offset the table's display uses for an instant (models.utc_to_display_naive:
+    a DST zone has a different offset on each side of its changes).  Found by a
+    daily scan with each change pinned to the minute; cached per zone setting.
+    Instants outside 1970-2100 take the nearest segment's offset."""
+    from datetime import datetime as _d, timedelta as _t, timezone as _z
+    from evtx_tool.gui.models import _tz_state, utc_to_display_naive
+    key = (_tz_state.get("mode"), _tz_state.get("specific"), _tz_state.get("custom_offset_min"))
+    if key in _OFFSET_SEGMENTS_CACHE:
+        return _OFFSET_SEGMENTS_CACHE[key]
+
+    def off(t):
+        return int(round((utc_to_display_naive(t) - t.replace(tzinfo=None)).total_seconds() / 60))
+
+    if key[0] != "local" and key[0] != "specific":
+        segs = [(None, off(_d(2000, 1, 1, tzinfo=_z.utc)))]       # utc / fixed offset
+        _OFFSET_SEGMENTS_CACHE[key] = segs
+        return segs
+    t = _d(1970, 1, 2, tzinfo=_z.utc)
+    end = _d(2100, 1, 1, tzinfo=_z.utc)
+    cur = off(t)
+    segs = [(None, cur)]
+    try:
+        off(_d(1969, 12, 31, 23, 59, tzinfo=_z.utc))
+    except (OSError, OverflowError, ValueError):
+        # Windows cannot convert a pre-1970 instant to local time; the table
+        # shows such a timestamp unconverted (apply_tz's fallback).
+        segs = [(None, 0), (_d(1970, 1, 1), cur)]
+    day = _t(days=1)
+    while t < end:
+        n = t + day
+        o = off(n)
+        if o != cur:
+            lo, hi = 0, 1440            # minutes after t: off == cur at lo, != at hi
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                if off(t + _t(minutes=mid)) == cur:
+                    lo = mid
+                else:
+                    hi = mid
+            segs.append((t + _t(minutes=hi), o))
+            cur = o
+        t = n
+    _OFFSET_SEGMENTS_CACHE[key] = segs
+    return segs
+
+
+def _display_local_ts_sql() -> str:
+    """SQL text 'YYYY-MM-DD HH:MM:SS' of timestamp_utc in the display zone."""
+    base = "TRY_CAST(SUBSTRING(timestamp_utc, 1, 19) AS TIMESTAMP)"
+    segs = _display_offset_segments()
+
+    # A balanced tree of text compares (about log2(segments) per row): a flat
+    # CASE over the ~260 DST changes of 1970-2100 was 250x slower than UTC.
+    def tree(lo: int, hi: int) -> str:
+        if lo == hi:
+            return str(segs[lo][1])
+        mid = (lo + hi + 1) // 2
+        return (f"CASE WHEN SUBSTRING(timestamp_utc, 1, 19) < '{segs[mid][0]:%Y-%m-%d %H:%M:%S}' "
+                f"THEN {tree(lo, mid - 1)} ELSE {tree(mid, hi)} END")
+
+    off_sql = tree(0, len(segs) - 1)
+    return f"strftime({base} + INTERVAL ({off_sql}) MINUTE, '%Y-%m-%d %H:%M:%S')"
+
+
 def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
     """
     Convert a FilterConfig dict to ``(where_clause, params)``.
@@ -647,6 +717,7 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
         else:
             _dt_mode = "range"  # fallback
 
+        _ts_col = "timestamp_utc"   # the display-zone text in partial modes
         # ── Timezone correction ──────────────────────────────────────────
         # The filter dialog emits date_from/date_to in the user's display
         # timezone (e.g. "2025-09-26 00:00:00" means midnight IST when the
@@ -697,53 +768,53 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
                         return utc_dt.strftime("%Y-%m-%d %H:%M:%S")
                     except Exception:
                         return s
-                df = _to_utc(df) if df else ""
-                dt = _to_utc(dt) if dt else ""
-                # Force to "range" mode.  date_only / time_only / separate use
-                # SUBSTRING(timestamp_utc, ...) to compare just the date or
-                # time portion, but after TZ conversion those portions are in
-                # UTC — not the user's display timezone.  The full timestamp
-                # comparison is always correct after conversion.
                 if _dt_mode in ("date_only", "time_only", "separate"):
-                    _dt_mode = "range"
+                    # Compare the DISPLAYED date / clock time: bounds stay
+                    # display wall time, the column is converted to the
+                    # display zone (forcing a datetime range lost the rest of
+                    # the last day and the daily clock window -- Codex DF-1).
+                    _ts_col = _display_local_ts_sql()
+                else:
+                    df = _to_utc(df) if df else ""
+                    dt = _to_utc(dt) if dt else ""
         except Exception as _exc:
-            logger.debug("filter_sql: timezone correction skipped: %s", _exc)
+            logger.warning("filter_sql: timezone correction failed: %s", _exc)
 
         date_parts: list[str] = []
 
         if _dt_mode == "date_only":
             if df and len(df) >= 10:
-                date_parts.append("SUBSTRING(timestamp_utc, 1, 10) >= ?")
+                date_parts.append(f"SUBSTRING({_ts_col}, 1, 10) >= ?")
                 params.append(df[:10])
             if dt and len(dt) >= 10:
-                date_parts.append("SUBSTRING(timestamp_utc, 1, 10) <= ?")
+                date_parts.append(f"SUBSTRING({_ts_col}, 1, 10) <= ?")
                 params.append(dt[:10])
 
         elif _dt_mode == "time_only":
             _tf = df[11:19] if len(df) >= 19 else ("00:00:00" if df else "")
             _tt = dt[11:19] if len(dt) >= 19 else ("23:59:59" if dt else "")
             if _tf:
-                date_parts.append("SUBSTRING(timestamp_utc, 12, 8) >= ?")
+                date_parts.append(f"SUBSTRING({_ts_col}, 12, 8) >= ?")
                 params.append(_tf)
             if _tt:
-                date_parts.append("SUBSTRING(timestamp_utc, 12, 8) <= ?")
+                date_parts.append(f"SUBSTRING({_ts_col}, 12, 8) <= ?")
                 params.append(_tt)
 
         elif _dt_mode == "separate":
             # Date range AND time-of-day range applied independently
             if df and len(df) >= 10:
-                date_parts.append("SUBSTRING(timestamp_utc, 1, 10) >= ?")
+                date_parts.append(f"SUBSTRING({_ts_col}, 1, 10) >= ?")
                 params.append(df[:10])
             if dt and len(dt) >= 10:
-                date_parts.append("SUBSTRING(timestamp_utc, 1, 10) <= ?")
+                date_parts.append(f"SUBSTRING({_ts_col}, 1, 10) <= ?")
                 params.append(dt[:10])
             _tf = df[11:19] if len(df) >= 19 else ""
             _tt = dt[11:19] if len(dt) >= 19 else ""
             if _tf:
-                date_parts.append("SUBSTRING(timestamp_utc, 12, 8) >= ?")
+                date_parts.append(f"SUBSTRING({_ts_col}, 12, 8) >= ?")
                 params.append(_tf)
             if _tt:
-                date_parts.append("SUBSTRING(timestamp_utc, 12, 8) <= ?")
+                date_parts.append(f"SUBSTRING({_ts_col}, 12, 8) <= ?")
                 params.append(_tt)
 
         else:  # "range" — full timestamp comparison
