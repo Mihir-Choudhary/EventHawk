@@ -207,10 +207,16 @@ def main() -> int:
         check("…on its own paragraph, not run on to the last finding",
               "\n\nDetails: parse_stats.json" in text, repr(text[-120:]))
         rows, text = run("jm", [locked, aborts])
-        check("a real abort in another file is still reported",
-              "Aborts.evtx: parse aborted mid-file" in text, text[:240])
-        check("…and its ABORT note is kept, beside the explanation",
-              "A parse ABORT means" in text and EXPL in text)
+        # The damaged record makes the reader either stop (an ABORT) or skip
+        # the rest of that chunk; which one depends on the pyevtx-rs build (this
+        # one skips: "95 record(s) declared in chunk headers not parsed").  What
+        # must hold either way: the damaged file's loss is reported beside the
+        # explanation, and the ABORT note appears exactly when a read stopped.
+        aborted = "Aborts.evtx: parse aborted mid-file" in text
+        check("the damaged file's loss is still reported",
+              aborted or "Aborts.evtx: " in text and "not parsed" in text, text[:240])
+        check("…beside the explanation, with the ABORT note exactly when a read stopped",
+              EXPL in text and (("A parse ABORT means" in text) == aborted))
         rows, text = run("jm", [readable])
         check("a clean parse shows no warning", rows > 0 and not text, text[:100])
     finally:
