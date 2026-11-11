@@ -989,7 +989,7 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             # CAST to VARCHAR so all string operators work uniformly even on
             # integer columns like event_id.
             base_exprs.append(f"CAST({name} AS VARCHAR)")
-        elif _SAFE_JSON_KEY_RE.match(name):
+        elif _SAFE_JSON_KEY_RE.match(name) and "." not in name:
             # Simple identifier — use dot notation: $.FieldName.
             # ed_flat_json (flattened field map), NOT event_data_json (which is
             # the nested original), so a condition on a field nested inside a
@@ -1000,16 +1000,19 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             _dual = _FIELD_DUAL_SOURCE.get(name)
             if _dual is not None:
                 base_exprs.append(f"CAST({_dual} AS VARCHAR)")
-        elif '"' not in name and "\\" not in name and "\x00" not in name:
-            # Field name contains spaces or other special characters but is
-            # otherwise safe — use JSONPath double-quote bracket notation:
-            # json_extract_string(col, '$."My Field Name"').
-            # Escape single quotes (double them) so a name containing ' cannot
-            # terminate the surrounding SQL string literal — otherwise the query
-            # errors and the filter thread silently falls back to showing ALL
-            # rows (fail-open), or the name becomes an injection vector.
-            _safe_name = name.replace("'", "''")
-            base_exprs.append(f'json_extract_string(ed_flat_json, \'$."{_safe_name}"\')')
+        elif "\x00" not in name:
+            # Any other name (spaces, dots, quotes, backslashes, slashes...):
+            # a JSON Pointer, '/<name>', which takes every character literally
+            # except '~' and '/', written '~0' and '~1'.  The JSONPath form
+            # '$."name"' cannot hold a double quote or a backslash, so those
+            # conditions were skipped and the view showed every event; and
+            # '$.a.b' reads a dotted name as a path into nested data, so it
+            # never matched the flat field "a.b" (audit SA-7).
+            # Single quotes are doubled so the name cannot end the SQL string
+            # literal (an error there makes the filter thread show ALL rows).
+            _ptr = "/" + name.replace("~", "~0").replace("/", "~1")
+            _ptr = _ptr.replace("'", "''")
+            base_exprs.append(f"json_extract_string(ed_flat_json, '{_ptr}')")
         else:
             logger.warning("filter_sql: skipping condition with unsafe field name %r", name)
             continue
