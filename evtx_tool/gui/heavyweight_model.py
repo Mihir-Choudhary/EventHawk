@@ -717,6 +717,11 @@ class ArrowTableModel(QAbstractTableModel):
         self._sort_col = "timestamp_utc"
         self._sort_asc = True
         self._generation = 0
+        # Generation whose result _display_table holds.  The whole table is
+        # generation 0's result; a per-file tab starts empty, which is no
+        # result at all (Codex RA-3: before the first result the view counted
+        # as "not pending" and an export wrote the unfiltered table).
+        self._done_generation = 0 if fixed_where == "1=1" else -1
         self._cached_where: tuple[str, list[Any]] | None = None
         self._last_where_key: tuple | None = None  # dedup guard: skip re-dispatch if WHERE unchanged
 
@@ -915,7 +920,7 @@ class ArrowTableModel(QAbstractTableModel):
     def filter_pending(self) -> bool:
         """True while a filter request has not yet produced its result, i.e.
         _display_table may not be what the current filter will show."""
-        return self._generation != getattr(self, "_done_generation", self._generation)
+        return self._generation != self._done_generation
 
     def _combined_where(self) -> tuple[str, list[Any]]:
         """Merge all four filter layers with AND. Cached until _invalidate()."""

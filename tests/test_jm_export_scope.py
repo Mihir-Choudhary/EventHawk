@@ -50,6 +50,8 @@ def main() -> int:
     w = mw.MainWindow()
     T.Mode(mw, True).load(w, evs)
     w._table.setModel(w._hw_model)
+    # A current-view export before the view's first result is refused (RA-3).
+    T.wait_for(lambda: not w._hw_model.filter_pending(), 30); T.pump(200)
     msgs = []
     w._warn_blocking = lambda title, text, **k: msgs.append(text + " | " + (k.get("detail") or ""))
 
