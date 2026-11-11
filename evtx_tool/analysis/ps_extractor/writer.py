@@ -11,8 +11,10 @@ Produces five files in the user-chosen output directory:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -320,12 +322,7 @@ def write_scriptblock_files(
             progress_cb(f"Writing script block files ({i}/{total})...", pct)
 
         result = analysis_results.get(key)
-        # Sanitise filename: strip braces, replace colons/slashes
-        safe_key = key.replace("{", "").replace("}", "").replace("/", "_").replace("\\", "_")
-        # Truncate to avoid filesystem limits (255 char filename limit on most OSes)
-        if len(safe_key) > 200:
-            safe_key = safe_key[:200]
-        outpath = output_dir / f"scriptblock_{safe_key}.txt"
+        outpath = output_dir / f"scriptblock_{_make_safe_key(key)}.txt"
 
         try:
             content = _format_scriptblock_file(acc, result)
@@ -829,12 +826,26 @@ def write_json_export(
 
 # ── ps_timeline.xlsx ──────────────────────────────────────────────────────────
 
+# A ScriptBlockId as Windows writes it, or one with the record number this
+# tool appends to a fragment that has no usable ID.
+_PLAIN_SB_KEY = re.compile(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}(_\d+)?")
+
+
 def _make_safe_key(key: str) -> str:
-    """Reproduce the same filename-safe key used by write_scriptblock_files."""
-    safe = key.replace("{", "").replace("}", "").replace("/", "_").replace("\\", "_")
-    if len(safe) > 200:
-        safe = safe[:200]
-    return safe
+    """The file-name part for a script block: a different one for every key.
+
+    An ordinary ID is used as it is.  Any other key (the ID comes from the
+    log, so it can be anything) keeps its letters, digits, '.', '-' and '_'
+    and gets a hash of the whole key appended.  The old rule (drop braces,
+    replace slashes, cut at 200) gave IDs that differ only by braces, letter
+    case or their tail the same file, so one script replaced another, and let
+    a colon through, which writes to an NTFS stream (audit SA-8).
+    """
+    if _PLAIN_SB_KEY.fullmatch(key):
+        return key
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", key)[:80].strip(".")
+    digest = hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    return f"{safe}_h{digest}"
 
 
 def write_csv_timeline(
