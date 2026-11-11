@@ -63,14 +63,16 @@ class _RateLimiter:
 _VT_BASE = "https://www.virustotal.com/api/v3"
 
 def _vt_url_for(ioc_type: str, value: str) -> str | None:
+    # The value comes from the logs.  It is escaped so that it stays ONE part
+    # of the path: unescaped, "a.example/../../users/x" asked VirusTotal for a
+    # different resource than the indicator (audit SA-9).
+    from urllib.parse import quote
     if ioc_type in ("md5", "sha1", "sha256"):
-        return f"{_VT_BASE}/files/{value}"
-    if ioc_type == "ipv4":
-        return f"{_VT_BASE}/ip_addresses/{value}"
-    if ioc_type == "ipv6":
-        return f"{_VT_BASE}/ip_addresses/{value}"
+        return f"{_VT_BASE}/files/{quote(value, safe='')}"
+    if ioc_type in ("ipv4", "ipv6"):
+        return f"{_VT_BASE}/ip_addresses/{quote(value, safe=':')}"
     if ioc_type == "domains":
-        return f"{_VT_BASE}/domains/{value}"
+        return f"{_VT_BASE}/domains/{quote(value, safe='')}"
     if ioc_type == "urls":
         import base64
         encoded = base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
@@ -97,7 +99,12 @@ def _vt_parse_response(data: dict) -> dict:
         verdict = "clean"
 
     ioc_id    = data.get("data", {}).get("id", "")
-    link      = f"https://www.virustotal.com/gui/file/{ioc_id}" if ioc_id else ""
+    # The page for this kind of indicator.  It was always ".../gui/file/",
+    # which opened the wrong page for an IP address, a domain or a URL.  A
+    # kind VirusTotal did not name gets no link rather than a wrong one.
+    page      = {"file": "file", "ip_address": "ip-address", "domain": "domain",
+                 "url": "url"}.get(data.get("data", {}).get("type", ""))
+    link      = f"https://www.virustotal.com/gui/{page}/{ioc_id}" if ioc_id and page else ""
 
     return {
         "positives": positives,
