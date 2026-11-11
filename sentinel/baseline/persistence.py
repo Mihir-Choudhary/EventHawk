@@ -47,21 +47,63 @@ _PICKLE_FILES = (_FREQ_FILE, _TRIE_FILE, _FUSE_FILE)
 
 # ── HMAC helpers ───────────────────────────────────────────────────────────────
 
+_SECRET_FILE = "sentinel_artifact.key"
+
+
+def _user_secret() -> bytes:
+    """The analyst's own secret for baseline checksums, created on first use.
+
+    It is kept in the analyst's profile (%LOCALAPPDATA%\\EventHawk), not in
+    the baseline folder: someone who can write to a baseline folder cannot
+    read it, so cannot make checksums that pass.
+    """
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
+    path = Path(base) / "EventHawk" / _SECRET_FILE
+
+    def _read() -> bytes:
+        secret = bytes.fromhex(path.read_text(encoding="ascii").strip())
+        if len(secret) < 32:
+            raise ValueError("secret too short")
+        return secret
+
+    try:
+        return _read()
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"The baseline checksum secret {path} cannot be read ({exc}). "
+                           "Delete it and re-build the baseline.") from exc
+    secret = os.urandom(32)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "x", encoding="ascii") as fh:      # "x": never replace one
+            fh.write(secret.hex())
+    except FileExistsError:
+        return _read()                                     # another process made it first
+    except OSError as exc:
+        raise RuntimeError(f"The baseline checksum secret cannot be stored in {path} ({exc}). "
+                           "Set SENTINEL_ARTIFACT_KEY instead.") from exc
+    return secret
+
+
 def _artifact_key(directory: Path) -> bytes:
     """Derive the HMAC key for a given artifact directory.
 
     Priority:
       1. SENTINEL_ARTIFACT_KEY env var (hex string → bytes)
-      2. SHA-256 of the canonical absolute directory path (zero-config local key)
+      2. The analyst's own secret, bound to the canonical directory path
+
+    The key used to be the SHA-256 of the directory path alone.  Anyone can
+    compute that, so whoever could write to the folder could change the
+    baseline and its checksums together (audit SA-6).
     """
     env_key = os.environ.get("SENTINEL_ARTIFACT_KEY", "")
     if env_key:
         try:
             return bytes.fromhex(env_key)
         except ValueError:
-            logger.warning("SENTINEL_ARTIFACT_KEY is not valid hex; falling back to path-derived key")
-    # Derive from path so the key is consistent across calls in the same env
-    return hashlib.sha256(str(directory.resolve()).encode()).digest()
+            logger.warning("SENTINEL_ARTIFACT_KEY is not valid hex; falling back to the stored secret")
+    return hmac.new(_user_secret(), str(directory.resolve()).encode(), hashlib.sha256).digest()
 
 
 def _hmac_file(path: Path, key: bytes) -> str:
@@ -102,15 +144,20 @@ def _verify_checksums(directory: Path, key: bytes) -> None:
         if not fpath.exists():
             continue
         expected = stored.get(fname)
-        if expected is None:
-            logger.warning("No stored checksum for %s — skipping verification", fname)
-            continue
+        if not isinstance(expected, str):
+            # Not skipped: removing the entry would switch the check off.
+            raise RuntimeError(
+                f"No stored checksum for {fname} in {checksum_path.name}. "
+                "The baseline may have been tampered with. Re-build the baseline to resolve this."
+            )
         actual = _hmac_file(fpath, key)
         if not hmac.compare_digest(actual, expected):
             raise RuntimeError(
                 f"Artifact integrity check failed for {fname}. "
-                "The file may have been tampered with or was built with a different key. "
-                "Re-build the baseline to resolve this."
+                "The file may have been tampered with, or the baseline was built on another "
+                "computer or account, in another folder, or by an older EventHawk. "
+                "Re-build the baseline to resolve this (or set SENTINEL_ARTIFACT_KEY to the "
+                "same value where it is built and where it is used)."
             )
     logger.debug("Artifact integrity verified for %s", directory)
 
