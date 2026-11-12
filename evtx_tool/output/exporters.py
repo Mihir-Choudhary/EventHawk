@@ -101,7 +101,7 @@ _WASM_PKG_DIR = Path(__file__).resolve().parents[2] / "evtx_search_wasm" / "pkg"
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
-LEVEL_NAMES = {0: "LogAlways", 1: "Critical", 2: "Error", 3: "Warning",
+LEVEL_NAMES = {0: "Information", 1: "Critical", 2: "Error", 3: "Warning",   # 0: as Event Viewer
                4: "Information", 5: "Verbose"}
 
 # The CSV layout, shared by Normal mode (export_csv) and Juggernaut mode

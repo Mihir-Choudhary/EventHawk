@@ -620,12 +620,14 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
 
     # ── levels ────────────────────────────────────────────────────────────
     if fc.get("levels"):
-        level_ints = [v for x in fc["levels"] if (v := _level_to_int(x)) is not None]
+        # "Information" is level 0 and level 4 together (core.filters.level_numbers).
+        from evtx_tool.core.filters import level_numbers as _level_numbers
+        level_ints = sorted({n for x in fc["levels"] for n in _level_numbers(x)})
         # Collect level names that have no integer mapping (e.g. "Audit Success",
         # "Audit Failure" — Windows keyword-based levels, not ETW integer levels).
         level_names_only = [
             x for x in fc["levels"]
-            if isinstance(x, str) and _level_to_int(x) is None
+            if isinstance(x, str) and not _level_numbers(x)
         ]
         # Skip the clause when ALL standard + keyword levels are present — that
         # is equivalent to "no level filter".  The dialog has 8 checkboxes

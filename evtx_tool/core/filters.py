@@ -8,7 +8,9 @@ Filter fields:
   event_ids          list[int]  | None  — exact IDs to include
   exclude_event_ids  list[int]  | None  — exact IDs to exclude
   sources            list[str]  | None  — provider name or channel substring match
-  levels             list[int]  | None  — 0=LogAlways 1=Critical 2=Error 3=Warn 4=Info 5=Verbose
+  levels             list[int]  | None  — 0=Information 1=Critical 2=Error 3=Warn 4=Information 5=Verbose
+                                          (a NUMBER is that level exactly; the NAME "Information" is
+                                          0 and 4 together; the old name "LogAlways" is 0)
   date_from          str        | None  — ISO timestamp, inclusive
   date_to            str        | None  — ISO timestamp, inclusive
   users              list[str]  | None  — substring match across user fields
@@ -272,6 +274,26 @@ _AUDIT_SUCCESS_BIT = 0x0020000000000000
 _AUDIT_FAILURE_BIT = 0x0010000000000000
 
 
+def level_numbers(level) -> "tuple[int, ...]":
+    """The level numbers one entry of a filter's ``levels`` list selects.
+
+    A number (or numeric text) is that level exactly.  The name "Information"
+    is level 0 and level 4 together, as in Windows Event Viewer: level 0 used
+    to be named "LogAlways" here, and a filter saved with that name still
+    means level 0 only.  () for anything else ("Audit Success", a custom
+    name), which is matched in its own way.
+    """
+    if isinstance(level, bool):
+        return ()
+    if isinstance(level, int):
+        return (level,)
+    s = str(level or "").strip()
+    if s.lstrip("-").isdigit():
+        return (int(s),)
+    return {"information": (0, 4), "logalways": (0,), "critical": (1,), "error": (2,),
+            "warning": (3,), "verbose": (5,)}.get(s.lower(), ())
+
+
 def _level_passes(event: dict, levels) -> bool:
     """True if the event matches ANY selected level.  Accepts level ints,
     numeric strings, level NAME strings (the filter dialog emits names), and the
@@ -282,7 +304,10 @@ def _level_passes(event: dict, levels) -> bool:
     ev_int  = event.get("level", 4)
     audit_names: set[str] = set()
     for lv in levels:
-        if lv == ev_name or lv == ev_int:
+        if lv == ev_int or ev_int in level_numbers(lv):
+            return True
+        # A name with no number of its own (a custom level name).
+        if lv == ev_name and not level_numbers(lv):
             return True
         if isinstance(lv, str):
             ls = lv.strip()

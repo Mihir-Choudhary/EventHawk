@@ -133,7 +133,7 @@ _SEARCH_TEXT_EXPR = (
 BATCH_SIZE         = 50_000   # rows accumulated in consumer before one Parquet write (controls shard size)
 _WORKER_PUSH_SIZE  =  5_000   # rows per queue message from each worker (controls in-flight RAM)
 
-_LEVEL_MAP = {0: "LogAlways", 1: "Critical", 2: "Error", 3: "Warning",
+_LEVEL_MAP = {0: "Information", 1: "Critical", 2: "Error", 3: "Warning",   # 0: as Event Viewer
               4: "Information", 5: "Verbose"}
 
 # ── Tier 5: EVTX file-header constants ───────────────────────────────────────

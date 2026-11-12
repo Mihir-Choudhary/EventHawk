@@ -289,9 +289,12 @@ class FilterDialog(QDialog):
         types_layout.setSpacing(2)
         types_layout.setContentsMargins(8, 12, 8, 8)
 
-        self._chk_logalways   = QCheckBox("LogAlways")
         self._chk_verbose     = QCheckBox("Verbose")
+        # Level 0 and level 4 together, as in Windows Event Viewer.  Level 0
+        # had a box of its own, "LogAlways" (the user, 2026-11-12).
         self._chk_information = QCheckBox("Information")
+        self._chk_information.setToolTip("Level 0 and level 4, as Windows Event Viewer shows them.\n"
+                                         "For level 0 alone, add the condition: level equals 0")
         self._chk_warning     = QCheckBox("Warning")
         self._chk_error       = QCheckBox("Error")
         self._chk_critical    = QCheckBox("Critical")
@@ -299,7 +302,6 @@ class FilterDialog(QDialog):
         self._chk_audit_failure = QCheckBox("Audit Failure")
 
         self._level_checks = {
-            "LogAlways":     self._chk_logalways,
             "Verbose":       self._chk_verbose,
             "Information":   self._chk_information,
             "Warning":       self._chk_warning,
@@ -986,19 +988,27 @@ class FilterDialog(QDialog):
             else:
                 # The CLI saves level NUMBERS (--level error -> [2]); they ticked
                 # no box, i.e. no level restriction (Codex FO-6).
-                _num = {0: "LogAlways", 1: "Critical", 2: "Error", 3: "Warning",
-                        4: "Information", 5: "Verbose"}
-                level_set = set()
-                for lv in levels:
+                _num = {1: "Critical", 2: "Error", 3: "Warning", 5: "Verbose"}
+
+                def _tok(lv):
                     s = str(lv).strip()
-                    level_set.add(_num.get(int(s), s) if s.lstrip("-").isdigit() else s)
+                    return _num.get(int(s), int(s)) if s.lstrip("-").isdigit() else s
+                toks = [(lv, _tok(lv)) for lv in levels]
+                have = {t for _, t in toks}
+                # The Information box is level 0 and level 4 together.  It is
+                # ticked for the name, or when both levels are named; level 0
+                # alone (the old "LogAlways") or level 4 alone has no box and
+                # is kept as it is, below -- never widened to both.
+                info = "Information" in have or (bool(have & {0, "LogAlways"}) and 4 in have)
+                level_set = {t for t in have if isinstance(t, str)} - {"Information", "LogAlways"}
+                if info:
+                    level_set.add("Information")
                 for name, chk in self._level_checks.items():
                     chk.setChecked(name in level_set)
                 # A level with no box (e.g. 6..15) is kept, not silently dropped.
-                self._extra_levels = [lv for lv in levels
-                                      if (_num.get(int(str(lv).strip()), str(lv).strip())
-                                          if str(lv).strip().lstrip("-").isdigit() else str(lv).strip())
-                                      not in self._level_checks]
+                self._extra_levels = [lv for lv, t in toks
+                                      if t not in self._level_checks
+                                      and not (info and t in (0, 4, "LogAlways"))]
                 if self._extra_levels:
                     self._hidden["levels"] = list(self._extra_levels)
                     self._show_hidden()
@@ -1160,8 +1170,8 @@ class FilterDialog(QDialog):
         """
         # Levels — return empty list when ALL checkboxes are checked.
         # All-checked means "no level filter" (show everything).  Returning the
-        # full list would generate "level IN (1,2,3,4,5)" which excludes
-        # level=0 (LogAlways) events — e.g. all Security audit events.
+        # full list would generate a level list that leaves out levels with
+        # no box (6..15).
         levels = [name for name, chk in self._level_checks.items() if chk.isChecked()]
         if len(levels) == len(self._level_checks):
             levels = []

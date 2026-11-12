@@ -92,6 +92,10 @@ COL_DEFAULT_COUNT = 9
 # Rebuilt for the active theme by _refresh_theme_colors() (light hexes in,
 # theme colours out) so the hot data() path only reads module globals.
 
+# Names matched by level NUMBER in the Advanced Filter, never by the name.
+_STANDARD_LEVEL_NAMES = frozenset({"Information", "LogAlways", "Critical", "Error", "Warning", "Verbose"})
+
+
 def _refresh_theme_colors(_theme: str | None = None) -> None:
     global _LEVEL_FG, _BG_NORMAL, _BG_ALT, _BG_SEL, _BG_BOOKMARK, _FG_MUTED, _FG_ACCENT
     from evtx_tool.gui.theme import qc
@@ -1323,6 +1327,13 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         # Levels
         levels = cfg.get("levels")
         self._adv_levels = set(levels) if levels and len(levels) < 8 else None
+        # The level NUMBERS the entries select ("Information" is 0 and 4; a
+        # number is itself).  Numbers used to match nothing here: a filter
+        # holding [4] showed no events in Normal mode and the right ones in
+        # Juggernaut mode.
+        from evtx_tool.core.filters import level_numbers as _level_numbers
+        self._adv_level_ints = ({n for x in levels for n in _level_numbers(x)}
+                                if self._adv_levels is not None else set())
 
         # Source / category / user / computer → pre-lower.  `or []`, not a
         # .get default: a profile-built config carries None for every list it
@@ -1874,8 +1885,10 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         # zero rows.  Detect them via the Keywords value when present.
         if self._adv_levels is not None:
             _lv = ev.get("level_name", "")
-            if _lv in self._adv_levels:
-                pass   # standard level match — fast path
+            if ev.get("level", 4) in self._adv_level_ints:
+                pass   # level match by number — fast path
+            elif _lv in self._adv_levels and _lv not in _STANDARD_LEVEL_NAMES:
+                pass   # a custom level name
             else:
                 _matched = False
                 _audit_su = "Audit Success" in self._adv_levels

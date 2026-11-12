@@ -198,7 +198,7 @@ def _worker_parse_file(task: dict) -> dict:
 
 def _extract_event_inline(data: dict, record_id: int, timestamp: str, source_file: str) -> dict:
     """Inline event extraction — no imports from parent package needed."""
-    LEVEL_NAMES = {0: "LogAlways", 1: "Critical", 2: "Error", 3: "Warning",
+    LEVEL_NAMES = {0: "Information", 1: "Critical", 2: "Error", 3: "Warning",   # 0: as Event Viewer
                    4: "Information", 5: "Verbose"}
 
     event = data.get("Event", {})

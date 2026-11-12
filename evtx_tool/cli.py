@@ -169,7 +169,9 @@ def _build_filter(
 
     level_map = {
         "critical": [1], "error": [2], "warning": [3], "warn": [3],
-        "information": [4], "info": [4], "verbose": [5], "logalways": [0],
+        # Information is level 0 and level 4, as in Event Viewer; a number
+        # (--level 4) is that level exactly.
+        "information": [0, 4], "info": [0, 4], "verbose": [5], "logalways": [0],
     }
     if level:
         levels: list[int] = []

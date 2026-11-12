@@ -35,8 +35,10 @@ if BACKEND == "none":
 
 # ── Level mappings ─────────────────────────────────────────────────────────────
 
+# Level 0 reads "Information", as Windows Event Viewer shows it (the user, 2026-11-12).
+# The level NUMBER is kept on the event, so 0 and 4 can still be told apart.
 LEVEL_NAMES: dict[int, str] = {
-    0: "LogAlways",
+    0: "Information",
     1: "Critical",
     2: "Error",
     3: "Warning",
