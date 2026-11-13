@@ -737,10 +737,10 @@ QTableView {
     selection-color: #1e1a14;
     outline: none;
 }
-QTableView::item {
-    padding: 2px 8px;
-    border: none;
-}
+/* No padding / border rule on table items (QTableView ::item): any such rule makes the
+   stylesheet paint every cell itself and drop the cell's own background, so
+   bookmarked rows, logon/WiFi/System Activity state fills and IOC score tints
+   were never drawn. */
 QTableView::item:selected {
     background: #ddd4bc;
     color: #1e1a14;
@@ -754,7 +754,7 @@ QHeaderView::section {
     color: #5a4e42;
     border: none;
     border-bottom: 1px solid #c4bba8;
-    padding: 5px 8px;
+    padding: 5px 4px;
     font-size: 8pt;
     font-weight: bold;
 }

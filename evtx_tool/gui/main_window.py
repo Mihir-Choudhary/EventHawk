@@ -9890,6 +9890,12 @@ class MainWindow(QMainWindow):
         layout.addLayout(hdr)
 
         self._ioc_tabs = QTabWidget()
+        self._ioc_tabs.setObjectName("iocTabs")
+        self._ioc_tabs.setDocumentMode(True)
+        # Up to 18 categories: tighter tabs so more of them fit before the
+        # scroll arrows appear on a laptop-width pane.
+        self._ioc_tabs.setStyleSheet(
+            "QTabWidget#iocTabs QTabBar::tab { padding: 4px 9px; font-size: 8pt; }")
         layout.addWidget(self._ioc_tabs)
         return w
 
@@ -16093,11 +16099,15 @@ class MainWindow(QMainWindow):
         self._btn_export_iocs.setEnabled(has_data)
         self._btn_threat_intel.setEnabled(has_data)
 
-        # Score-based row background colors
-        _COL_LOW    = QColor("#1a2a1a")   # dark green tint — score 0-30
-        _COL_MED    = QColor("#2a2200")   # dark yellow tint — score 31-60
-        _COL_HIGH   = QColor("#2a1010")   # dark red tint — score 61-100
+        # Score-based row tints.  They were near-black (#2a1010 / #2a2200)
+        # whatever the theme, so on the light theme the highest-scoring IOCs
+        # -- the ones that matter -- were dark text on a dark row.  Pale tints
+        # of the palette now (qc() gives the dark theme its own value).
+        _COL_MED    = qc("#fdf5dc")       # pale amber  — score 31-60
+        _COL_HIGH   = qc("#fde8e0")       # pale red    — score 61-100
         _COL_NORMAL = QColor(0, 0, 0, 0)  # transparent (alternating handled by widget)
+        _FG_HIGH    = QColor(COLORS["level_critical"])
+        _FG_MED     = QColor(COLORS["level_warning"])
 
         _bold = QFont()
         _bold.setBold(True)
@@ -16117,6 +16127,10 @@ class MainWindow(QMainWindow):
             _ioc_hdr.setStretchLastSection(False)
             for _ci, _cw in enumerate([280, 60, 140, 140, 55]):
                 tbl.setColumnWidth(_ci, _cw)
+            # The value is what matters; it takes the width left over, so the
+            # Score column is no longer pushed off a laptop-width pane.
+            _ioc_hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            _ioc_hdr.setMinimumSectionSize(48)
             tbl.verticalHeader().setVisible(False)
             tbl.setShowGrid(False)
             tbl.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -16166,7 +16180,7 @@ class MainWindow(QMainWindow):
                 if ti_tooltip:
                     val_item.setToolTip(ti_tooltip)
                 if ti and ti.get("verdict") in ("malicious", "suspicious", "potentially_malicious"):
-                    val_item.setForeground(QColor("#e74c3c"))
+                    val_item.setForeground(_FG_HIGH)
                     val_item.setFont(_bold)
                 tbl.setItem(r, 0, val_item)
 
@@ -16185,11 +16199,12 @@ class MainWindow(QMainWindow):
                 if reasons:
                     score_item.setToolTip("\n".join(reasons))
                 if score >= 61:
-                    score_item.setForeground(QColor("#e74c3c"))
+                    score_item.setForeground(_FG_HIGH)
                     score_item.setFont(_bold)
                     row_color = _COL_HIGH
                 elif score >= 31:
-                    score_item.setForeground(QColor("#e67e22"))
+                    score_item.setForeground(_FG_MED)
+                    score_item.setFont(_bold)
                     row_color = _COL_MED
                 else:
                     row_color = _COL_NORMAL
