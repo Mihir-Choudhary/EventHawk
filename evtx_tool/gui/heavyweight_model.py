@@ -776,6 +776,13 @@ class ArrowTableModel(QAbstractTableModel):
                     ArrowTableModel._header_font = QFont("Segoe UI", 8)
                     ArrowTableModel._header_font.setBold(True)
                 return ArrowTableModel._header_font
+            if role == Qt.ItemDataRole.TextAlignmentRole:
+                # Headers line up with their column's values (numbers right).
+                if section in (COL_NUM, COL_EID, COL_RECORD_ID, COL_EVENT_RECORD_ID):
+                    return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                if section == COL_LEVEL:
+                    return Qt.AlignmentFlag.AlignCenter
+                return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         return None
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
