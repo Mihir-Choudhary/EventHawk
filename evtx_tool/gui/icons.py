@@ -116,6 +116,45 @@ def icon(name: str, color_key: str = "text_dim", size: int = 16, gap: int = 0):
     return ic
 
 
+# ── Level markers for the event tables ─────────────────────────────────────────
+
+_DOT_LEVELS = {
+    "Critical": "level_critical",
+    "Error": "level_error",
+    "Audit Failure": "level_error",
+    "Warning": "level_warning",
+}
+_dot_cache: dict = {}
+
+
+def level_dot(level):
+    """Small round marker for a severe level (Critical, Error, Audit Failure,
+    Warning) in the theme's level colour; a transparent spacer of the same
+    size for every other level, so level names stay aligned.  The level's
+    name is always drawn too -- colour is never the only signal."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+    key = _DOT_LEVELS.get(str(level or ""))
+    color = COLORS[key] if key else None
+    pm = _dot_cache.get(color)
+    if pm is None:
+        scale, size = 2, 10
+        pm = QPixmap(size * scale, size * scale)
+        pm.fill(Qt.GlobalColor.transparent)
+        if color:
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(color))
+            d = 7 * scale
+            o = (size * scale - d) // 2
+            p.drawEllipse(o, o, d, d)
+            p.end()
+        pm.setDevicePixelRatio(scale)
+        _dot_cache[color] = pm
+    return pm
+
+
 # ── Theme-following icons on widgets ───────────────────────────────────────────
 
 _bound: list = []          # (weakref to widget, name, color_key, size, checked_name)

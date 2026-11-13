@@ -780,8 +780,6 @@ class ArrowTableModel(QAbstractTableModel):
                 # Headers line up with their column's values (numbers right).
                 if section in (COL_NUM, COL_EID, COL_RECORD_ID, COL_EVENT_RECORD_ID):
                     return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                if section == COL_LEVEL:
-                    return Qt.AlignmentFlag.AlignCenter
                 return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         return None
 
@@ -813,6 +811,11 @@ class ArrowTableModel(QAbstractTableModel):
 
         if role == Qt.ItemDataRole.DisplayRole:
             return self._cell_text(local, row, col)
+        if role == Qt.ItemDataRole.DecorationRole:
+            if col == COL_LEVEL:
+                from .icons import level_dot
+                return level_dot(self._cell_text(local, row, col))
+            return None
         if role == Qt.ItemDataRole.ForegroundRole:
             return self._cell_fg(local, col)
         if role == Qt.ItemDataRole.BackgroundRole:
@@ -828,8 +831,6 @@ class ArrowTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.TextAlignmentRole:
             if col in (COL_NUM, COL_EID, COL_RECORD_ID, COL_EVENT_RECORD_ID):
                 return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            if col == COL_LEVEL:
-                return Qt.AlignmentFlag.AlignCenter
             return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         if role == Qt.ItemDataRole.FontRole:
             if col == COL_SOURCE:

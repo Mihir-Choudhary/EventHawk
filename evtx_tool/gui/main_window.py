@@ -52,7 +52,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateTimeEdit,
-    QDialog, QDialogButtonBox, QFileDialog, QFrame, QGroupBox, QHBoxLayout,
+    QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QProgressBar, QProgressDialog, QPushButton, QRadioButton,
     QScrollArea,
@@ -1566,6 +1566,14 @@ class _EventTableView(QTableView):
     _OVERLAY_BODY = "Loosen a filter, or use Clear All Filters to see every event."
 
     empty_hint = None   # callable -> (icon_name, title, body) | None
+    copy_handler = None  # callable: Ctrl+C copies the selected event
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.matches(QKeySequence.StandardKey.Copy) and callable(self.copy_handler):
+            self.copy_handler()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -8768,6 +8776,7 @@ class MainWindow(QMainWindow):
             for p in initial_paths:
                 self._add_path(p)
 
+        self._restore_layout()
         self._set_status("Ready")
 
     # =========================================================================
@@ -8786,6 +8795,11 @@ class MainWindow(QMainWindow):
         a = fm.addAction("Add Directory...")
         a.setShortcut(QKeySequence("Ctrl+Shift+O"))
         a.triggered.connect(self._on_add_dir)
+
+        # Recently added files and folders: a case is usually reopened.
+        self._recent_menu = fm.addMenu("Open Recent")
+        self._recent_menu.setToolTipsVisible(True)
+        self._recent_menu.aboutToShow.connect(self._populate_recent_menu)
 
         fm.addSeparator()
         self._act_export = fm.addAction("Export Events...")
@@ -8900,8 +8914,19 @@ class MainWindow(QMainWindow):
         _listener = self._on_theme_applied
         self.destroyed.connect(lambda *_a: remove_theme_listener(_listener))
 
+        # ── Keyboard shortcuts with no menu item of their own ─────────────
+        for _keys, _slot in (("Ctrl+Shift+F", self._on_advanced_filter_clicked),
+                             ("Ctrl+B", self._shortcut_bookmark),
+                             ("Ctrl+\\", lambda: self._toggle_left_panel())):
+            _sc = QShortcut(QKeySequence(_keys), self)
+            _sc.activated.connect(_slot)
+
         # ── Help ──────────────────────────────────────────────────────────
         hm = mb.addMenu("Help")
+        a = hm.addAction("Keyboard Shortcuts")
+        a.setShortcut(QKeySequence("Ctrl+/"))
+        a.triggered.connect(self._show_shortcuts)
+        hm.addSeparator()
         a = hm.addAction("Open Log Folder")
         a.setToolTip("Open the folder holding EventHawk's log files")
         a.triggered.connect(self._open_log_folder)
@@ -9626,7 +9651,7 @@ class MainWindow(QMainWindow):
         col_widths = {
             0: 58,   # #  (six-digit row numbers)
             1: 70,   # Event ID
-            2: 90,   # Level
+            2: 112,  # Level (marker + "Information")
             3: 170,  # Timestamp
             4: 130,  # Computer
             5: 150,  # Channel
@@ -9652,6 +9677,7 @@ class MainWindow(QMainWindow):
 
         # Apply current column visibility
         self._apply_col_visibility(table, self._visible_cols)
+        table.copy_handler = self._copy_selected_event
 
         return table
 
@@ -10486,7 +10512,99 @@ class MainWindow(QMainWindow):
         item.setData(Qt.ItemDataRole.UserRole, path)
         item.setToolTip(path)
         self._file_list.addItem(item)
+        if self._persist_layout_enabled():
+            self._remember_input(path)
         self._act_ps_extract.setEnabled(True)
+
+    # ── Recent inputs ─────────────────────────────────────────────────────────
+
+    _RECENT_KEY = "recent_inputs"
+    _RECENT_MAX = 10
+
+    def _recent_inputs(self) -> list[str]:
+        try:
+            v = QSettings("EventHawk", "GUI").value(self._RECENT_KEY, []) or []
+        except Exception:
+            return []
+        if isinstance(v, str):
+            v = [v]
+        return [str(x) for x in v if str(x).strip()]
+
+    def _remember_input(self, path: str) -> None:
+        if not path:
+            return
+        norm = os.path.normcase(os.path.abspath(path))
+        items = [x for x in self._recent_inputs() if os.path.normcase(os.path.abspath(x)) != norm]
+        items.insert(0, path)
+        QSettings("EventHawk", "GUI").setValue(self._RECENT_KEY, items[: self._RECENT_MAX])
+
+    def _populate_recent_menu(self) -> None:
+        m = self._recent_menu
+        m.clear()
+        items = self._recent_inputs()
+        if not items:
+            a = m.addAction("No recent files or folders")
+            a.setEnabled(False)
+            return
+        for path in items:
+            label = path if len(path) <= 70 else path[:30] + "\u2026" + path[-38:]
+            a = m.addAction(label.replace("&", "&&"))
+            a.setToolTip(path)
+            a.triggered.connect(lambda _c=False, pp=path: self._open_recent(pp))
+        m.addSeparator()
+        m.addAction("Clear Recent").triggered.connect(
+            lambda: QSettings("EventHawk", "GUI").remove(self._RECENT_KEY))
+
+    def _open_recent(self, path: str) -> None:
+        if not os.path.exists(path):
+            items = [x for x in self._recent_inputs() if x != path]
+            QSettings("EventHawk", "GUI").setValue(self._RECENT_KEY, items)
+            self._set_status(f"Not found, removed from Open Recent: {path}")
+            return
+        self._add_path(path)
+        self._set_status(f"Queued {os.path.basename(path.rstrip(os.sep)) or path} \u2014 press Parse to load it")
+
+    # ── Keyboard shortcuts ────────────────────────────────────────────────────
+
+    SHORTCUTS = (
+        ("Ctrl+O", "Add files"),
+        ("Ctrl+Shift+O", "Add a folder"),
+        ("Ctrl+F", "Search all event text (Enter applies, Esc clears)"),
+        ("Ctrl+Shift+F", "Advanced filter"),
+        ("Ctrl+B", "Bookmark / unbookmark the selected event"),
+        ("Ctrl+C", "Copy the selected event (in the event table)"),
+        ("Ctrl+\\", "Show / hide the side panel"),
+        ("Ctrl+S", "Export events"),
+        ("Ctrl+/", "This list"),
+        ("Ctrl+Q", "Exit"),
+    )
+
+    def _shortcut_bookmark(self) -> None:
+        if self._btn_bookmark_event.isEnabled():
+            self._btn_bookmark_event.click()
+
+    def _show_shortcuts(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Keyboard Shortcuts")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(18, 16, 18, 14)
+        lay.setSpacing(10)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(6)
+        for r, (keys, what) in enumerate(self.SHORTCUTS):
+            k = QLabel(keys)
+            k.setStyleSheet(
+                f"font-family: Consolas, monospace; color: {COLORS['text']}; "
+                f"background: {COLORS['bg_header']}; border-radius: 3px; padding: 2px 6px;")
+            grid.addWidget(k, r, 0, Qt.AlignmentFlag.AlignLeft)
+            grid.addWidget(QLabel(what), r, 1)
+        lay.addLayout(grid)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        bb.rejected.connect(dlg.reject)
+        bb.accepted.connect(dlg.accept)
+        lay.addWidget(bb)
+        dlg.exec()
 
     # ── Drag and drop ─────────────────────────────────────────────────────────
 
@@ -13196,7 +13314,7 @@ class MainWindow(QMainWindow):
             self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
             self._table.selectionModel().selectionChanged.connect(self._on_row_selected)
-            col_widths = [40, 70, 90, 170, 130, 150, 110, 80]
+            col_widths = [58, 70, 112, 170, 130, 150, 110, 80]
             for i, w_val in enumerate(col_widths):
                 self._table.setColumnWidth(i, w_val)
             self._apply_col_visibility(self._table, self._visible_cols)
@@ -13266,7 +13384,7 @@ class MainWindow(QMainWindow):
             self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
             self._table.selectionModel().selectionChanged.connect(self._on_row_selected)
 
-            col_widths = [40, 70, 90, 170, 130, 150, 110, 80]
+            col_widths = [58, 70, 112, 170, 130, 150, 110, 80]
             for i, w_val in enumerate(col_widths):
                 self._table.setColumnWidth(i, w_val)
 
@@ -17822,7 +17940,7 @@ class MainWindow(QMainWindow):
         short laptop screen left the events table about a dozen rows.
         """
         rs = getattr(self, "_right_splitter", None)
-        if rs is not None and rs.height() > 0:
+        if rs is not None and rs.height() > 0 and not getattr(self, "_right_split_restored", False):
             total = sum(rs.sizes()) or rs.height()
             bottom = min(320, max(200, int(total * 0.38)))
             rs.setSizes([total - bottom, bottom])
@@ -18692,7 +18810,37 @@ class MainWindow(QMainWindow):
     # CLOSE
     # =========================================================================
 
+    @staticmethod
+    def _persist_layout_enabled() -> bool:
+        # Not on the headless test platforms: test windows must neither read
+        # nor overwrite the user's saved layout and recent list.
+        return QApplication.platformName() not in ("offscreen", "minimal")
+
+    def _save_layout(self) -> None:
+        if not self._persist_layout_enabled():
+            return
+        st = QSettings("EventHawk", "GUI")
+        st.setValue("main_geometry", self.saveGeometry())
+        rs = getattr(self, "_right_splitter", None)
+        if rs is not None:
+            st.setValue("main_right_split", rs.saveState())
+
+    def _restore_layout(self) -> bool:
+        """Window geometry and the table/detail split from the last session.
+        True when a saved geometry was applied."""
+        if not self._persist_layout_enabled():
+            return False
+        st = QSettings("EventHawk", "GUI")
+        geo = st.value("main_geometry")
+        ok = bool(geo) and self.restoreGeometry(geo)
+        split = st.value("main_right_split")
+        rs = getattr(self, "_right_splitter", None)
+        if split and rs is not None:
+            self._right_split_restored = bool(rs.restoreState(split))
+        return ok
+
     def closeEvent(self, event) -> None:
+        self._save_layout()
         # Stop the export worker FIRST: it writes to a file, so it must be told
         # to stop (and discard its partial output) before anything it reads is
         # torn down.  Without this, closing mid-export destroys a running
@@ -18918,11 +19066,14 @@ class MainWindow(QMainWindow):
         self._btn_bookmark_event.setText("Bookmark")
         self._btn_bookmark_event.setChecked(False)
 
-    def _on_bookmark_toggle(self) -> None:
-        """Clicked handler for _btn_bookmark_event — toggle bookmark on the selected event."""
-        indexes = self._active_table.selectionModel().selectedRows()
+    def _selected_event(self) -> dict | None:
+        """The event selected in the tab in front, or None."""
+        try:
+            indexes = self._active_table.selectionModel().selectedRows()
+        except (AttributeError, RuntimeError):
+            return None
         if not indexes:
-            return
+            return None
         # The row index belongs to the tab in front: its own Arrow model (main,
         # per-file or around tab), or a proxy over event dicts (Normal mode,
         # and chain tabs in either mode).  Reading it from the merged model
@@ -18930,11 +19081,21 @@ class MainWindow(QMainWindow):
         from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
         _am = self._active_table.model()
         if isinstance(_am, _ATM):
-            ev = _am.get_event(indexes[0].row())
-        else:
-            ev = self._active_proxy.get_source_event(indexes[0].row())
+            return _am.get_event(indexes[0].row())
+        return self._active_proxy.get_source_event(indexes[0].row())
+
+    def _on_bookmark_toggle(self) -> None:
+        """Clicked handler for _btn_bookmark_event — toggle bookmark on the selected event."""
+        ev = self._selected_event()
         if ev:
             self._bookmark_event(ev)
+
+    def _copy_selected_event(self) -> None:
+        """Ctrl+C in an event table: the selected event's row as text."""
+        ev = self._selected_event()
+        if ev:
+            self._copy_event_row(ev)
+            self.statusBar().showMessage("Event copied to the clipboard", 3000)
 
     def _filter_to_bookmarks(self) -> None:
         """Filter the main event table to show only bookmarked events."""
