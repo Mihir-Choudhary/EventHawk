@@ -640,7 +640,7 @@ class ColumnFilterPopup(QDialog):
             sorted_values = sorted(self._all_values.items(), key=lambda kv: (-kv[1], str(kv[0])))
             for val, count in sorted_values:
                 display = str(val) if val else "(empty)"
-                chk = QCheckBox(f"{display}  ({count})")
+                chk = QCheckBox(f"{display}  ({count:,})" if isinstance(count, int) else f"{display}  ({count})")
                 chk.setChecked(True)
                 chk.setProperty("filter_value", str(val))
                 self._checkboxes.append(chk)
@@ -1334,7 +1334,7 @@ class ColumnFilterPopup(QDialog):
             if sval in existing:
                 continue
             display = sval if sval else "(empty)"
-            chk = QCheckBox(f"{display}  ({count})")
+            chk = QCheckBox(f"{display}  ({count:,})" if isinstance(count, int) else f"{display}  ({count})")
             chk.setChecked(False)
             chk.setProperty("filter_value", sval)
             self._checkboxes.append(chk)
