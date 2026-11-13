@@ -8486,6 +8486,65 @@ class _CustomColumnWorker(QThread):
             self.failed.emit(str(exc))
 
 
+def fit_rect_to_screen(x: int, y: int, w: int, h: int,
+                       ax: int, ay: int, aw: int, ah: int, margin: int = 24):
+    """Geometry for a window (x, y, w, h) so it fits the available screen area
+    (ax, ay, aw, ah): shrunk to at most the area less *margin* on each side,
+    and moved inside it.  A window that already fits is returned unchanged."""
+    max_w, max_h = max(200, aw - 2 * margin), max(150, ah - 2 * margin)
+    if w <= aw and h <= ah and x >= ax and y >= ay and x + w <= ax + aw and y + h <= ay + ah:
+        return x, y, w, h
+    nw, nh = min(w, max_w), min(h, max_h)
+    nx = min(max(x, ax + margin), ax + aw - nw - margin)
+    ny = min(max(y, ay + margin), ay + ah - nh - margin)
+    if w > max_w:
+        nx = ax + (aw - nw) // 2
+    if h > max_h:
+        ny = ay + (ah - nh) // 2
+    return nx, ny, nw, nh
+
+
+class _FitWindowsToScreen(QObject):
+    """App-wide: a window opened larger than its screen is fitted to it.
+
+    Several tool windows were sized for a big monitor (Logon Sessions 1340,
+    WiFi 1400, System Activity 1450 px wide; the profile editor 740 px tall)
+    and opened past the edges of a 1366x768 or 1280x720 laptop screen, with
+    their buttons out of reach.  Runs once per window, on its first show.
+    """
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() == QEvent.Type.Show and isinstance(obj, (QDialog, QMainWindow)) \
+                and obj.isWindow() and not obj.property("_eh_fitted"):
+            obj.setProperty("_eh_fitted", True)
+            try:
+                scr = obj.screen()
+                if scr is not None:
+                    a = scr.availableGeometry()
+                    g = obj.frameGeometry() if obj.isVisible() else obj.geometry()
+                    x, y, w, h = fit_rect_to_screen(g.x(), g.y(), obj.width(), obj.height(),
+                                                    a.x(), a.y(), a.width(), a.height())
+                    if (w, h) != (obj.width(), obj.height()):
+                        obj.resize(w, h)
+                    if (x, y) != (g.x(), g.y()):
+                        obj.move(x, y)
+            except RuntimeError:
+                pass
+        return False
+
+
+def install_fit_windows_to_screen(app) -> None:
+    """Install _FitWindowsToScreen once (not on headless test platforms,
+    whose virtual screen is far smaller than any real one)."""
+    if app is None or getattr(app, "_eh_fit_filter", None) is not None:
+        return
+    if QApplication.platformName() in ("offscreen", "minimal"):
+        return
+    f = _FitWindowsToScreen(app)
+    app.installEventFilter(f)
+    app._eh_fit_filter = f
+
+
 class _OnEnabled(QObject):
     """Call *callback* whenever *widget* becomes enabled."""
 
@@ -8566,6 +8625,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("EventHawk  v2.0")
         self.resize(1420, 860)
         self.setMinimumSize(900, 600)
+        install_fit_windows_to_screen(QApplication.instance())
 
 
         # ── Live state (set after parse finishes) ──────────────────────────
