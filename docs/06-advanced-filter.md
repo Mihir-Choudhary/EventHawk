@@ -4,7 +4,7 @@ Open **Filter** above the event grid. The dialog provides event types/levels, so
 
 Event ID expressions accept IDs and ranges; the dialog supports exclusions as well. Values in an ordinary multi-value field are alternatives; restrictions in different fields combine. Excluded values reject matching events. Equal-to conditions on the same field are alternatives (OR); the resulting groups and other conditions combine with AND. There is no separate logical-expression composer in this dialog.
 
-The dialog has one text entry, RegExp and Exclude controls, plus case sensitivity. The CLI/filter backend also supports lists of terms with AND, OR and NOT; those are not extra mode buttons in this dialog. The searchable representation includes retained System values, event data and generated description text. It is not a search of the original EVTX bytes or original XML formatting. Regex capabilities can differ between the Python and DuckDB paths; heed errors from the selected engine.
+The dialog has one text entry, RegExp and Exclude controls, plus case sensitivity. The toolbar search box edits the same text entry: a term typed there (then **Enter**) shows in the dialog and the other way round; emptying it removes only the text criterion, or the whole Advanced Filter when the search was its only criterion. The CLI/filter backend also supports lists of terms with AND, OR and NOT; those are not extra mode buttons in this dialog. The searchable representation includes retained System values, event data and generated description text. It is not a search of the original EVTX bytes or original XML formatting. Regex capabilities can differ between the Python and DuckDB paths; heed errors from the selected engine.
 
 ## Time boundaries
 

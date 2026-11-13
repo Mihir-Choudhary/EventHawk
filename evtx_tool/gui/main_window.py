@@ -47,7 +47,7 @@ from PySide6.QtCore import (
     QPropertyAnimation, QEasingCurve, QSettings, QFileSystemWatcher,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QKeySequence, QIcon, QPainter, QPixmap,
+    QAction, QColor, QFont, QKeySequence, QIcon, QPainter, QPixmap, QShortcut,
     QStandardItem, QStandardItemModel,
 )
 from PySide6.QtWidgets import (
@@ -9203,6 +9203,29 @@ class MainWindow(QMainWindow):
         from .icons import set_icon
 
         # Advanced filter button (funnel icon)
+        # Quick search: the Advanced Filter's Text criterion, without the dialog.
+        self._quick_search = QLineEdit()
+        self._quick_search.setObjectName("quickSearch")
+        self._quick_search.setPlaceholderText("Search all event text\u2026")
+        self._quick_search.setClearButtonEnabled(True)
+        self._quick_search.setMinimumWidth(160)
+        self._quick_search.setMaximumWidth(360)
+        self._quick_search.setToolTip(
+            "Search every field of every event — the same as the Text box in Filter\u2026\n"
+            "Enter applies, Esc clears.  Ctrl+F jumps here.")
+        _qs_act = self._quick_search.addAction(QIcon(), QLineEdit.ActionPosition.LeadingPosition)
+        set_icon(_qs_act, "search", "text_muted")
+        self._quick_search.returnPressed.connect(self._apply_quick_search)
+        self._quick_search.textChanged.connect(self._on_quick_search_edited)
+        _qs_esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self._quick_search)
+        _qs_esc.setContext(Qt.ShortcutContext.WidgetShortcut)
+        _qs_esc.activated.connect(self._quick_search.clear)
+        _qs_find = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), self)
+        _qs_find.activated.connect(self._focus_quick_search)
+        self._quick_search_owned_cfg = False   # the Advanced Filter cfg exists only for the search
+        self._quick_search_applied = ""
+        filter_row.addWidget(self._quick_search, 1)
+
         self._btn_adv_filter = QPushButton("Filter\u2026")
         self._btn_adv_filter.setObjectName("advFilterBtn")
         set_icon(self._btn_adv_filter, "filter")
@@ -9512,7 +9535,7 @@ class MainWindow(QMainWindow):
 
         # ── Default column widths (COLUMNS currently has 22 entries) ──────
         col_widths = {
-            0: 40,   # #
+            0: 58,   # #  (six-digit row numbers)
             1: 70,   # Event ID
             2: 90,   # Level
             3: 170,  # Timestamp
@@ -13438,6 +13461,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         cfg = dlg.get_filter_config()
+        self._quick_search_owned_cfg = False   # the dialog owns the cfg now
         logger.info("Advanced Filter applied")
 
         # ── Stack the dialog cfg ON TOP of any active profile selection ──
@@ -13505,6 +13529,7 @@ class MainWindow(QMainWindow):
         cfg is gone) so the profile filter survives the clear.
         """
         self._adv_filter_cfg = None
+        self._reset_quick_search_box()
         logger.info("Advanced Filter cleared")
         # Bug 3 fix: in Juggernaut Mode clear via hw_model — but keep profiles.
         if self._hw_model is not None:
@@ -13566,6 +13591,7 @@ class MainWindow(QMainWindow):
         keeps the applied profiles.
         """
         logger.info("Clear All Filters")
+        self._reset_quick_search_box()
         self._profile_combo.uncheckAll()
         self._applied_profiles = []
         # RA session filters are implemented on top of the bookmark/record-id
@@ -13657,6 +13683,94 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
 
+    # ── Quick search ─────────────────────────────────────────────────────────
+
+    def _focus_quick_search(self) -> None:
+        self._quick_search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._quick_search.selectAll()
+
+    def _reset_quick_search_box(self) -> None:
+        if not hasattr(self, "_quick_search"):
+            return
+        self._quick_search.blockSignals(True)
+        self._quick_search.clear()
+        self._quick_search.blockSignals(False)
+        self._quick_search_applied = ""
+        self._quick_search_owned_cfg = False
+
+    def _sync_quick_search_box(self) -> None:
+        """Show the Advanced Filter's text term in the box (set from the dialog,
+        a loaded filter file ...), unless the user is typing in it."""
+        if not hasattr(self, "_quick_search") or self._quick_search.hasFocus():
+            return
+        cfg = getattr(self, "_adv_filter_cfg", None) or {}
+        term = cfg.get("text_search")
+        term = term if isinstance(term, str) else ""
+        if self._quick_search.text() != term:
+            self._quick_search.blockSignals(True)
+            self._quick_search.setText(term)
+            self._quick_search.blockSignals(False)
+        self._quick_search_applied = term
+
+    def _on_quick_search_edited(self, text: str) -> None:
+        # Emptying the box (clear button, Esc, select-all + delete) removes the
+        # search at once; typing waits for Enter, since every pass over a big
+        # dataset is a visible wait.
+        if not text.strip() and self._quick_search_applied:
+            self._apply_quick_search()
+
+    def _has_loaded_events(self) -> bool:
+        return bool(self._events) or self._hw_model is not None
+
+    def _apply_quick_search(self) -> None:
+        text = self._quick_search.text().strip()
+        if text == self._quick_search_applied:
+            return
+        if not self._has_loaded_events():
+            if text:
+                self.statusBar().showMessage("Load events first \u2014 the search applies to parsed events", 5000)
+            return
+        from evtx_tool.core.filters import empty_filter
+        had_cfg = self._adv_filter_cfg is not None
+        if not text:
+            if self._quick_search_owned_cfg or not had_cfg:
+                # The Advanced Filter existed only for this search: remove it.
+                self._clear_advanced_filter()
+                return
+            cfg = dict(self._adv_filter_cfg)
+            cfg["text_search"] = ""
+        else:
+            cfg = dict(self._adv_filter_cfg) if had_cfg else empty_filter()
+            cfg["text_search"] = text
+            if not had_cfg:
+                self._quick_search_owned_cfg = True
+        logger.info("Quick search %s", "applied" if text else "removed")
+        self._apply_adv_cfg_to_all_views(cfg, busy_text="Searching\u2026")
+        self._quick_search_applied = text
+
+    def _apply_adv_cfg_to_all_views(self, cfg: dict, busy_text: str) -> None:
+        """Make *cfg* the Advanced Filter of All Events and every file tab
+        (not Around / pivot tabs, whose window is fixed), stacked on the
+        applied profiles -- the same views _clear_advanced_filter resets."""
+        cfg_effective = self._build_filter_config(base=cfg)
+        self._adv_filter_cfg = cfg
+        if self._hw_model is not None:
+            self._hw_model.apply_filter(cfg_effective)
+            for _fp, _st in self._file_tabs.items():
+                if not _is_pivot_tab_key(_fp) and getattr(_st, "model", None) is not None:
+                    try:
+                        _st.model.apply_filter(cfg_effective)
+                    except Exception:
+                        logger.exception("quick search: tab filter failed")
+        else:
+            with self._normal_filter_busy(busy_text):
+                self._proxy_model.set_advanced_filter(cfg_effective)
+                for _fp, _st in self._file_tabs.items():
+                    if not _is_pivot_tab_key(_fp) and getattr(_st, "proxy", None) is not None:
+                        _st.proxy.set_advanced_filter(cfg_effective)
+        self._update_adv_filter_badge()
+        self._update_count_label()
+
     def _update_adv_filter_badge(self) -> None:
         """Show/hide the 'Filter Active' badge and surface inverted/exclude modes.
 
@@ -13690,13 +13804,17 @@ class MainWindow(QMainWindow):
                 active = self._active_proxy.has_advanced_filter()
             except Exception:
                 pass
-        self._lbl_adv_filter_badge.setVisible(active)
-        self._btn_clear_adv.setVisible(active)
+        # A filter that is only the quick search is already shown (and cleared)
+        # by the search box itself; the badge would say the same thing twice.
+        only_search = active and getattr(self, "_quick_search_owned_cfg", False)
+        self._lbl_adv_filter_badge.setVisible(active and not only_search)
+        self._btn_clear_adv.setVisible(active and not only_search)
+        self._sync_quick_search_box()
 
         if not active:
             # Reset to the default appearance — important when the user clears
             # an inverted filter and applies a non-inverted one in sequence.
-            self._lbl_adv_filter_badge.setText("⚡ Filter Active")
+            self._lbl_adv_filter_badge.setText("Filter active")
             self._lbl_adv_filter_badge.setToolTip("")
             return
 
@@ -13744,7 +13862,7 @@ class MainWindow(QMainWindow):
 
         if excludes:
             self._lbl_adv_filter_badge.setText(
-                f"⚡ Filter Active  ⚠ Exclude×{len(excludes)}"
+                f"Filter active \u00b7 exclude \u00d7{len(excludes)}"
             )
             tip_lines = ["Filter is INVERTED on the following layer(s):"]
             tip_lines.extend(f"  • {label}" for label in excludes)
@@ -13757,7 +13875,7 @@ class MainWindow(QMainWindow):
             )
             self._lbl_adv_filter_badge.setToolTip("\n".join(tip_lines))
         else:
-            self._lbl_adv_filter_badge.setText("⚡ Filter Active")
+            self._lbl_adv_filter_badge.setText("Filter active")
             self._lbl_adv_filter_badge.setToolTip("")
 
     def _update_count_label(self) -> None:
@@ -17853,6 +17971,7 @@ class MainWindow(QMainWindow):
         # newly loaded dataset would silently re-apply the previous session's
         # advanced filter to it.  Also refresh the badge so it hides cleanly.
         self._adv_filter_cfg = None
+        self._reset_quick_search_box()
         self._applied_profiles = []
         # Clear bookmarks — events no longer exist after a reset
         self._bookmarks.clear()

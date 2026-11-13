@@ -1,6 +1,6 @@
 # PowerShell History
 
-**PowerShell History** is a top-level menu-bar action. Queue files/directories first, click the action and choose an output folder. Extraction reads queued EVTX files; it does not require a preceding grid parse or use the grid's current view filter.
+**PowerShell History** is in the **Tools** menu. Queue files/directories first, click the action and choose an output folder. Extraction reads queued EVTX files; it does not require a preceding grid parse or use the grid's current view filter.
 
 The extractor reads Windows PowerShell classic, Microsoft-Windows-PowerShell/Operational and PowerShellCore/Operational channels. Its extracted event-ID set is **300, 400, 403, 600, 800, 4100, 4102, 4103, 4104, 53504**. Other observed PowerShell IDs are counted in the summary.
 

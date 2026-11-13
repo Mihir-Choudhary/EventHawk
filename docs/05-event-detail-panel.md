@@ -20,4 +20,4 @@ Juggernaut uses the selected row's source/record identity to retrieve detail fro
 
 The parser keeps values, not the original XML text. The detail display and XML export cannot preserve all original namespaces, ordering, whitespace or unretained System fields. XML export is a reconstructed representation, not an EVTX replacement. Preserve the original file and use an independent EVTX/XML reader when exact original serialization matters.
 
-Use **Precision** and **Time zone** to control supported timestamp displays; these settings do not change stored event times. See [time zones](06b-timezone.md), [gap checks](09b-missing-record-ids.md), and [exports](11-exporting.md).
+Use **View > Timestamp Precision** and **View > Time Zone** to control supported timestamp displays; these settings do not change stored event times. See [time zones](06b-timezone.md), [gap checks](09b-missing-record-ids.md), and [exports](11-exporting.md).
