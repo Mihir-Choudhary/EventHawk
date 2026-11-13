@@ -8929,6 +8929,7 @@ class MainWindow(QMainWindow):
         right_splitter.addWidget(top_panel)
         right_splitter.addWidget(bottom_panel)
         right_splitter.setSizes([540, 300])
+        self._right_splitter = right_splitter
         # The events table takes extra height; the detail/analysis strip keeps
         # its size, so a short laptop screen still shows a useful number of rows.
         right_splitter.setStretchFactor(0, 1)
@@ -13329,7 +13330,8 @@ class MainWindow(QMainWindow):
             )
         else:
             self._btn_stop.setEnabled(False)
-            self._set_status("Done", stats="  |  ".join(parts))
+            self._set_status("Parsed — no events found in these files",
+                             stats="  |  ".join(parts))
 
     # ── Analysis phase callbacks ─────────────────────────────────────────
 
@@ -13437,7 +13439,10 @@ class MainWindow(QMainWindow):
                 + "\n".join(f"  • {k}: {v}" for k, v in _an_errs.items()),
             )
             return
-        self._set_status("Done", stats="  |  ".join(parts))
+        _nf = len(getattr(self, "_last_parsed_files", None) or [])
+        self._set_status(f"Loaded {n_events:,} events"
+                         + (f" from {_nf:,} file{'s' if _nf != 1 else ''}" if _nf else ""),
+                         stats="  |  ".join(parts))
 
     @Slot(str)
     def _on_analysis_error(self, msg: str) -> None:
@@ -17813,7 +17818,14 @@ class MainWindow(QMainWindow):
         Called once, ~50 ms after the window is shown, to restore the
         panel's open/collapsed state that was saved in the last session.
         Applies instantly (no animation) so the user doesn't see a flash.
+        Also sizes the detail / analysis strip to the window: 300 px of a
+        short laptop screen left the events table about a dozen rows.
         """
+        rs = getattr(self, "_right_splitter", None)
+        if rs is not None and rs.height() > 0:
+            total = sum(rs.sizes()) or rs.height()
+            bottom = min(320, max(200, int(total * 0.38)))
+            rs.setSizes([total - bottom, bottom])
         was_open = QSettings("EventHawk", "GUI").value(
             "left_panel_open", True, type=bool
         )
