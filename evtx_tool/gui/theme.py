@@ -301,6 +301,7 @@ def _ui_image(name: str, svg: str) -> str:
 _SVG_CHEVRON = ('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" '
                 'fill="none" stroke="#5a4e42" stroke-width="2.5" stroke-linecap="round" '
                 'stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>')
+_SVG_CHEVRON_UP = _SVG_CHEVRON.replace('d="m6 9 6 6 6-6"', 'd="m18 15-6-6-6 6"')
 _SVG_CHECK = ('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" '
               'fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" '
               'stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>')
@@ -614,6 +615,16 @@ QDateTimeEdit::up-button, QDateTimeEdit::down-button {
 QSpinBox::up-button:hover, QSpinBox::down-button:hover,
 QDateTimeEdit::up-button:hover, QDateTimeEdit::down-button:hover {
     background: #d8d1c5;
+}
+QSpinBox::up-arrow, QDateTimeEdit::up-arrow {
+    @CHEVRON_UP@
+    width: 8px;
+    height: 8px;
+}
+QSpinBox::down-arrow {
+    @CHEVRON@
+    width: 8px;
+    height: 8px;
 }
 QDateTimeEdit::drop-down {
     subcontrol-origin: padding;
@@ -980,7 +991,9 @@ QPushButton#searchTagRemove:hover {
 def _with_images(qss: str) -> str:
     chevron = _ui_image("ui_chevron_down.svg", _SVG_CHEVRON)
     check = _ui_image("ui_check.svg", _SVG_CHECK)
+    chevron_up = _ui_image("ui_chevron_up.svg", _SVG_CHEVRON_UP)
     qss = qss.replace("@CHEVRON@", f'image: url("{chevron}");' if chevron else "image: none;")
+    qss = qss.replace("@CHEVRON_UP@", f'image: url("{chevron_up}");' if chevron_up else "image: none;")
     return qss.replace("@CHECK@", f'image: url("{check}");' if check else "image: none;")
 
 
