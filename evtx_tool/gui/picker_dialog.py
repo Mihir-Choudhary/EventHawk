@@ -152,7 +152,8 @@ class PickerDialog(QDialog):
             QHeaderView::section {{
                 background: {COLORS['bg_header']};
                 color: {COLORS['text_dim']};
-                border: 1px solid {COLORS['border']};
+                border: none;
+                border-bottom: 1px solid {COLORS['border']};
                 padding: 3px 6px;
                 font-size: 8pt;
                 font-weight: bold;

@@ -2976,7 +2976,8 @@ class _LogonSessionDialog(QDialog):
             QHeaderView::section {
                 background: #ede8df;
                 color: #3a2a10;
-                border: 1px solid #c4bba8;
+                border: none;
+                border-bottom: 1px solid #c4bba8;
                 padding: 3px 6px;
                 font-size: 8pt;
                 font-weight: bold;
@@ -3367,7 +3368,7 @@ class _MissingRecordIdDialog(QDialog):
             "QTextBrowser { background:#faf7f2; border:1px solid #c4bba8;"
             " border-radius:3px; padding:4px; font-size:9pt; color:#1e1a14; }"
             "QScrollBar:vertical { background:#f5f0e8; width:8px; margin:0; }"
-            "QScrollBar::handle:vertical { background:#5a3e1e; border-radius:4px; min-height:20px; }"
+            "QScrollBar::handle:vertical { background:#c4bba8; border-radius:3px; min-height:28px; }"
             "QScrollBar::handle:vertical:hover { background:#7a5c1e; }"
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
         )
@@ -4270,7 +4271,8 @@ class _WifiHistoryDialog(QDialog):
             QHeaderView::section {
                 background: #ede8df;
                 color: #3a2a10;
-                border: 1px solid #c4bba8;
+                border: none;
+                border-bottom: 1px solid #c4bba8;
                 padding: 3px 6px;
                 font-size: 8pt;
                 font-weight: bold;
@@ -4845,21 +4847,21 @@ class _RemoteAssistanceDialog(QDialog):
         }
         QHeaderView::section {
             background: #e4ddd3; color: #1e1a14;
-            border: none; border-right: 1px solid #c4bba8;
+            border: none;
             border-bottom: 1px solid #c4bba8;
             padding: 3px 6px; font-size: 9pt; font-weight: bold;
         }
         QScrollBar:vertical { background: #f5f0e8; width: 8px; margin: 0; }
         QScrollBar::handle:vertical {
-            background: #5a3e1e; border-radius: 4px; min-height: 20px;
+            background: #c4bba8; border-radius: 3px; min-height: 28px;
         }
-        QScrollBar::handle:vertical:hover { background: #7a5c1e; }
+        QScrollBar::handle:vertical:hover { background: #9a8878; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         QScrollBar:horizontal { background: #f5f0e8; height: 8px; margin: 0; }
         QScrollBar::handle:horizontal {
-            background: #5a3e1e; border-radius: 4px; min-width: 20px;
+            background: #c4bba8; border-radius: 3px; min-width: 28px;
         }
-        QScrollBar::handle:horizontal:hover { background: #7a5c1e; }
+        QScrollBar::handle:horizontal:hover { background: #9a8878; }
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
     """
 
@@ -7089,21 +7091,21 @@ class _ComputerNormalisationDialog(QDialog):
         }
         QHeaderView::section {
             background: #e4ddd3; color: #1e1a14;
-            border: none; border-right: 1px solid #c4bba8;
+            border: none;
             border-bottom: 1px solid #c4bba8;
             padding: 3px 6px; font-size: 9pt; font-weight: bold;
         }
         QScrollBar:vertical { background: #f5f0e8; width: 8px; margin: 0; }
         QScrollBar::handle:vertical {
-            background: #5a3e1e; border-radius: 4px; min-height: 20px;
+            background: #c4bba8; border-radius: 3px; min-height: 28px;
         }
-        QScrollBar::handle:vertical:hover { background: #7a5c1e; }
+        QScrollBar::handle:vertical:hover { background: #9a8878; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         QScrollBar:horizontal { background: #f5f0e8; height: 8px; margin: 0; }
         QScrollBar::handle:horizontal {
-            background: #5a3e1e; border-radius: 4px; min-width: 20px;
+            background: #c4bba8; border-radius: 3px; min-width: 28px;
         }
-        QScrollBar::handle:horizontal:hover { background: #7a5c1e; }
+        QScrollBar::handle:horizontal:hover { background: #9a8878; }
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
     """
 
@@ -8533,6 +8535,31 @@ class _FitWindowsToScreen(QObject):
         return False
 
 
+class _CalmTables(QObject):
+    """App-wide: tables draw no grid lines.
+
+    The tool windows each turned the grid on, which drew a line at every
+    row AND column boundary -- the "divider lines" that made dense tables
+    hard to read.  Alternating row shading carries the eye along a row.
+    """
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() == QEvent.Type.Polish and isinstance(obj, QTableView) \
+                and obj.showGrid():
+            obj.setShowGrid(False)
+            if not obj.alternatingRowColors():
+                obj.setAlternatingRowColors(True)
+        return False
+
+
+def install_calm_tables(app) -> None:
+    if app is None or getattr(app, "_eh_calm_tables", None) is not None:
+        return
+    f = _CalmTables(app)
+    app.installEventFilter(f)
+    app._eh_calm_tables = f
+
+
 def install_fit_windows_to_screen(app) -> None:
     """Install _FitWindowsToScreen once (not on headless test platforms,
     whose virtual screen is far smaller than any real one)."""
@@ -8626,6 +8653,7 @@ class MainWindow(QMainWindow):
         self.resize(1420, 860)
         self.setMinimumSize(900, 600)
         install_fit_windows_to_screen(QApplication.instance())
+        install_calm_tables(QApplication.instance())
 
 
         # ── Live state (set after parse finishes) ──────────────────────────
