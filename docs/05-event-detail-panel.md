@@ -1,6 +1,6 @@
 # Event detail and record identities
 
-Select an event row to view its detail. The **Brief / Full** toggle changes how much retained information is shown: Brief shows the header and available description; Full adds retained System and event-specific fields. The button names the view you can switch to. Full detail is the initial view.
+Select an event row to view its detail. Both views start with the header and, where available, a plain-language description of the event. The **Brief** button (highlighted while on) stops there; with it off (the initial view) the retained System and event-specific fields follow.
 
 Descriptions are generated for supported event/provider combinations. They are explanatory text, not the original Windows message-DLL rendering, and a description is not evidence that a rule matched.
 

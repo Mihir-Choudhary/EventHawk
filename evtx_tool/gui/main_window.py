@@ -15693,20 +15693,23 @@ class MainWindow(QMainWindow):
             f"{_escape_html(os.path.basename(ev.get('source_file','')))}</span>",
         ]
 
+        # ── Description: what the event means, in both modes ──────────────────
+        # Full mode used to leave it out, so the default view showed raw
+        # fields with no plain-language reading of the event.
+        try:
+            from evtx_tool.analysis.event_descriptions import get_event_description
+            desc = get_event_description(ev)
+        except Exception:
+            desc = None
+        if desc:
+            lines.append(_hr())
+            lines.append(_section("DESCRIPTION"))
+            lines.append(
+                f"<span style='color:{C['text']}'>{_escape_html(desc)}</span>"
+            )
+
         # ── Brief mode stops here ──────────────────────────────────────────────
         if not self._detail_full_mode:
-            # Context-aware event description
-            try:
-                from evtx_tool.analysis.event_descriptions import get_event_description
-                desc = get_event_description(ev)
-            except Exception:
-                desc = None
-            if desc:
-                lines.append(_hr())
-                lines.append(_section("DESCRIPTION"))
-                lines.append(
-                    f"<span style='color:{C['text']}'>{_escape_html(desc)}</span>"
-                )
             html = (
                 f"<div style='font-family:Consolas,monospace;font-size:9pt;"
                 f"padding:8px;color:{C['text']};background:{C['bg_main']};'>"
