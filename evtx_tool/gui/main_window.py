@@ -84,6 +84,21 @@ def _sep(parent=None) -> QFrame:
     return f
 
 
+def _short_log_name(path: str) -> str:
+    """A log's file name as people read it in the file list:
+    "Microsoft-Windows-PowerShell%4Operational.evtx" -> "PowerShell / Operational".
+    ("%4" is how Windows writes the "/" of a channel name in a file name.)
+    Display only -- the path itself is kept with the item and shown as its
+    tooltip."""
+    name = os.path.basename(path)
+    if name.lower().endswith(".evtx"):
+        name = name[:-5]
+    name = name.replace("%4", " / ")
+    if name.startswith("Microsoft-Windows-") and len(name) > len("Microsoft-Windows-"):
+        name = name[len("Microsoft-Windows-"):]
+    return name or os.path.basename(path)
+
+
 def _section_label(text: str) -> QLabel:
     lbl = QLabel(text.upper())
     lbl.setObjectName("sectionHeader")
@@ -9495,9 +9510,11 @@ class MainWindow(QMainWindow):
         self._file_tree.setColumnCount(1)
         self._file_tree.setRootIsDecorated(False)
         self._file_tree.setIndentation(8)
-        self._file_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Entries show a short log name (see _short_log_name); the full path
+        # is the tooltip.
+        self._file_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._file_tree.header().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
+            0, QHeaderView.ResizeMode.Stretch
         )
         self._file_tree.itemClicked.connect(self._on_tree_item_clicked)
         self._file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -9615,6 +9632,38 @@ class MainWindow(QMainWindow):
             self._close_hw_loading_dialog()
             self._proxy_busy_shown = False
 
+    _DEFAULT_COL_WIDTHS = {
+        0: 58,   # #  (six-digit row numbers)
+        1: 70,   # Event ID
+        2: 112,  # Level (marker + "Information")
+        3: 170,  # Timestamp
+        4: 130,  # Computer
+        5: 150,  # Channel
+        6: 110,  # User
+        7: 80,   # ATT&CK
+        8: 130,  # Source File
+        9: 110,  # Keywords
+        10: 100, # Operational Code
+        11: 130, # Log
+        12: 75,  # Process ID
+        13: 75,  # Thread ID
+        14: 80,  # Processor ID
+        15: 75,  # Session ID
+        16: 80,  # Kernel Time
+        17: 80,  # User Time
+        18: 90,  # Processor Time
+        19: 120, # Correlation Id
+        20: 90,  # Record Number
+        22: 100, # Event Record ID
+    }
+
+    def _apply_default_col_widths(self, table) -> None:
+        """Default column widths.  Re-applied after every setModel(): swapping
+        the model resets the header, which left per-file tabs with every column
+        at Qt's 100 px default (a wide # column, a clipped Timestamp)."""
+        for i, w_val in self._DEFAULT_COL_WIDTHS.items():
+            table.setColumnWidth(i, w_val)
+
     def _create_configured_table(self, proxy: EventFilterProxyModel) -> _EventTableView:
         """Create and configure a QTableView with standard settings."""
         table = _EventTableView()
@@ -9650,33 +9699,7 @@ class MainWindow(QMainWindow):
 
         hdr.setSortIndicatorShown(False)
 
-        # ── Default column widths (COLUMNS currently has 22 entries) ──────
-        col_widths = {
-            0: 58,   # #  (six-digit row numbers)
-            1: 70,   # Event ID
-            2: 112,  # Level (marker + "Information")
-            3: 170,  # Timestamp
-            4: 130,  # Computer
-            5: 150,  # Channel
-            6: 110,  # User
-            7: 80,   # ATT&CK
-            8: 130,  # Source File
-            9: 110,  # Keywords
-            10: 100, # Operational Code
-            11: 130, # Log
-            12: 75,  # Process ID
-            13: 75,  # Thread ID
-            14: 80,  # Processor ID
-            15: 75,  # Session ID
-            16: 80,  # Kernel Time
-            17: 80,  # User Time
-            18: 90,  # Processor Time
-            19: 120, # Correlation Id
-            20: 90,  # Record Number
-            22: 100, # Event Record ID
-        }
-        for i, w_val in col_widths.items():
-            table.setColumnWidth(i, w_val)
+        self._apply_default_col_widths(table)
 
         # Apply current column visibility
         self._apply_col_visibility(table, self._visible_cols)
@@ -10157,6 +10180,7 @@ class MainWindow(QMainWindow):
 
         file_view = self._create_configured_table(file_model)
         file_view.horizontalHeader().setSortIndicatorShown(False)
+        self._apply_default_col_widths(file_view)
         self._apply_col_visibility(file_view, self._visible_cols)
         file_view.selectionModel().selectionChanged.connect(self._on_hw_row_selected)
         file_model.busy_started.connect(self._on_hw_filter_busy_started)
@@ -10167,14 +10191,7 @@ class MainWindow(QMainWindow):
         self._events_tab_widget.setTabToolTip(tab_idx, filepath)
 
         # Close button
-        _btn_x = QPushButton("×")
-        _btn_x.setFixedSize(16, 16)
-        _btn_x.setStyleSheet(
-            "QPushButton{color:#7a5c1e;font-size:12pt;font-weight:bold;"
-            "border:none;background:transparent;padding:0;margin:0;}"
-            "QPushButton:hover{color:#a01800;background:#f5e0dc;border-radius:2px;}"
-        )
-        _btn_x.clicked.connect(
+        _btn_x = self._make_tab_close_button(
             lambda _=False, t=file_view: self._on_file_tab_close_requested(
                 self._events_tab_widget.indexOf(t)
             )
@@ -10281,8 +10298,8 @@ class MainWindow(QMainWindow):
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.selectionModel().selectionChanged.connect(self._on_row_selected)
 
-        # Column widths + visibility already applied by _create_configured_table.
-        # Re-apply visibility after model re-attach (setModel(None) above resets hidden state).
+        # setModel(None) above reset the header: widths and visibility again.
+        self._apply_default_col_widths(table)
         self._apply_col_visibility(table, self._visible_cols)
 
         proxy.setDynamicSortFilter(True)
@@ -10293,14 +10310,7 @@ class MainWindow(QMainWindow):
         self._events_tab_widget.setTabToolTip(tab_idx, filepath)
 
         # Brown × close button (replaces Qt's default platform close button)
-        _btn_close = QPushButton("×")
-        _btn_close.setFixedSize(16, 16)
-        _btn_close.setStyleSheet(
-            "QPushButton { color: #7a5c1e; font-size: 12pt; font-weight: bold;"
-            " border: none; background: transparent; padding: 0; margin: 0; }"
-            "QPushButton:hover { color: #a01800; background: #f5e0dc; border-radius: 2px; }"
-        )
-        _btn_close.clicked.connect(
+        _btn_close = self._make_tab_close_button(
             lambda _=False, t=table: self._on_file_tab_close_requested(
                 self._events_tab_widget.indexOf(t)
             )
@@ -10456,6 +10466,23 @@ class MainWindow(QMainWindow):
                 item.setFont(0, f)
                 break
 
+    def _make_tab_close_button(self, on_click) -> QPushButton:
+        """The close button on an event tab: a small line icon that shows a
+        soft background on hover (it was a bold 12 pt amber "x" glyph)."""
+        from .icons import set_icon
+        btn = QPushButton()
+        set_icon(btn, "x", "text_muted", size=10)
+        btn.setFixedSize(18, 18)
+        btn.setToolTip("Close this tab")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 0; margin: 0;"
+            " min-height: 0; border-radius: 3px; }"
+            f"QPushButton:hover {{ background: {COLORS['bg_hover']}; }}"
+        )
+        btn.clicked.connect(on_click)
+        return btn
+
     def _attach_all_events_close_btn(self) -> None:
         """Attach a close button to the All Events tab (index 0) for separate mode."""
         bar = self._events_tab_widget.tabBar()
@@ -10463,14 +10490,7 @@ class MainWindow(QMainWindow):
         existing = bar.tabButton(0, bar.ButtonPosition.RightSide)
         if existing is not None:
             existing.deleteLater()
-        btn = QPushButton("×")
-        btn.setFixedSize(16, 16)
-        btn.setStyleSheet(
-            "QPushButton { color: #7a5c1e; font-size: 12pt; font-weight: bold;"
-            " border: none; background: transparent; padding: 0; margin: 0; }"
-            "QPushButton:hover { color: #a01800; background: #f5e0dc; border-radius: 2px; }"
-        )
-        btn.clicked.connect(lambda: self._on_file_tab_close_requested(0))
+        btn = self._make_tab_close_button(lambda: self._on_file_tab_close_requested(0))
         bar.setTabButton(0, bar.ButtonPosition.RightSide, btn)
 
     def _open_all_events_tab(self) -> None:
@@ -10493,7 +10513,7 @@ class MainWindow(QMainWindow):
         all_item.setFont(0, f)
         self._file_tree.addTopLevelItem(all_item)
         for filepath in sorted(self._per_file_data.keys()):
-            item = QTreeWidgetItem([os.path.basename(filepath)])
+            item = QTreeWidgetItem([_short_log_name(filepath)])
             item.setData(0, Qt.ItemDataRole.UserRole, filepath)
             item.setToolTip(0, filepath)
             self._file_tree.addTopLevelItem(item)
@@ -11613,7 +11633,7 @@ class MainWindow(QMainWindow):
             all_item.setFont(0, f)
             self._file_tree.addTopLevelItem(all_item)
             for fp in source_files:
-                ti = QTreeWidgetItem([os.path.basename(fp)])
+                ti = QTreeWidgetItem([_short_log_name(fp)])
                 ti.setData(0, Qt.ItemDataRole.UserRole, fp)
                 ti.setToolTip(0, fp)
                 self._file_tree.addTopLevelItem(ti)
@@ -13330,9 +13350,7 @@ class MainWindow(QMainWindow):
             self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
             self._table.selectionModel().selectionChanged.connect(self._on_row_selected)
-            col_widths = [58, 70, 112, 170, 130, 150, 110, 80]
-            for i, w_val in enumerate(col_widths):
-                self._table.setColumnWidth(i, w_val)
+            self._apply_default_col_widths(self._table)
             self._apply_col_visibility(self._table, self._visible_cols)
             self._proxy_model.setDynamicSortFilter(True)
             self._table.setUpdatesEnabled(True)
@@ -13400,9 +13418,7 @@ class MainWindow(QMainWindow):
             self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
             self._table.selectionModel().selectionChanged.connect(self._on_row_selected)
 
-            col_widths = [58, 70, 112, 170, 130, 150, 110, 80]
-            for i, w_val in enumerate(col_widths):
-                self._table.setColumnWidth(i, w_val)
+            self._apply_default_col_widths(self._table)
 
             # Re-apply user's column visibility — setModel() above resets all
             # hidden-column state so every column becomes visible again.
@@ -17231,14 +17247,7 @@ class MainWindow(QMainWindow):
         """Add a pivot tab (with close button and file-tree entry) and show it."""
         tab_idx = self._events_tab_widget.addTab(table, label)
         self._events_tab_widget.setTabToolTip(tab_idx, tooltip)
-        _btn_close = QPushButton("×")
-        _btn_close.setFixedSize(16, 16)
-        _btn_close.setStyleSheet(
-            "QPushButton { color: #7a5c1e; font-size: 12pt; font-weight: bold;"
-            " border: none; background: transparent; padding: 0; margin: 0; }"
-            "QPushButton:hover { color: #a01800; background: #f5e0dc; border-radius: 2px; }"
-        )
-        _btn_close.clicked.connect(
+        _btn_close = self._make_tab_close_button(
             lambda _=False, t=table: self._on_file_tab_close_requested(
                 self._events_tab_widget.indexOf(t)
             )
