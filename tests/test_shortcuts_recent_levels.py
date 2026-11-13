@@ -134,6 +134,23 @@ def main() -> int:
     check("the shortcuts list shows every entry",
           all(k in shown.get("labels", []) for k, _ in w.SHORTCUTS), str(shown.get("labels", [])[:6]))
 
+    about = [a for a in w.menuBar().findChildren(type(w.menuBar().actions()[0]))
+             if a.text() == "About EventHawk"]
+    check("Help > About EventHawk exists", bool(about))
+
+    from PySide6.QtWidgets import QMessageBox
+    popped = []
+    orig_warn = QMessageBox.warning
+    QMessageBox.warning = staticmethod(lambda *a, **k: popped.append(a[1:3]))
+    try:
+        w._file_list.clear()
+        w._on_parse_clicked()
+    finally:
+        QMessageBox.warning = orig_warn
+    check("Parse with nothing queued does not interrupt with a dialog", not popped, str(popped))
+    check("...and says what to do in the status bar",
+          "Ctrl+O" in w.statusBar().currentMessage(), w.statusBar().currentMessage())
+
     T.Mode(mw, False).load(w, evs)
     w.resize(1400, 800); w.show(); T.pump(300)
     row = next(r for r in range(w._proxy_model.rowCount())

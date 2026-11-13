@@ -8927,6 +8927,8 @@ class MainWindow(QMainWindow):
         a.setShortcut(QKeySequence("Ctrl+/"))
         a.triggered.connect(self._show_shortcuts)
         hm.addSeparator()
+        a = hm.addAction("About EventHawk")
+        a.triggered.connect(self._on_about)
         a = hm.addAction("Open Log Folder")
         a.setToolTip("Open the folder holding EventHawk's log files")
         a.triggered.connect(self._open_log_folder)
@@ -9081,6 +9083,7 @@ class MainWindow(QMainWindow):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
         btn_add_files = QPushButton("Add files")
+        self._btn_add_files = btn_add_files
         set_icon(btn_add_files, "file-plus")
         btn_add_files.setToolTip("Add .evtx files  (Ctrl+O)")
         btn_add_files.clicked.connect(self._on_add_files)
@@ -13120,7 +13123,14 @@ class MainWindow(QMainWindow):
 
         if not files:
             if self._file_list.count() == 0:
-                QMessageBox.warning(self, "No Files", "Add EVTX files or a directory first.")
+                # Not a modal: the empty table already says what to do; point
+                # at the way in instead of interrupting.
+                self._set_status("Nothing to parse yet")
+                self.statusBar().showMessage(
+                    "Add .evtx files or a folder first — Add files (Ctrl+O) / "
+                    "Add folder (Ctrl+Shift+O), or drop them on the window", 8000)
+                if getattr(self, "_btn_add_files", None) is not None and self._panel_open:
+                    self._btn_add_files.setFocus(Qt.FocusReason.OtherFocusReason)
             # else: the unresolved dialog above already explained why.
             return
 

@@ -19,7 +19,7 @@ The event grid begins with **All Events**. File tabs and investigation tabs have
 | File | Add File(s), Add Directory, Open Recent (recently added files and folders), Export Events, Exit |
 | Tools | View Logon Sessions, WiFi History, Remote Assistance Sessions, System Activity, Computer Normalisation, PowerShell History (extraction from the queued input files after choosing an output folder), Clear Results, Baseline Analysis (Sentinel) |
 | View | Time Zone (timestamp display settings), Timestamp Precision (Seconds, Milliseconds, Microseconds), Theme (Light, Dark) |
-| Help | Keyboard Shortcuts, Open Log Folder |
+| Help | Keyboard Shortcuts, About EventHawk, Open Log Folder |
 
 Profiles are in the left panel: tick them in the profile list, then **Apply**. The **+** and pencil buttons create and edit profiles. Ticking a box alone does not apply the profile.
 
