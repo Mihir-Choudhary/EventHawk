@@ -9719,11 +9719,11 @@ class MainWindow(QMainWindow):
         lbl.setStyleSheet(f"color:{COLORS['text_dim']};font-size:8pt;font-weight:bold;letter-spacing:1px;border:none;")
         # Brief / Full toggle
         self._btn_detail_mode = QPushButton("Brief")
-        self._btn_detail_mode.setMaximumHeight(22)
         self._btn_detail_mode.setCheckable(True)
         self._btn_detail_mode.setChecked(False)   # Full mode is default (not "Brief")
         self._btn_detail_mode.setToolTip(
-            "Toggle between Full detail (all fields) and Brief (header only)"
+            "Brief: only the header and the event's description.\n"
+            "Click again to show every field."
         )
         self._btn_detail_mode.setMinimumHeight(24)
         self._btn_detail_mode.toggled.connect(self._on_detail_mode_toggled)
@@ -15880,7 +15880,9 @@ class MainWindow(QMainWindow):
     def _on_detail_mode_toggled(self, brief: bool) -> None:
         """Called when the Brief/Full toggle button is clicked."""
         self._detail_full_mode = not brief
-        self._btn_detail_mode.setText("Brief" if not brief else "Full")
+        # The label stays "Brief"; the button is highlighted (checked) while
+        # Brief is on.  It used to switch to "Full" while Brief was on, so the
+        # highlighted button named the mode that was NOT shown.
         # Re-render the currently selected event (if any)
         try:
             sel = self._active_table.selectionModel().selectedRows()
