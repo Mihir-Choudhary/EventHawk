@@ -6161,8 +6161,14 @@ class _RemoteAssistanceDialog(QDialog):
         for orig_row, s in enumerate(self._shown_sessions):
             r = tbl.rowCount()
             tbl.insertRow(r)
+            _origin = self._rdp_origin(s)
             cells = [
-                s["type"],
+                # An inbound Terminal Services session is RDP access only when
+                # its source is a remote address.  Every one used to read "RDP
+                # Session" in the accent colour -- remote access at a glance --
+                # also console logons (Address 'LOCAL') and sessions whose
+                # events carry no source at all (logoff, disconnect).
+                {"local": "Console (local)", "unknown": "Session (no source)"}.get(_origin, s["type"]),
                 s["computer"],
                 _ts_disp(s, "start"),
                 _ts_disp(s, "end"),
@@ -6218,8 +6224,20 @@ class _RemoteAssistanceDialog(QDialog):
                 if c == _COL_TYPE:
                     # Store the shown_sessions index for context-menu lookup.
                     item.setData(Qt.ItemDataRole.UserRole, orig_row)
-                    color = self._TYPE_COLORS.get(s["type"], "#1e1a14")
-                    item.setForeground(qc(color))
+                    if _origin == "local":
+                        item.setForeground(qc("#5a4e42"))
+                        item.setToolTip(f"{s['type']} record with source Address 'LOCAL'.\n"
+                                        + self._FLAG_HELP["LOCAL_CONSOLE"])
+                    elif _origin == "unknown":
+                        item.setForeground(qc("#5a4e42"))
+                        item.setToolTip(
+                            f"{s['type']} record whose events name no source address "
+                            "(e.g. only a logoff or disconnect was logged).\nOn its own it "
+                            "cannot show remote access: the same events are logged for "
+                            "console sessions.  RDP access needs a remote source address.")
+                    else:
+                        color = self._TYPE_COLORS.get(s["type"], "#1e1a14")
+                        item.setForeground(qc(color))
                 tbl.setItem(r, c, item)
         tbl.setSortingEnabled(True)
 
@@ -6240,8 +6258,34 @@ class _RemoteAssistanceDialog(QDialog):
         )
         if type_parts:
             html += f"&ensp;—&ensp;<span style='color:{tc('#5a4030')};'>{type_parts}</span>"
+        origins = [self._rdp_origin(s) for s in self._all_sessions]
+        n_rdp = sum(1 for o in origins if o is not None)
+        if n_rdp:
+            n_remote, n_local, n_unknown = (origins.count("remote"), origins.count("local"),
+                                            origins.count("unknown"))
+            html += (f"<br><span style='color:{tc('#7a4c00')};'>Of the {n_rdp} RDP session record(s): "
+                     f"<b>{n_remote}</b> from a remote address &ensp;·&ensp; <b>{n_local}</b> local "
+                     f"console (Address LOCAL) &ensp;·&ensp; <b>{n_unknown}</b> with no source address"
+                     f"</span>")
         if hasattr(self, "_lbl_summary"):
             self._lbl_summary.setText(html)
+
+    @staticmethod
+    def _is_local_console(s: dict) -> bool:
+        return any(str(f).split(":", 1)[0] == "LOCAL_CONSOLE" for f in s.get("flags", ()))
+
+    @classmethod
+    def _rdp_origin(cls, s: dict):
+        """For an inbound "RDP Session" record: "remote" (a remote source
+        address or host), "local" (Address 'LOCAL'), "unknown" (no source in
+        its events); None for any other type."""
+        if s.get("type") != "RDP Session":
+            return None
+        if (s.get("remote_ip") or "").strip() or (s.get("remote_host") or "").strip():
+            return "remote"
+        if cls._is_local_console(s):
+            return "local"
+        return "unknown"
 
     # ── Context menu ───────────────────────────────────────────────────────
 
