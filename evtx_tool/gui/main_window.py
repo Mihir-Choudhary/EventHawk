@@ -8801,6 +8801,83 @@ class _OnEnabled(QObject):
         return False
 
 
+def _make_wrap_name_delegate(tree):
+    """Item delegate for the file list's name column: the row is as tall as
+    its wrapped name.  Qt's own size hint ignores wrapping when the tree has
+    a stylesheet with item padding, so a long name wrapped inside a one-line
+    row and its second line was cut off with an ellipsis."""
+    from PySide6.QtCore import QRect, QSize
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
+
+    # Measured and painted with the same rules, so a wrapped name always fits
+    # the row it was measured for (Qt's painter wrapped differently and clipped).
+    # Lines break at spaces and after hyphens; inside a word only when that
+    # one word is wider than the column ("LessPrivilegedAppContainer").
+    import re as _re
+    _WORD = int(Qt.TextFlag.TextWordWrap)
+    _ANY = int(Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextWrapAnywhere)
+
+    def _layout(text, width, fm):
+        """(text to draw, flags).  A word wider than the column gets break
+        points at its capitals (LessPrivileged|App|Container); only if a piece
+        is still too wide does the line break anywhere."""
+        def fit(part):
+            return fm.horizontalAdvance(part + "-") <= width
+        out = []
+        for tok in _re.split(r"(\s+|-)", text):
+            if tok and not tok.isspace() and tok != "-" and not fit(tok):
+                tok = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "\u200b", tok)
+            out.append(tok)
+        shown = "".join(out)
+        for piece in _re.split(r"[\s\u200b-]+", shown):
+            if piece and not fit(piece):
+                return shown, _ANY
+        return shown, _WORD
+
+    class _D(QStyledItemDelegate):
+        _PAD_W, _PAD_H = 16, 8           # QTreeWidget::item { padding: 4px 8px }
+
+        def paint(self, painter, option, index):
+            if index.column() != 0:
+                return super().paint(painter, option, index)
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            text = opt.text
+            opt.text = ""                 # background, selection, hover: the style draws them
+            style = opt.widget.style() if opt.widget is not None else QApplication.style()
+            style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+            fg = index.data(Qt.ItemDataRole.ForegroundRole)
+            colour = fg.color() if hasattr(fg, "color") else QColor(COLORS["text"])
+            painter.save()
+            painter.setFont(opt.font)
+            painter.setPen(colour)
+            r = option.rect.adjusted(self._PAD_W // 2, self._PAD_H // 2, -self._PAD_W // 2, -self._PAD_H // 2)
+            shown, flags = _layout(text, r.width(), opt.fontMetrics)
+            painter.drawText(r, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter) | flags, shown)
+            painter.restore()
+
+        def sizeHint(self, option, index):  # noqa: N802
+            base = super().sizeHint(option, index)
+            if index.column() != 0:
+                return base
+            text = str(index.data() or "")
+            depth, parent = 0, index.parent()
+            while parent.isValid():
+                depth, parent = depth + 1, parent.parent()
+            # Top-level rows are not indented when the root has no branch marks.
+            levels = depth + (1 if tree.rootIsDecorated() else 0)
+            width = tree.header().sectionSize(0) - self._PAD_W - tree.indentation() * levels
+            if width <= 20 or not text:
+                return base
+            fm = option.fontMetrics
+            shown, flags = _layout(text, width, fm)
+            r = fm.boundingRect(QRect(0, 0, width, 10_000), flags, shown)
+            return QSize(base.width(), max(base.height(), r.height() + self._PAD_H))
+
+    return _D(tree)
+
+
 class _FileQueueList(QListWidget):
     """The queued inputs: long paths elided in the middle, a hint while empty."""
 
@@ -9755,6 +9832,15 @@ class MainWindow(QMainWindow):
             1, QHeaderView.ResizeMode.ResizeToContents
         )
         self._file_tree.header().setStretchLastSection(False)
+        # Long log names wrap onto a second line instead of ending in "…"
+        # ("Resource-Exhaustion-Detector / Operational"); rows take the
+        # height their name needs and are re-measured when the panel resizes.
+        self._file_tree.setWordWrap(True)
+        self._file_tree.setUniformRowHeights(False)
+        self._file_tree.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self._file_tree.setItemDelegateForColumn(0, _make_wrap_name_delegate(self._file_tree))
+        self._file_tree.header().sectionResized.connect(
+            lambda *_a: self._file_tree.doItemsLayout())
         self._file_tree.itemClicked.connect(self._on_tree_item_clicked)
         self._file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._file_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
@@ -18723,6 +18809,7 @@ class MainWindow(QMainWindow):
             # ── Expanding ─────────────────────────────────────────────────
             start_val = self._RAIL_WIDTH
             end_val   = self._panel_stored_width
+            self._left_panel_scroll.setVisible(True)    # contents back before it slides open
 
         self._panel_open = not self._panel_open
         self._sync_panel_toggle_icon()
@@ -18740,6 +18827,14 @@ class MainWindow(QMainWindow):
                 w.setMaximumWidth(16_777_215)
                 w.setMinimumWidth(self._PANEL_OPEN_MIN_WIDTH)
             anim.finished.connect(_opened)
+        else:
+            # Folded, the strip belongs to the arrow alone: the panel's own
+            # controls were squeezed into it, poked through at the edge and
+            # pushed the arrow half out of sight.
+            def _folded():
+                if not self._panel_open:
+                    self._left_panel_scroll.setVisible(False)
+            anim.finished.connect(_folded)
 
         anim.start()
         self._panel_anim = anim  # keep reference alive (prevent GC)
@@ -18771,6 +18866,7 @@ class MainWindow(QMainWindow):
             self._panel_stored_width = max(wrapper.width(), self._PANEL_OPEN_MIN_WIDTH)
             wrapper.setMinimumWidth(self._RAIL_WIDTH)
             wrapper.setMaximumWidth(self._RAIL_WIDTH)   # collapse to the toggle strip instantly
+            self._left_panel_scroll.setVisible(False)
             self._panel_open = False
             self._sync_panel_toggle_icon()
 

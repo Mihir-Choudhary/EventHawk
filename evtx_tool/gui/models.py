@@ -430,12 +430,22 @@ def compute_custom_values(compiled, events) -> dict:
 # replaces them), so once a big load is in, collect once and freeze what is
 # there: later collections skip it.
 _GC_FREEZE_MIN_EVENTS = 50_000
+_GC_UNFREEZE_AT_EXIT = False
 
 
 def _freeze_after_big_load(n_events: int) -> None:
     if n_events < _GC_FREEZE_MIN_EVENTS:
         return
     import gc
+    global _GC_UNFREEZE_AT_EXIT
+    if not _GC_UNFREEZE_AT_EXIT:
+        # Frozen objects skip the interpreter's final cleanup, so Qt destroyed
+        # their wrappers after Python was gone: "Fatal Python error:
+        # gilstate_tss_set" on exit.  Unfreezing at exit restores the normal
+        # shutdown order.
+        import atexit
+        atexit.register(gc.unfreeze)
+        _GC_UNFREEZE_AT_EXIT = True
     gc.unfreeze()        # the previous load's objects go back to the collector
     # Only the young generation: the fresh garbage of the parse lives there.
     # A full collection here added 0.57 s to every big load.
