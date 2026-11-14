@@ -16,7 +16,7 @@ Right-click a header and choose **Add / Remove Columns**. The dialog supports se
 
 ## Custom columns
 
-Choose **Add Custom Column** in the header menu or in an event's right-click menu (that event's fields are then listed to pick from: its own data fields first, filterable by name or value). While you edit, a preview line shows the column's value for that event, or why it would be empty or is not valid yet; **This event (ID)** limits the column to the event's ID. A definition combines literal text with retained field tokens, for example:
+Choose **Add Custom Column** in the header menu or in an event's right-click menu (that event's fields are then listed to pick from: its own data fields first, filterable by name or value). While you edit, a preview line shows the column's value for that event, or why it would be empty or is not valid yet; **This event (ID)** limits the column to the event's ID. To show several fields in one column, click them one after another: each is joined to the previous one with the **Join fields with** separator (space, `\` for DOMAIN\user, ` | `, ` / `, `:`, `, `, an arrow, or nothing). Each field shows as a chip under the Value; its × removes it with its separator. Changing the separator re-joins fields that are joined only by separators; hand-written text is left as written. A definition combines literal text with retained field tokens, for example:
 
 ```text
 {EventID}
