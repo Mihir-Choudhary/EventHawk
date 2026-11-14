@@ -12905,11 +12905,61 @@ class MainWindow(QMainWindow):
         if not editing:
             self._next_custom_col_id = getattr(self, "_next_custom_col_id", 0) + 1
             col_id = self._next_custom_col_id
-        dlg = CustomColumnDialog(col_id, sample_event=self._selected_event_for_picker(),
-                                 spec=spec, parent=self)
+        sample = self._selected_event_for_picker()
+        peers, peer_total = self._peer_fields_for(sample, model)
+        dlg = CustomColumnDialog(col_id, sample_event=sample, spec=spec, parent=self,
+                                 peer_fields=peers, peer_total=peer_total)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._compute_custom_column(model, dlg.compiled(), editing)
+
+    _PEER_SCAN_LIMIT = 2000
+
+    def _peer_fields_for(self, sample, model) -> tuple:
+        """Fields other events with the sample's provider + ID carry (see
+        core.custom_columns.peer_fields).  At most _PEER_SCAN_LIMIT events are
+        read, so the dialog opens at once even on millions of events."""
+        from evtx_tool.core.custom_columns import peer_fields
+        if not sample:
+            return [], 0
+        try:
+            eid = int(sample.get("event_id"))
+        except (TypeError, ValueError):
+            return [], 0
+        prov = sample.get("provider") or ""
+        try:
+            if self._hw_model is not None:
+                return peer_fields(sample, self._jm_peer_events(eid, prov), self._PEER_SCAN_LIMIT)
+            events = getattr(model, "_events", None) or []
+            peers = (ev for ev in events
+                     if ev.get("event_id") == eid and (ev.get("provider") or "") == prov)
+            return peer_fields(sample, peers, self._PEER_SCAN_LIMIT)
+        except Exception:
+            logger.warning("custom column: reading other events' fields failed", exc_info=True)
+            return [], 0
+
+    def _jm_peer_events(self, eid: int, prov: str):
+        """Up to _PEER_SCAN_LIMIT events' data with this ID + provider, from the
+        Parquet shards (Juggernaut keeps event data on disk)."""
+        import json as _json
+        import duckdb
+        shards = self._hw_model._get_shard_paths()
+        if not shards:
+            return
+        quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in shards)
+        con = duckdb.connect()
+        try:
+            rows = con.execute(
+                f"SELECT event_data_json FROM parquet_scan([{quoted}]) "
+                f"WHERE event_id = ? AND COALESCE(provider, '') = ? LIMIT {int(self._PEER_SCAN_LIMIT)}",
+                [eid, prov]).fetchall()
+        finally:
+            con.close()
+        for (js,) in rows:
+            try:
+                yield {"event_data": _json.loads(js or "{}")}
+            except (ValueError, TypeError):
+                continue
 
     def _edit_custom_column(self, col_id: int) -> None:
         model = self._custom_cols_model()

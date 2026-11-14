@@ -153,6 +153,36 @@ def main() -> int:
     check("'Nothing' joins without a separator (when that is wanted)",
           d4._inp_value.text() == "{Data[TargetDomainName]}{Data[TargetUserName]}", d4._inp_value.text())
 
+    print("\n=== A3. fields other events of the same kind carry ===")
+    from evtx_tool.core.custom_columns import peer_fields
+    base = {"event_id": 1000, "provider": "Defender",
+            "event_data": {"Scan ID": "a", "Scan Type": "Quick"}}
+    others = [{"event_data": {"Scan ID": "b", "Scan Type": "Full", "Scan Trigger": "Scheduled"}},
+              {"event_data": {"Scan ID": "c", "Scan Type": "Full", "Scan Trigger": "",
+                              "Thread Priority": "Low"}},
+              {"event_data": {"Scan ID": "d", "Scan Type": "Quick", "Scan Trigger": "Manual"}}]
+    pf, scanned = peer_fields(base, iter(others))
+    got = {tok: (ex, n) for tok, _l, ex, n in pf}
+    check("fields only other events have are found, with an example and how often",
+          got.get("{Data[Scan Trigger]}") == ("Scheduled", 3) and got.get("{Data[Thread Priority]}") == ("Low", 1)
+          and scanned == 3, str(got))
+    check("fields the sample already has are not repeated",
+          "{Data[Scan ID]}" not in got and "{Data[Scan Type]}" not in got)
+    pf2, scanned2 = peer_fields(base, iter(others * 10), limit=4)
+    check("the scan stops at its limit", scanned2 == 4, str(scanned2))
+    dp = CustomColumnDialog(col_id=5, sample_event=base, peer_fields=pf, peer_total=scanned)
+    toks = [dp._tree.topLevelItem(i).data(0, 0x0100 + 1) for i in range(dp._tree.topLevelItemCount())]
+    check("the picker lists them after the event's own fields, before System",
+          toks.index("{Data[Scan Trigger]}") > toks.index("{Data[Scan Type]}")
+          and toks.index("{Data[Scan Trigger]}") < toks.index("{EventID}"), str(toks[:6]))
+    it = dp._tree.topLevelItem(toks.index("{Data[Scan Trigger]}"))
+    check("...marked as not in this event, with the example",
+          it.text(1) == "not in this event — e.g. Scheduled" and "3 of 3" in it.toolTip(0), it.text(1))
+    dp._insert_field(it)
+    check("...and can be added to the column like any field",
+          dp._inp_value.text() == "{Data[Scan Trigger]}" and "no such field" in dp._lbl_preview.text(),
+          dp._lbl_preview.text())
+
     for jm in (False, True):
         tag = "JM" if jm else "Normal"
         print(f"\n=== B/C. {tag} ===")
@@ -164,6 +194,14 @@ def main() -> int:
         T.pump(300)
         w._table.selectRow(0)
         T.pump(100)
+
+        # A3 in the window: peers come from the tab's events (JM: the Parquet shards)
+        sample = w._selected_event_for_picker()
+        sample = dict(sample, event_data={"LogonType": "3"})      # lacks IpAddress
+        pf_w, n_w = w._peer_fields_for(sample, w._custom_cols_model())
+        check(f"{tag}: the window finds the field other events with this ID carry",
+              any(t == "{Data[IpAddress]}" for t, _l, _e, _n in pf_w) and n_w == len(TYPES),
+              f"{[p[0] for p in pf_w]} scanned={n_w}")
 
         # B. the row menu
         seen = {}

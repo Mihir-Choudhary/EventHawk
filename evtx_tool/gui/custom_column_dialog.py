@@ -74,7 +74,8 @@ def token_label(token: str) -> str:
 
 class CustomColumnDialog(QDialog):
     def __init__(self, col_id: int, sample_event: "dict | None" = None,
-                 spec: "CustomColumnSpec | None" = None, parent=None):
+                 spec: "CustomColumnSpec | None" = None, parent=None,
+                 peer_fields: "list | None" = None, peer_total: int = 0):
         super().__init__(parent)
         self.setWindowTitle("Edit Custom Column" if spec else "Add Custom Column")
         self.setMinimumSize(620, 540)
@@ -152,8 +153,9 @@ class CustomColumnDialog(QDialog):
         self._cmb_join.currentIndexChanged.connect(self._rejoin)
         self._cmb_type.currentIndexChanged.connect(self._update_preview)
 
-        hint = ("Fields of the selected event — click one to add it to the column; click more "
-                "to combine them (joined with the separator above)."
+        hint = ("Fields of the selected event (dimmed: fields other events with its ID have) — "
+                "click one to add it to the column; click more to combine them (joined with "
+                "the separator above)."
                 if sample_event else
                 "No event is selected, so only the System fields are listed. Select an event "
                 "in the table to pick from its EventData / UserData fields.")
@@ -173,9 +175,30 @@ class CustomColumnDialog(QDialog):
             # The event's own data fields first: they are what a column is
             # usually for; the System fields already have built-in columns.
             _cat = field_catalog(sample_event)
-            _cat = ([c for c in _cat if c[0].lower().startswith("{data[")]
-                    + [c for c in _cat if not c[0].lower().startswith("{data[")])
-            for token, label, value in _cat:
+            _data = [c for c in _cat if c[0].lower().startswith("{data[")]
+            _system = [c for c in _cat if not c[0].lower().startswith("{data[")]
+            for token, label, value in _data:
+                it = QTreeWidgetItem([label, value[:200]])
+                it.setData(0, _ROLE_TOKEN, token)
+                it.setToolTip(0, token)
+                self._tree.addTopLevelItem(it)
+            # Fields other events with this ID carry and this one does not:
+            # an event type's fields vary (Restart Manager File_1..n, Defender's
+            # optional scan settings), and a column built from one event missed
+            # them.  Dimmed, with an example value from another event.
+            from PySide6.QtGui import QColor
+            _eid = sample_event.get("event_id")
+            for token, label, example, count in (peer_fields or []):
+                it = QTreeWidgetItem([label, f"not in this event \u2014 e.g. {example[:160]}"
+                                      if example else "not in this event"])
+                it.setData(0, _ROLE_TOKEN, token)
+                it.setToolTip(0, f"{token}\nNot in the selected event; seen in {count:,} of "
+                                 f"{peer_total:,} event(s) with ID {_eid} from this provider.")
+                it.setToolTip(1, it.toolTip(0))
+                for c in (0, 1):
+                    it.setForeground(c, QColor(COLORS["text_muted"]))
+                self._tree.addTopLevelItem(it)
+            for token, label, value in _system:
                 it = QTreeWidgetItem([label, value[:200]])
                 it.setData(0, _ROLE_TOKEN, token)
                 it.setToolTip(0, token)
