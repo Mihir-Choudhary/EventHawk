@@ -380,8 +380,28 @@ QLabel#statsLabel {
     font-size: 8pt;
 }
 QLabel#countLabel {
-    color: #7a5c1e;
+    color: #5a4e42;
     font-size: 8pt;
+}
+QLabel#countLabel[filtered="true"] {
+    color: #7a5c1e;
+    font-weight: bold;
+}
+QLabel#modeChip {
+    color: #7a5c1e;
+    background: #ddd4bc;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 8pt;
+    font-weight: bold;
+}
+QPushButton[active="true"] {
+    color: #7a5c1e;
+    border-color: #7a5c1e;
+    background: #ddd4bc;
+}
+QPushButton[active="true"]:hover {
+    background: #d4c8a8;
 }
 
 /* ── Radio Buttons ───────────────────────────────────── */

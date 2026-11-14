@@ -2,7 +2,7 @@
 
 Juggernaut stores parsed events in Zstandard-compressed Parquet shards and loads selected columns into Arrow. DuckDB supplies queries against that data. This reduces the need to retain full event dictionaries for the main grid; metadata, text/search values, sorting, custom columns and tool results still use memory that grows with the collection.
 
-Click **Parse**. When the selected input exceeds the GUI's estimated RAM/responsiveness limits, the **Large Data Volume Detected** prompt offers **Use Juggernaut Mode**, **Proceed Anyway** (Normal), or **Cancel**. Choose **Use Juggernaut Mode** there; there is no separate mode checkbox. After loading, browse and filter the grid much as in Normal mode. Selecting detail may read the full event from Parquet using its source file and record-header number. Record numbers alone are not unique across files.
+Click **Parse**. When the selected input exceeds the GUI's estimated RAM/responsiveness limits, the **Large Data Volume Detected** prompt offers **Use Juggernaut Mode**, **Proceed Anyway** (Normal), or **Cancel**. Choose **Use Juggernaut Mode** there; there is no separate mode checkbox. After loading, a **Juggernaut** chip beside the event count shows the mode; browse and filter the grid much as in Normal mode. Selecting detail may read the full event from Parquet using its source file and record-header number. Record numbers alone are not unique across files.
 
 ## Differences to account for
 

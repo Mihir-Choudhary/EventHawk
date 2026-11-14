@@ -46,6 +46,8 @@ def run(mw, jm):
     m = T.Mode(mw, jm)
     w = mw.MainWindow()
     m.load(w, evs)
+    if jm:   # as a real Juggernaut load wires it: refresh the count after each filter
+        w._hw_model.busy_finished.connect(w._on_hw_filter_busy_finished)
 
     def count():
         if jm:
@@ -81,8 +83,17 @@ def run(mw, jm):
           (w._adv_filter_cfg or {}).get("text_search") == "HOST-A", str(w._adv_filter_cfg))
     check(f"{tag}: no 'Filter active' badge for a search-only filter (the box shows it)",
           w._lbl_adv_filter_badge.isHidden())
+    check(f"{tag}: a filtered view marks Clear All Filters active and the count filtered",
+          bool(w._btn_clear_all_filters.property("active"))
+          and bool(w._lbl_count.property("filtered")), w._lbl_count.text())
+    check(f"{tag}: the Juggernaut chip shows only in Juggernaut Mode",
+          (not w._lbl_mode_chip.isHidden()) == jm)
     w._quick_search.setText("")          # the clear button / Esc
     check(f"{tag}: emptying the box shows all 10 again", count() == 10, str(count()))
+    w._update_count_label()
+    check(f"{tag}: ...and the filtered cues go away",
+          not w._btn_clear_all_filters.property("active")
+          and not w._lbl_count.property("filtered"), w._lbl_count.text())
     check(f"{tag}: and removes the Advanced Filter it created", w._adv_filter_cfg is None,
           str(w._adv_filter_cfg))
 

@@ -27,7 +27,7 @@ ATT&CK Mapping starts checked. IOC Extraction, Correlation Engine and Hayabusa R
 
 ## Grid and filtering
 
-Click a supported column header for its value filter. Right-click a header for sorting, **Add / Remove Columns**, custom columns, and the two record-ID gap checks on their respective headers. Right-click a cell for quick filters and event actions. The search box at the left of the toolbar (**Ctrl+F**) is the Advanced Filter's text criterion without the dialog: **Enter** applies it, **Esc** or emptying the box removes it, and it stacks on any other Advanced Filter criteria. **Filter** opens Advanced Filter; **Clear All Filters** clears the filter layers handled by that action. Investigation tabs can also have a fixed base scope that clearing ordinary filters does not expand.
+Click a supported column header for its value filter. Right-click a header for sorting, **Add / Remove Columns**, custom columns, and the two record-ID gap checks on their respective headers. Right-click a cell for quick filters and event actions. The search box at the left of the toolbar (**Ctrl+F**) is the Advanced Filter's text criterion without the dialog: **Enter** applies it, **Esc** or emptying the box removes it, and it stacks on any other Advanced Filter criteria. While any filter narrows the view, the event count reads *shown / total* in bold and **Clear All Filters** is highlighted. **Filter** opens Advanced Filter; **Clear All Filters** clears the filter layers handled by that action. Investigation tabs can also have a fixed base scope that clearing ordinary filters does not expand.
 
 Critical, Error, Audit Failure and Warning rows carry a small coloured marker in the Level column; the level name is always shown beside it.
 

@@ -9400,6 +9400,15 @@ class MainWindow(QMainWindow):
         filter_row.addWidget(self._btn_clear_all_filters)
 
         filter_row.addStretch(1)
+        self._lbl_mode_chip = QLabel("Juggernaut")
+        self._lbl_mode_chip.setObjectName("modeChip")
+        self._lbl_mode_chip.setToolTip(
+            "Juggernaut Mode: for large collections. Events stay on disk and are "
+            "read as you scroll, filter and search.\n"
+            "ATT&CK mapping is not available; IOC extraction and correlation run "
+            "on events rebuilt from disk.")
+        self._lbl_mode_chip.setVisible(False)
+        filter_row.addWidget(self._lbl_mode_chip)
         self._lbl_count = QLabel("0 events")
         self._lbl_count.setObjectName("countLabel")
         self._lbl_count.setMinimumWidth(100)
@@ -14122,6 +14131,34 @@ class MainWindow(QMainWindow):
             self._lbl_adv_filter_badge.setToolTip("")
 
     def _update_count_label(self) -> None:
+        self._update_count_label_text()
+        self._refresh_view_cues()
+
+    def _refresh_view_cues(self) -> None:
+        """Make the view's state visible at a glance.
+
+        * Filtered: the count reads "shown / total" -- also emphasised, and
+          Clear All Filters looks active, so a narrowed view is never
+          mistaken for the whole collection.
+        * Juggernaut Mode: a chip beside the count (the window title said so,
+          but nothing in the window did once the status line moved on).
+        """
+        try:
+            filtered = "/" in self._lbl_count.text()
+            for w, prop in ((self._lbl_count, "filtered"), (self._btn_clear_all_filters, "active")):
+                if bool(w.property(prop)) != filtered:
+                    w.setProperty(prop, filtered)
+                    w.style().unpolish(w)
+                    w.style().polish(w)
+            self._btn_clear_all_filters.setToolTip(
+                ("The view is filtered. " if filtered else "") +
+                "Reset everything: text search, advanced filter, quick filters, "
+                "session filter, tactic filter, bookmark/IOC pivot")
+            self._lbl_mode_chip.setVisible(self._hw_model is not None)
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _update_count_label_text(self) -> None:
         # Bug 5 fix: in Juggernaut Mode read count from hw_model
         if self._hw_model is not None:
             # Per-file tab: show that file's filtered row count, not the global total
