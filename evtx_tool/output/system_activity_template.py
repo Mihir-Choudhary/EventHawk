@@ -94,6 +94,9 @@ h2{font-size:20px;letter-spacing:-.015em;margin:0 0 4px;font-weight:640}
 .brush .base{position:absolute;left:0;right:0;top:52px;height:1px;background:var(--line-2)}
 .brush .months{position:absolute;left:0;right:0;top:56px;height:16px;font-size:11px;color:var(--text-3)}
 .brush .months span{position:absolute;white-space:nowrap;padding-left:4px;border-left:1px solid var(--line-2);height:16px;line-height:16px}
+.brush .pre{position:absolute;top:0;height:52px;background:repeating-linear-gradient(135deg,transparent 0 6px,var(--grid) 6px 7px);border-right:1px dashed var(--line-2);pointer-events:none;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.brush .pre[hidden]{display:none}
+.brush .pre span{font-size:11.5px;color:var(--text-3);background:var(--surface);padding:1px 8px;border-radius:10px;white-space:nowrap}
 .brush .dim{position:absolute;top:0;height:52px;background:color-mix(in srgb,var(--bg) 70%,transparent);pointer-events:none}
 .brush .sel{position:absolute;top:0;height:52px;border:1.5px solid var(--accent);border-radius:4px;pointer-events:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 14%,transparent)}
 .brush .sel::before,.brush .sel::after{content:"";position:absolute;top:14px;width:6px;height:22px;border-radius:3px;background:var(--accent)}
@@ -113,6 +116,8 @@ h2{font-size:20px;letter-spacing:-.015em;margin:0 0 4px;font-weight:640}
 .stack i.none{background:repeating-linear-gradient(135deg,var(--surface-3) 0 4px,transparent 4px 7px)}
 .ltab{width:calc(100% - 36px);margin:0 18px;border-collapse:collapse;font-size:13px}
 .ltab td{padding:5px 0;border-top:1px solid var(--line)}
+.ltab th{font-size:11.5px;font-weight:500;color:var(--text-3);text-align:right;padding:0 0 4px 14px;white-space:nowrap}
+.ltab th:first-child{text-align:left;padding-left:0}
 .ltab tr:first-child td{border-top:0}
 .ltab td.num{text-align:right;white-space:nowrap;padding-left:14px}
 .ltab td.dim{color:var(--text-2)}
@@ -342,7 +347,7 @@ _BODY = r"""
    <a href="#events">Raw events<span class="n" id="n-events"></span></a>
   </nav>
   <div class="tools">
-   <span class="chip" id="chip"><svg class="i"><use href="#i-cal"/></svg><span id="chip-t"></span><button type="button" id="chip-x" aria-label="Show the whole log" title="Show the whole log"><svg class="i"><use href="#i-x"/></svg></button></span>
+   <span class="chip" id="chip"><svg class="i"><use href="#i-cal"/></svg><span id="chip-t"></span><button type="button" id="chip-x" aria-label="Back to all power records" title="Back to all power records"><svg class="i"><use href="#i-x"/></svg></button></span>
    <select id="host" aria-label="Computer"></select>
    <button class="btn icon ghost" id="theme" type="button" aria-label="Switch to dark theme" title="Switch theme"><svg class="i"><use href="#i-moon"/></svg></button>
    <button class="btn icon ghost" id="print" type="button" aria-label="Print" title="Print or save as PDF"><svg class="i"><use href="#i-print"/></svg></button>
@@ -361,7 +366,7 @@ _BODY = r"""
     <span class="when" id="range-when"></span>
     <div class="range-ctl">
      <div class="seg" role="group" aria-label="Quick ranges" id="presets">
-      <button type="button" data-preset="all">Whole log</button><button type="button" data-preset="1">Last day</button><button type="button" data-preset="7">7 days</button><button type="button" data-preset="30">30 days</button>
+      <button type="button" data-preset="power">Power records</button><button type="button" data-preset="all">Whole log</button><button type="button" data-preset="1">Last day</button><button type="button" data-preset="7">7 days</button><button type="button" data-preset="30">30 days</button>
      </div>
      <label>From <input type="datetime-local" id="r-from" step="60" aria-label="From (UTC)"></label>
      <label>To <input type="datetime-local" id="r-to" step="60" aria-label="To (UTC)"> UTC</label>
@@ -370,10 +375,11 @@ _BODY = r"""
    <div class="brush" id="brush">
     <svg preserveAspectRatio="none" aria-hidden="true"></svg>
     <div class="base"></div><div class="months"></div>
+    <div class="pre" id="b-pre" hidden><span>Boot and shutdown records only</span></div>
     <div class="dim" id="dim-l"></div><div class="dim" id="dim-r"></div><div class="sel" id="b-sel"></div>
     <div class="hit" id="b-hit" tabindex="0" role="slider" aria-label="Time range: drag to select days, arrow keys move it"></div>
    </div>
-   <p class="hint">Drag across the strip to pick days, drag an edge to resize, double-click for the whole log. Bars show hours on (green) and asleep (blue) per day.</p>
+   <p class="hint">Bars: hours on (green) and asleep (blue) per day. Drag across the strip to pick days, drag an edge to resize; double-click returns to the power records. The strip widens to show any wider range you pick.</p>
   </div>
 
   <div class="ov">
@@ -527,7 +533,13 @@ const tipHide = () => tip.classList.remove("on");
 const T0 = D.meta.first_us, T1 = D.meta.last_us;
 const FA = T0 == null ? 0 : Math.floor(T0 / DAY) * DAY, FB = T1 == null ? DAY : (Math.floor(T1 / DAY) + 1) * DAY;
 let R = {a: FA, b: FB};
+// The span the power evidence covers (first to last power period).  Other
+// logs (Diagnostics-Performance keeps about two years of boot / shutdown
+// timings) can reach far earlier; the report opens on this span and the
+// totals are measured against it, never against the whole log.
+let PA = FA, PB = FB;
 const isFull = () => R.a <= FA && R.b >= FB;
+const isPower = () => R.a === PA && R.b === PB;
 const inR = t => t != null && t >= R.a && t < R.b;
 function pIn(p){
   if (p[3] != null && p[4] != null) return p[3] < R.b && p[4] > R.a;
@@ -562,7 +574,15 @@ function buildAgg(){
     while (s < e){ const d = Math.floor(s / DAY), nx = Math.min(e, (d + 1) * DAY); g(d)[k] += nx - s; s = nx; }
   }
   for (const e of E) if (hostOk(e[2]) && e[0] != null && e[7] < 0) g(Math.floor(e[0] / DAY)).ev++;
+  let lo = Infinity, hi = -Infinity;
+  for (const p of P){
+    if (!hostOk(p[0]) || p[1] !== "Power" || p[3] == null || p[4] == null) continue;
+    if (p[3] < lo) lo = p[3]; if (p[4] > hi) hi = p[4];
+  }
+  if (lo === Infinity){ PA = FA; PB = FB; }
+  else { PA = Math.max(FA, Math.floor(lo / DAY) * DAY); PB = Math.min(FB, (Math.floor((hi - 1) / DAY) + 1) * DAY); }
 }
+const powerDay = o => o && (o.on + o.sleep + o.off) > 0;
 const lvl = on => { const hrs = on / HOUR; return hrs <= 0 ? 0 : hrs <= 2 ? 1 : hrs <= 4 ? 2 : hrs <= 8 ? 3 : hrs <= 12 ? 4 : 5; };
 function dayTip(d){
   const o = AGG.get(d), t = d * DAY, dt = new Date(t / 1000);
@@ -577,9 +597,11 @@ function dayTip(d){
 
 // ── brush ────────────────────────────────────────────────────────
 const brush = $("brush"), hit = $("b-hit");
-const NDAYS = Math.max(1, Math.round((FB - FA) / DAY));
+let DA = FA, DB = FB, NDAYS = 1;
 function brushRender(){
-  const d0 = FA / DAY; let r = "";
+  DA = Math.min(PA, R.a); DB = Math.max(PB, R.b);
+  NDAYS = Math.max(1, Math.round((DB - DA) / DAY));
+  const d0 = DA / DAY; let r = "";
   for (let i = 0; i < NDAYS; i++){
     const o = AGG.get(d0 + i); if (!o) continue;
     const hOn = o.on / DAY * 48, hS = o.sleep / DAY * 48;
@@ -589,42 +611,54 @@ function brushRender(){
   }
   const svg = brush.querySelector("svg");
   svg.setAttribute("viewBox", `0 0 ${NDAYS} 52`); svg.innerHTML = r;
-  let m = "", dt = new Date(FA / 1000); dt = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), 1));
+  let m = "", dt = new Date(DA / 1000); dt = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), 1));
   // At least ~46 px per label, so months never run into each other.
   const months = Math.max(1, NDAYS / 30.4), px = (brush.clientWidth || 800) / months;
   const every = [1, 2, 3, 6, 12].find(n => px * n >= 46) || 12;
-  for (let k = 0; dt.getTime() * 1000 < FB; k++){
-    const t = dt.getTime() * 1000;
-    if (t >= FA && k % every === 0) m += `<span style="left:${((t - FA) / (FB - FA) * 100).toFixed(3)}%">${MON[dt.getUTCMonth()]}${dt.getUTCMonth() === 0 || k === 0 ? " " + dt.getUTCFullYear() : ""}</span>`;
-    dt = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 1));
+  if (NDAYS <= 62){
+    // A short span: label weeks (every Monday) rather than one or two months.
+    for (let d = Math.ceil(DA / DAY); d * DAY < DB; d++){
+      const t = d * DAY, dd = new Date(t / 1000);
+      if (dd.getUTCDay() !== 1) continue;
+      m += `<span style="left:${((t - DA) / (DB - DA) * 100).toFixed(3)}%">${dd.getUTCDate()} ${MON[dd.getUTCMonth()]}</span>`;
+    }
+  } else {
+    for (let k = 0; dt.getTime() * 1000 < DB; k++){
+      const t = dt.getTime() * 1000;
+      if (t >= DA && k % every === 0) m += `<span style="left:${((t - DA) / (DB - DA) * 100).toFixed(3)}%">${MON[dt.getUTCMonth()]}${dt.getUTCMonth() === 0 || k === 0 ? " " + dt.getUTCFullYear() : ""}</span>`;
+      dt = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 1));
+    }
   }
   brush.querySelector(".months").innerHTML = m;
+  const pre = $("b-pre");
+  pre.hidden = !(DA < PA);
+  if (DA < PA){ pre.style.left = "0"; pre.style.width = ((PA - DA) / (DB - DA) * 100).toFixed(3) + "%"; }
   brushSel(R.a, R.b);
 }
 function brushSel(a, b){
-  const span = FB - FA, l = (a - FA) / span * 100, w = (b - a) / span * 100;
+  const span = DB - DA, l = (a - DA) / span * 100, w = (b - a) / span * 100;
   $("b-sel").style.left = l + "%"; $("b-sel").style.width = w + "%";
   $("dim-l").style.left = "0"; $("dim-l").style.width = l + "%";
   $("dim-r").style.left = (l + w) + "%"; $("dim-r").style.width = Math.max(0, 100 - l - w) + "%";
-  brush.classList.toggle("full", a <= FA && b >= FB);
+  brush.classList.toggle("full", a <= DA && b >= DB);
   $("range-when").innerHTML = whenText(a, b);
   hit.setAttribute("aria-valuetext", whenText(a, b).replace(/<[^>]+>/g, ""));
   hit.setAttribute("aria-valuemin", "0"); hit.setAttribute("aria-valuemax", String(NDAYS));
-  hit.setAttribute("aria-valuenow", String(Math.round((a - FA) / DAY)));
+  hit.setAttribute("aria-valuenow", String(Math.round((a - DA) / DAY)));
 }
 function whenText(a, b){
   const days = (b - a) / DAY;
   const whole = a % DAY === 0 && b % DAY === 0;
   const txt = whole ? (days === 1 ? niceDay(a) : `${niceDay(a)} – ${niceDay(b - DAY)}`) : `${niceDT(a)} – ${niceDT(b)} UTC`;
-  return `<b>${txt}</b> · ${days >= 1 ? fmtN(Math.round(days * 10) / 10) + (days === 1 ? " day" : " days") : fmtTotal(b - a)}${a <= FA && b >= FB ? " (whole log)" : ""}`;
+  return `<b>${txt}</b> · ${days >= 1 ? fmtN(Math.round(days * 10) / 10) + (days === 1 ? " day" : " days") : fmtTotal(b - a)}${a <= FA && b >= FB ? " (whole log)" : a === PA && b === PB ? " (all power records)" : ""}`;
 }
 (() => {
   let drag = null;
-  const tAt = ev => { const r = hit.getBoundingClientRect(); return FA + Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * (FB - FA); };
+  const tAt = ev => { const r = hit.getBoundingClientRect(); return DA + Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * (DB - DA); };
   const nearEdge = ev => {
-    if (isFull()) return null;
-    const r = hit.getBoundingClientRect(), x = ev.clientX - r.left, span = FB - FA;
-    const xl = (R.a - FA) / span * r.width, xr = (R.b - FA) / span * r.width;
+    if (R.a <= DA && R.b >= DB) return null;
+    const r = hit.getBoundingClientRect(), x = ev.clientX - r.left, span = DB - DA;
+    const xl = (R.a - DA) / span * r.width, xr = (R.b - DA) / span * r.width;
     return Math.abs(x - xl) < 8 ? "a" : Math.abs(x - xr) < 8 ? "b" : null;
   };
   hit.addEventListener("pointerdown", ev => {
@@ -644,7 +678,7 @@ function whenText(a, b){
     let a, b;
     if (drag.edge){ const tr = Math.round(t / DAY) * DAY; a = Math.min(drag.anchor, tr); b = Math.max(drag.anchor, tr); if (a === b) b = a + DAY; }
     else { const d = Math.floor(t / DAY) * DAY; a = Math.min(drag.anchor, d); b = Math.max(drag.anchor, d) + DAY; }
-    a = Math.max(FA, a); b = Math.min(FB, b);
+    a = Math.max(DA, a); b = Math.min(DB, b);
     drag.cur = [a, b]; brushSel(a, b);
   });
   hit.addEventListener("pointerup", ev => {
@@ -654,25 +688,26 @@ function whenText(a, b){
     else setRange(d.cur[0], d.cur[1]);
   });
   hit.addEventListener("pointerleave", tipHide);
-  hit.addEventListener("dblclick", () => setRange(FA, FB));
+  hit.addEventListener("dblclick", () => setRange(PA, PB));
   hit.addEventListener("keydown", ev => {
     const step = ev.shiftKey ? 7 * DAY : DAY, w = R.b - R.a;
     if (ev.key === "ArrowLeft"){ ev.preventDefault(); const a = Math.max(FA, R.a - step); setRange(a, a + w); }
     else if (ev.key === "ArrowRight"){ ev.preventDefault(); const b = Math.min(FB, R.b + step); setRange(b - w, b); }
-    else if (ev.key === "Home" || ev.key === "Escape"){ ev.preventDefault(); setRange(FA, FB); }
+    else if (ev.key === "Home" || ev.key === "Escape"){ ev.preventDefault(); setRange(PA, PB); }
   });
 })();
 document.querySelectorAll("[data-preset]").forEach(b => b.addEventListener("click", () => {
   const v = b.getAttribute("data-preset");
   if (v === "all") return setRange(FA, FB);
-  const end = Math.floor(T1 / DAY) * DAY + DAY;
-  setRange(end - (+v) * DAY, end);
+  if (v === "power") return setRange(PA, PB);
+  setRange(Math.max(FA, PB - (+v) * DAY), PB);
 }));
 function syncPresets(){
-  const end = Math.floor(T1 / DAY) * DAY + DAY;
   document.querySelectorAll("[data-preset]").forEach(b => {
     const v = b.getAttribute("data-preset");
-    b.setAttribute("aria-pressed", v === "all" ? String(isFull()) : String(R.b === end && R.a === Math.max(FA, end - (+v) * DAY) && !isFull()));
+    const on = v === "all" ? isFull() : v === "power" ? isPower() && !isFull()
+      : R.b === PB && R.a === Math.max(FA, PB - (+v) * DAY) && !isPower() && !isFull();
+    b.setAttribute("aria-pressed", String(on));
   });
 }
 const inFrom = $("r-from"), inTo = $("r-to");
@@ -681,21 +716,23 @@ const fromInput = v => { const t = Date.parse(v + ":00Z"); return isNaN(t) ? nul
 inFrom.min = inTo.min = toInput(FA); inFrom.max = inTo.max = toInput(FB);
 inFrom.addEventListener("change", () => { const t = fromInput(inFrom.value); if (t != null) setRange(t, Math.max(R.b, t + HOUR)); });
 inTo.addEventListener("change", () => { const t = fromInput(inTo.value); if (t != null) setRange(Math.min(R.a, t - HOUR), t); });
-$("chip-x").addEventListener("click", () => setRange(FA, FB));
+$("chip-x").addEventListener("click", () => setRange(PA, PB));
 
 // ── calendar ─────────────────────────────────────────────────────
 let calAnchor = null;
 function calRender(){
-  let html = "", dt = new Date(FA / 1000);
+  const ca = Math.min(PA, R.a), cb = Math.max(PB, R.b);
+  let html = "", dt = new Date(ca / 1000);
   dt = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), 1));
-  while (dt.getTime() * 1000 < FB){
+  while (dt.getTime() * 1000 < cb){
     const y = dt.getUTCFullYear(), mo = dt.getUTCMonth(), lead = (dt.getUTCDay() + 6) % 7;
     const n = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
     let g = "MTWTFSS".split("").map(c => `<span class="wd">${c}</span>`).join("") + "<span></span>".repeat(lead);
     for (let k = 1; k <= n; k++){
       const t = Date.UTC(y, mo, k) * 1000, d = t / DAY, o = AGG.get(d);
       if (t < FA || t >= FB){ g += "<span></span>"; continue; }
-      g += `<button type="button" data-d="${d}" class="${o ? "l" + lvl(o.on) : "nd"}" aria-label="${niceDay(t)}${o ? ", on " + fmtTotal(o.on) : ", no records"}"></button>`;
+      const pw = powerDay(o);
+      g += `<button type="button" data-d="${d}" class="${pw ? "l" + lvl(o.on) : "nd"}" aria-label="${niceDay(t)}${pw ? ", on " + fmtTotal(o.on) : o ? ", boot records only" : ", no records"}"></button>`;
     }
     html += `<div class="cal-m"><div class="cal-t">${MON[mo]} ${y}</div><div class="cal-g">${g}</div></div>`;
     dt = new Date(Date.UTC(y, mo + 1, 1));
@@ -703,8 +740,8 @@ function calRender(){
   $("cal").innerHTML = html; calSel();
 }
 function calSel(){
-  const full = isFull();
-  $("cal").querySelectorAll("button[data-d]").forEach(b => { const t = +b.getAttribute("data-d") * DAY; b.classList.toggle("in", !full && t < R.b && t + DAY > R.a); });
+  const mark = !isFull() && !isPower();      // outline only a narrower pick
+  $("cal").querySelectorAll("button[data-d]").forEach(b => { const t = +b.getAttribute("data-d") * DAY; b.classList.toggle("in", mark && t < R.b && t + DAY > R.a); });
 }
 $("cal").addEventListener("click", ev => {
   const b = ev.target.closest("button[data-d]"); if (!b) return;
@@ -721,7 +758,7 @@ const WD = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 function heatRender(){
   const on = new Float64Array(168), slots = new Float64Array(168);
   for (let d = Math.floor(R.a / DAY); d * DAY < R.b; d++){
-    if (!AGG.has(d)) continue;
+    if (!powerDay(AGG.get(d))) continue;
     const wd = (new Date(d * DAY / 1000).getUTCDay() + 6) % 7;
     for (let hh = 0; hh < 24; hh++){ const s = d * DAY + hh * HOUR, ov = Math.min(R.b, s + HOUR) - Math.max(R.a, s); if (ov > 0) slots[wd * 24 + hh] += ov; }
   }
@@ -776,7 +813,9 @@ function overview(){
     const k = p[1] + "\u0001" + base(p[2]);
     const a = acc[k] || (acc[k] = [0, 0]); a[0] += ov; a[1]++;
   }
-  const covA = Math.max(R.a, T0 ?? R.a), covB = Math.min(R.b, (T1 ?? R.b) + 1), cov = Math.max(0, covB - covA);
+  // Totals are measured against the part of the range the power records
+  // cover; before the first power record there is nothing to total.
+  const covA = Math.max(R.a, PA), covB = Math.min(R.b, PB), cov = Math.max(0, covB - covA), covDays = cov / DAY;
   const layers = [];
   for (const L of ["Power", "Screen", "Lock"]){
     const items = Object.keys(acc).filter(k => k.split("\u0001")[0] === L).map(k => [k.split("\u0001")[1], acc[k][0], acc[k][1]])
@@ -788,39 +827,57 @@ function overview(){
   const onT = sum(pw, s => s === "On"), offT = sum(pw, s => stKey(s) === "off" || stKey(s) === "crash"), slT = sum(pw, s => s !== "On" && stKey(s) !== "off" && stKey(s) !== "crash");
   const scrT = sum(sc, s => s === "Screen on");
   const who = hs.length === 1 ? h(hs[0]) : "these computers";
-  let lede = `${isFull() ? "Across the whole log" : "In this range"} (<b>${whenText(R.a, R.b).replace(/<[^>]+>/g, "").replace(/ · .*/, "")}</b>), ${who} was <b>on for ${fmtTotal(onT)}</b>`;
-  if (slT) lede += `, asleep or in low power for <b>${fmtTotal(slT)}</b>`;
-  if (offT) lede += `, and shut down for <b>${fmtTotal(offT)}</b>`;
-  lede += ".";
-  if (scrT) lede += ` The screen was on for <b>${fmtTotal(scrT)}</b>.`;
-  lede += " All times are UTC.";
+  const perDay = t => covDays >= 1 ? fmtTotal(t / covDays) : "";
+  const spanTxt = covDays >= 1 && covA % DAY === 0 && covB % DAY === 0
+    ? `${niceDay(covA)} – ${niceDay(covB - DAY)}` : `${niceDT(covA)} – ${niceDT(covB)} UTC`;
+  let lede;
+  if (!cov){
+    lede = `No power records in this range. The power records cover <b>${niceDay(PA)} – ${niceDay(PB - DAY)}</b>.`;
+  } else {
+    lede = `Over <b>${spanTxt}</b> (${covDays >= 1 ? fmtN(Math.round(covDays)) + (Math.round(covDays) === 1 ? " day" : " days") : fmtTotal(cov)} of power records), ${who} was <b>on for ${fmtTotal(onT)}</b>`
+      + (covDays >= 1 ? `, about <b>${perDay(onT)} a day</b>` : "") + ".";
+    const rest = [];
+    if (slT) rest.push(`asleep or in low power for ${fmtTotal(slT)}`);
+    if (offT) rest.push(`shut down for ${fmtTotal(offT)}`);
+    if (rest.length) lede += ` It was ${rest.join(" and ")}.`;
+    if (scrT) lede += ` The screen was on for ${fmtTotal(scrT)}.`;
+  }
+  if (R.a < PA){
+    let n = 0; for (const e of E) if (hostOk(e[2]) && e[7] < 0 && e[0] != null && e[0] >= R.a && e[0] < PA) n++;
+    if (n) lede += ` Before ${niceDay(PA)} the logs hold only ${fmtN(n)} boot and shutdown timing record${n === 1 ? "" : "s"} (Diagnostics-Performance keeps about two years of them), so there are no totals for that time.`;
+  }
+  lede += " Times are UTC.";
   $("ov-lede").innerHTML = lede;
   let mn = 0, en = 0, dn = 0;
   for (const m of M) if (hostOk(m[0]) && inR(m[1])) mn++;
   for (const e of E) if (hostOk(e[2]) && inR(e[0])) { if (e[7] < 0) en++; else dn++; }
-  const daysRec = [...AGG.keys()].filter(d => d * DAY < R.b && (d + 1) * DAY > R.a).length;
-  $("facts").innerHTML = [["Days with records", fmtN(daysRec)], ["Periods", fmtN(pn)], ["Moments", fmtN(mn)],
+  const daysPw = [...AGG.keys()].filter(d => d * DAY < R.b && (d + 1) * DAY > R.a && powerDay(AGG.get(d))).length;
+  $("facts").innerHTML = [["Days with power records", fmtN(daysPw)], ["Periods", fmtN(pn)], ["Moments", fmtN(mn)],
     ["Raw events", fmtN(en) + (dn ? ` <small>+ ${fmtN(dn)} copies</small>` : "")], ["Log files", fmtN(D.files.filter(Boolean).length)],
-    ["Log span", `${h(D.meta.first)} <small>to</small> ${h(D.meta.last)} <small>UTC</small>`]]
+    ["Power records", `${h(niceDay(PA))} <small>to</small> ${h(niceDay(PB - DAY))}`],
+    ["Log span", `${h(D.meta.first.slice(0, 10))} <small>to</small> ${h(D.meta.last.slice(0, 10))}`]]
     .map(x => `<div><dt>${x[0]}</dt><dd>${x[1]}</dd></div>`).join("");
   $("layers").innerHTML = layers.map(L => {
     let items = L[1].slice(), total = items.reduce((a, s) => a + s[1], 0);
     const u = L[0] === "Power" ? unp : 0;
     const none = L[0] === "Power" && cov > total + u ? cov - total - u : 0;
     const denom = Math.max(total + u + none, 1);
-    const rows = items.map(s => `<tr title="Exact: ${fmtExact(s[1])}"><td><span class="sw st-${stKey(s[0])}"></span>${h(s[0])}</td><td class="num"><b>${fmtTotal(s[1])}</b></td><td class="num dim">${pctTxt(s[1] / denom)}</td><td class="num dim">${fmtN(s[2])} ${s[2] === 1 ? "period" : "periods"}</td></tr>`).join("")
-      + (u ? `<tr class="none" title="Periods with a known start and end whose length is not proven: the system clock was changed in between. Measured by the clock."><td><span class="sw unp"></span>Length unproven (clock changed)</td><td class="num">${fmtTotal(u)}</td><td class="num">${pctTxt(u / denom)}</td><td class="num">${fmtN(unpN)} ${unpN === 1 ? "period" : "periods"}</td></tr>` : "")
-      + (none ? `<tr class="none" title="Time in the range with no power period proven by the events"><td><span class="sw none"></span>No power record</td><td class="num">${fmtTotal(none)}</td><td class="num">${pctTxt(none / denom)}</td><td></td></tr>` : "");
+    const head = `<tr><th>State</th><th>Total</th>${covDays >= 1 ? "<th>Per day</th>" : ""}<th>Share</th><th>Periods</th></tr>`;
+    const pd = t => covDays >= 1 ? `<td class="num dim">${perDay(t)}</td>` : "";
+    const rows = head + items.map(s => `<tr title="Exact: ${fmtExact(s[1])}"><td><span class="sw st-${stKey(s[0])}"></span>${h(s[0])}</td><td class="num"><b>${fmtTotal(s[1])}</b></td>${pd(s[1])}<td class="num dim">${pctTxt(s[1] / denom)}</td><td class="num dim">${fmtN(s[2])}</td></tr>`).join("")
+      + (u ? `<tr class="none" title="Periods with a known start and end whose length is not proven: the system clock was changed in between. Measured by the clock."><td><span class="sw unp"></span>Length unproven (clock changed)</td><td class="num">${fmtTotal(u)}</td>${pd(u)}<td class="num">${pctTxt(u / denom)}</td><td class="num">${fmtN(unpN)}</td></tr>` : "")
+      + (none ? `<tr class="none" title="Gaps between power periods: time inside the power records with no period proven by the events"><td><span class="sw none"></span>Gaps in the records</td><td class="num">${fmtTotal(none)}</td>${pd(none)}<td class="num">${pctTxt(none / denom)}</td><td></td></tr>` : "");
     const bar = items.map(s => `<i class="st-${stKey(s[0])}" style="flex:${s[1]} 0 0"></i>`).join("") + (u ? `<i class="unp" style="flex:${u} 0 0"></i>` : "") + (none ? `<i class="none" style="flex:${none} 0 0"></i>` : "");
-    const sub = L[0] === "Power" ? "share of the time range" : L[0] === "Screen" ? "while Windows recorded screen sessions" : "needs lock auditing";
+    const sub = L[0] === "Power" ? (covDays >= 1 ? `time in each state over ${fmtN(Math.round(covDays))} days of records` : "time in each state")
+      : L[0] === "Screen" ? "while Windows recorded screen sessions" : "needs lock auditing";
     return `<div class="panel layer"><div class="ph"><h3>${L[0]}</h3><span class="sub">${sub}</span></div><div class="stack" role="img" aria-label="${L[0]} time by state">${bar}</div><table class="ltab"><tbody>${rows}</tbody></table></div>`;
-  }).join("") || `<div class="panel layer"><div class="ph"><h3>No periods in this range</h3></div><p class="lede" style="padding:8px 18px 0">Pick a wider range, or the whole log.</p></div>`;
+  }).join("") || `<div class="panel layer"><div class="ph"><h3>No periods in this range</h3></div><p class="lede" style="padding:8px 18px 0">Pick a range inside the power records (${h(niceDay(PA))} – ${h(niceDay(PB - DAY))}).</p></div>`;
   let notes = "";
   if (unknown[0]) notes += `<div class="note warn">${icon("alert")}<span>${fmtN(unknown[0])} period${unknown[0] === 1 ? " has" : "s have"} an unproven start, end or length and ${unknown[0] === 1 ? "is" : "are"} not in the state totals; where both ends are known their clock span is shown as "Length unproven".</span></div>`;
-  for (const t of coverageNotes()) notes += `<div class="note warn">${icon("alert")}<span>${h(t)}</span></div>`;
+  if (R.a < PA) for (const t of coverageNotes()) notes += `<div class="note">${icon("info")}<span>${h(t)}</span></div>`;
   for (const [cls, t] of clockNotes()) notes += `<div class="note ${cls}">${icon(cls ? "alert" : "info")}<span>${h(t)}</span></div>`;
   for (const t of sessionTypeNotes()) notes += `<div class="note">${icon("info")}<span>${h(t)}</span></div>`;
-  if (!isFull()) notes += `<div class="note">${icon("info")}<span>Periods that cross the range edges count only their part inside it.</span></div>`;
+  if (!isFull() && !isPower()) notes += `<div class="note">${icon("info")}<span>Periods that cross the range edges count only their part inside it.</span></div>`;
   notes += `<div class="note">${icon("info")}<span>${h(D.meta.coverage)}</span></div>`;
   $("ov-notes").innerHTML = notes;
 }
@@ -867,7 +924,7 @@ function coverageNotes(){
   if (Math.max(...firsts) - Math.min(...firsts) < 7 * DAY) return [];
   ks.sort((a, b) => span[a][0] - span[b][0]);
   return [`The logs cover different spans: ${ks.map(k => `${shortFile(D.files[k]) || "(no file name)"} ${niceDay(span[k][0])} – ${niceDay(span[k][1])} (${fmtN(span[k][2])} events)`).join("; ")}. `
-    + "Before a log's first event it has no records, so “No power record” there means the log had rolled over, not that the computer was off. Pick a range inside the System log's span for complete totals."];
+    + "A log has no records before its first event (older ones rolled over), so the totals cover only the span of the power records."];
 }
 const signed = us => (us >= 0 ? "+" : "\u2212") + fmtTotal(Math.abs(us));
 function clockTip(c){
@@ -1324,14 +1381,14 @@ addEventListener("afterprint", () => tables.forEach(t => { t.full = false; t.pai
   const s = $("host");
   if (!multi){ s.hidden = true; return; }
   s.innerHTML = '<option value="-1">All computers</option>' + D.hosts.map((_, i) => `<option value="${i}">${h(hostName(i))}</option>`).join("");
-  s.addEventListener("change", () => { hostSel = +s.value; buildAgg(); brushRender(); calRender(); refreshRange(); });
+  s.addEventListener("change", () => { hostSel = +s.value; buildAgg(); R = {a: PA, b: PB}; refreshRange(); });
 })();
 
 function refreshRange(){
   const t0 = performance.now();
-  brushSel(R.a, R.b); calSel(); syncPresets();
+  brushRender(); calRender(); syncPresets();
   inFrom.value = toInput(R.a); inTo.value = toInput(R.b);
-  $("chip").classList.toggle("on", !isFull()); $("chip-t").textContent = whenText(R.a, R.b).replace(/<[^>]+>/g, "").replace(/ · .*/, "");
+  $("chip").classList.toggle("on", !isPower()); $("chip-t").textContent = whenText(R.a, R.b).replace(/<[^>]+>/g, "").replace(/ · .*/, "");
   overview(); heatRender(); tlAll = false; tlRender();
   tables.forEach(t => t.refilter());
   let np = 0, nm = 0, ne = 0;
@@ -1346,7 +1403,7 @@ const syncBar = () => root.style.setProperty("--bar-h", document.querySelector("
 let resizeT; addEventListener("resize", () => { syncBar(); clearTimeout(resizeT); resizeT = setTimeout(brushRender, 120); });
 syncBar();
 const tb = performance.now();
-buildAgg(); actsRender(); brushRender(); calRender(); refreshRange();
+buildAgg(); R = {a: PA, b: PB}; actsRender(); refreshRange();
 $("foot").innerHTML = `Generated by EventHawk ${h(D.meta.version)} on ${h(D.meta.generated)}. Times are UTC; tables show ${D.meta.digits ? D.meta.digits + " decimal places" : "whole seconds"} and the details panel shows exact values; durations are never rounded up. This file is self-contained and makes no network requests.`;
 (window.__ehPerf = window.__ehPerf || {}).boot = performance.now() - tb;
 (() => {
