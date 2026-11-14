@@ -11827,6 +11827,7 @@ class MainWindow(QMainWindow):
 
         if total:
             QTimer.singleShot(250, self._fold_panel_for_room)
+            QTimer.singleShot(0, self._carry_custom_columns)
         self._progress_bar.setValue(100)
         self._btn_parse.setEnabled(True)
         self._btn_stop.setEnabled(False)
@@ -12917,7 +12918,7 @@ class MainWindow(QMainWindow):
         if cc is not None:
             self._add_custom_column_dialog(spec=cc.spec, col_id=col_id)
 
-    def _compute_custom_column(self, model, compiled, editing: bool) -> None:
+    def _compute_custom_column(self, model, compiled, editing: bool, quiet: bool = False) -> None:
         from evtx_tool.core.custom_columns import arrow_column_values
         from evtx_tool.gui.models import compute_custom_values
         _holder: list = []            # the worker, for fn's cancel check
@@ -12955,9 +12956,55 @@ class MainWindow(QMainWindow):
         _holder.append(worker)
         self._custom_col_workers = [w for w in getattr(self, "_custom_col_workers", [])
                                     if self._thread_running(w)] + [worker]
-        worker.done.connect(lambda values: self._on_custom_column_ready(model, compiled, values, editing))
+        worker.done.connect(lambda values: self._on_custom_column_ready(model, compiled, values, editing, quiet))
         worker.failed.connect(lambda msg: self._on_custom_column_failed(compiled, msg))
         worker.start()
+
+    @staticmethod
+    def _scroll_column_into_view(tbl, col: int) -> None:
+        try:
+            m = tbl.model()
+            row = tbl.currentIndex().row() if tbl.currentIndex().isValid() else 0
+            if m is not None and m.rowCount() > 0:
+                tbl.scrollTo(m.index(max(0, row), col))
+            else:
+                tbl.horizontalScrollBar().setValue(tbl.horizontalScrollBar().maximum())
+        except RuntimeError:
+            pass
+
+    def _remember_custom_columns(self) -> None:
+        """Keep the main table's custom column definitions before a new parse
+        clears them, so _carry_custom_columns can rebuild them on the new events
+        (they used to vanish with every parse and had to be made again)."""
+        try:
+            main = self._hw_model if self._hw_model is not None else self._event_model
+            specs = [cc.spec for cc in getattr(main, "custom_columns", lambda: [])()]
+        except RuntimeError:
+            specs = []
+        if specs:
+            self._carry_specs = specs
+
+    def _carry_custom_columns(self) -> None:
+        specs = getattr(self, "_carry_specs", None) or []
+        self._carry_specs = []
+        if not specs:
+            return
+        from evtx_tool.core.custom_columns import compile_spec, CustomColumnError
+        main = self._hw_model if self._hw_model is not None else self._event_model
+        if not hasattr(main, "add_custom_column"):
+            return
+        have = {cc.spec.col_id for cc in getattr(main, "custom_columns", lambda: [])()}
+        for spec in specs:
+            if spec.col_id in have:
+                continue
+            try:
+                compiled = compile_spec(spec)
+            except CustomColumnError:
+                continue
+            self._compute_custom_column(main, compiled, editing=False, quiet=True)
+        self.statusBar().showMessage(
+            f"Custom column{'s' if len(specs) != 1 else ''} carried over from the previous "
+            f"collection: " + ", ".join(f"\u2018{sp.title}\u2019" for sp in specs), 8000)
 
     def _on_custom_column_failed(self, compiled, msg: str) -> None:
         if getattr(self, "_close_stop_requested", False):
@@ -12968,7 +13015,7 @@ class MainWindow(QMainWindow):
             "Custom column", f"The column ‘{compiled.spec.title}’ could not be computed:\n{msg}",
             icon=QMessageBox.Icon.Critical)
 
-    def _on_custom_column_ready(self, model, compiled, values, editing: bool) -> None:
+    def _on_custom_column_ready(self, model, compiled, values, editing: bool, quiet: bool = False) -> None:
         if values is None:                   # cancelled (Exit or a new dataset)
             self._set_status(f"Column ‘{compiled.spec.title}’ not computed (cancelled)")
             return
@@ -12984,6 +13031,9 @@ class MainWindow(QMainWindow):
                 for tbl in [self._table] + [st.table for st in self._file_tabs.values()]:
                     if tbl.model() is model or getattr(tbl.model(), "sourceModel", lambda: None)() is model:
                         tbl.setColumnHidden(idx, False)
+                        if tbl is self._active_table and not quiet:
+                            # A new column lands at the far right: bring it into view.
+                            self._scroll_column_into_view(tbl, idx)
         except RuntimeError:
             return                          # the tab was closed meanwhile
         self._invalidate_col_value_cache()
@@ -12992,6 +13042,13 @@ class MainWindow(QMainWindow):
         self._update_count_label()
         self._set_status(f"Column \u2018{compiled.spec.title}\u2019 ready")
         missing = [t for t in compiled.tokens if not compiled.hits.get(t)]
+        if quiet:
+            # Carried over from the previous collection: no box per column; a
+            # column with nothing to show here says so in the status bar.
+            if missing:
+                self._set_status(f"Column \u2018{compiled.spec.title}\u2019 carried over \u2014 "
+                                 "no event here has its field")
+            return
         if missing:
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
@@ -13251,6 +13308,9 @@ class MainWindow(QMainWindow):
                     self._btn_add_files.setFocus(Qt.FocusReason.OtherFocusReason)
             # else: the unresolved dialog above already explained why.
             return
+
+        # Custom columns of the current table carry over to the new collection.
+        self._remember_custom_columns()
 
         # ── Volume safety gate ───────────────────────────────────────────
         _volume_choice = self._check_volume(files)
@@ -13535,6 +13595,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._refresh_attack_tab)
         if events:
             QTimer.singleShot(250, self._fold_panel_for_room)
+            QTimer.singleShot(0, self._carry_custom_columns)
 
         self._btn_parse.setEnabled(True)
         export_ok = len(events) > 0
@@ -14400,6 +14461,10 @@ class MainWindow(QMainWindow):
         act_copy = menu.addAction(_menu_icon("copy"), "Copy Row as Text")
         act_copy.setShortcut(QKeySequence(QKeySequence.StandardKey.Copy))   # shown as a hint
         act_copy.triggered.connect(lambda: self._copy_event_row(ev))
+        menu.addSeparator()
+        act_cc = menu.addAction(_menu_icon("plus"), "Add Custom Column\u2026")
+        act_cc.setToolTip("A column from any field of this event (it lists them)")
+        act_cc.triggered.connect(lambda: self._add_custom_column_dialog())
 
         menu.exec(table.viewport().mapToGlobal(pos))
 
@@ -18277,6 +18342,7 @@ class MainWindow(QMainWindow):
     def _on_clear_files(self) -> None:
         """✕ button — clear the file/directory list AND discard parsed results."""
         self._file_list.clear()
+        self._carry_specs = []        # a deliberate clear: nothing carries over
         self._clear_results()
 
     def _clear_results(self) -> None:

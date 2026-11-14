@@ -16,7 +16,7 @@ Right-click a header and choose **Add / Remove Columns**. The dialog supports se
 
 ## Custom columns
 
-Choose **Add Custom Column** in the header menu. A definition combines literal text with retained field tokens, for example:
+Choose **Add Custom Column** in the header menu or in an event's right-click menu (that event's fields are then listed to pick from: its own data fields first, filterable by name or value). While you edit, a preview line shows the column's value for that event, or why it would be empty or is not valid yet; **This event (ID)** limits the column to the event's ID. A definition combines literal text with retained field tokens, for example:
 
 ```text
 {EventID}
@@ -28,6 +28,6 @@ Choose **Add Custom Column** in the header menu. A definition combines literal t
 
 Named Data lookup also searches nested retained event data. Positional Data tokens count from **1**. UserData is an alias for the same field lookup. `{{` and `}}` produce literal braces; a backslash remains a backslash. A stored System field missing from an individual event produces an empty value; an unsupported System token is refused when defined.
 
-Choose text/integer sorting to match the intended column. Non-numeric text is retained rather than coerced into a fabricated number. Custom columns are evaluated for the tab's scope in both modes. CSV/JSON/XML/HTML event exports can carry the selected custom-column values; do not assume that PDF adds the same custom grid columns.
+Choose text/integer sorting to match the intended column. Non-numeric text is retained rather than coerced into a fabricated number. Custom columns are evaluated for the tab's scope in both modes. The main table's custom columns carry over to the next parse and are computed on the new events (clearing the file list forgets them). CSV/JSON/XML/HTML event exports can carry the selected custom-column values; do not assume that PDF adds the same custom grid columns.
 
 See [Advanced Filter](06-advanced-filter.md) and [exporting](11-exporting.md).
