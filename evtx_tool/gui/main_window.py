@@ -10050,6 +10050,7 @@ class MainWindow(QMainWindow):
 
     def _set_status(self, text: str, files: str = "", stats: str = "") -> None:
         self._last_say = None
+        self._status_seq = getattr(self, "_status_seq", 0) + 1
         self._lbl_status.setText(text)
         self._lbl_status_files.setText(files)
         self._lbl_status_stats.setText(stats)
@@ -17531,8 +17532,10 @@ class MainWindow(QMainWindow):
             _rid = None
         anchor_key = (str(anchor.get("source_file") or ""), _rid)
         a_disp = apply_tz(anchor.get("timestamp"))
+        # The anchor's date too: a collection spans months, and "17:53:08" alone
+        # named no day (the table's own format, so it reads the same).
         label = (f"⏱ {host_label} {self._around_window_label(before, after)} "
-                 f"{a_disp[11:19]}")
+                 f"{a_disp[:19]}")
         if filtered_from is None:
             source_line = "All loaded events"
         else:
@@ -17555,12 +17558,18 @@ class MainWindow(QMainWindow):
         tab_key = f"__around__{_uuid.uuid4().hex}"
         # A snapshot of a proxy over event dicts (Normal mode, or a chain tab
         # in JM) is built from those dicts; only Arrow sources go the JM way.
+        _status_before = getattr(self, "_status_seq", 0)
         if self._hw_model is not None and not isinstance(filtered_from, EventFilterProxyModel):
             self._open_around_tab_jm(tab_key, label, head, anchor_key, a_dt, start, end,
                                      names, filtered_from)
         else:
             self._open_around_tab_normal(tab_key, label, head, anchor_key, a_dt, start, end,
                                          names, filtered_from)
+        # Unless opening it said something that matters more ("Anchor event
+        # is not in this tab; nearest event selected").
+        if getattr(self, "_status_seq", 0) == _status_before:
+            self._say_after(f"Around this event: {self._around_window_label(before, after)} "
+                            f"of {a_disp[:19]} on {host_label}")
 
     @staticmethod
     def _around_counts_lines(n: int, no_ts: int, snapshot: bool) -> list[str]:

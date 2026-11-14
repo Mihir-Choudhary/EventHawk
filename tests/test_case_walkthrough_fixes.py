@@ -125,6 +125,11 @@ def main() -> int:
         tbl = st.table if st is not None else None
         check(f"{tag}: the Around tab opened", tbl is not None)
         if tbl is not None:
+            title = w._events_tab_widget.tabText(w._events_tab_widget.indexOf(tbl))
+            check(f"{tag}: its title carries the anchor's date and time",
+                  apply_tz(anchor["timestamp"])[:19] in title, title)
+            check(f"{tag}: the status says what opened",
+                  w._lbl_status.text().startswith("Around this event: ±5 min of "), w._lbl_status.text())
             check(f"{tag}: F1 its Timestamp column has its default width, not 100 px",
                   tbl.columnWidth(3) == w._DEFAULT_COL_WIDTHS[3], str(tbl.columnWidth(3)))
             check(f"{tag}: F1 and the # column too", tbl.columnWidth(0) == w._DEFAULT_COL_WIDTHS[0],
