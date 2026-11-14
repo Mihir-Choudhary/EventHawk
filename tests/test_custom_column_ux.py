@@ -97,6 +97,62 @@ def main() -> int:
     d2 = CustomColumnDialog(col_id=2, sample_event=None)
     check("with no event selected there is no 'This event' button", d2._btn_this_eid is None)
 
+    print("\n=== A2. several fields in one column ===")
+    from evtx_tool.gui.custom_column_dialog import JOIN_CHOICES
+    seps = [sep for _l, sep in JOIN_CHOICES]
+    ev3 = T.ev(r"C:\c\Security.evtx", 9, "HOST", T.T0, 4624,
+               data={"TargetDomainName": "NT AUTHORITY", "TargetUserName": "SYSTEM", "LogonType": "5"})
+    d3 = CustomColumnDialog(col_id=3, sample_event=ev3)
+    item = {d3._tree.topLevelItem(i).data(0, 0x0100 + 1): d3._tree.topLevelItem(i)
+            for i in range(d3._tree.topLevelItemCount())}
+    dom, usr, lt = item["{Data[TargetDomainName]}"], item["{Data[TargetUserName]}"], item["{Data[LogonType]}"]
+    d3._insert_field(dom)
+    d3._insert_field(usr)
+    check("a second field is joined with the separator (Space by default), not run together",
+          d3._inp_value.text() == "{Data[TargetDomainName]} {Data[TargetUserName]}", d3._inp_value.text())
+    check("...the preview shows the combined value",
+          d3._lbl_preview.text() == "For the selected event: NT AUTHORITY SYSTEM", d3._lbl_preview.text())
+    check("...and the suggested title names both fields",
+          d3._inp_title.text() == "TargetDomainName + TargetUserName", d3._inp_title.text())
+    from PySide6.QtWidgets import QFrame
+    chips = [c for c in d3._chips.findChildren(QFrame) if c.objectName() == "fieldChip"]
+    check("one chip per field", len(chips) == 2, str(len(chips)))
+    d3._cmb_join.setCurrentIndex(seps.index("\\"))
+    check("choosing another separator re-joins the fields",
+          d3._inp_value.text() == "{Data[TargetDomainName]}\\{Data[TargetUserName]}", d3._inp_value.text())
+    check("...preview NT AUTHORITY\\SYSTEM",
+          d3._lbl_preview.text() == "For the selected event: NT AUTHORITY\\SYSTEM", d3._lbl_preview.text())
+    check("...title follows", d3._inp_title.text() == "TargetDomainName \\ TargetUserName", d3._inp_title.text())
+    d3._inp_value.setCursorPosition(len("{Data[TargetDomainName]}"))
+    d3._insert_field(lt)
+    check("a field inserted between two others gets a separator on both sides",
+          d3._inp_value.text() == "{Data[TargetDomainName]}\\{Data[LogonType]}\\{Data[TargetUserName]}",
+          d3._inp_value.text())
+    toks = __import__("evtx_tool.gui.custom_column_dialog", fromlist=["template_tokens"]).template_tokens(
+        d3._inp_value.text())
+    d3._remove_token(*toks[1][:2])
+    check("removing a field's chip removes it and its separator",
+          d3._inp_value.text() == "{Data[TargetDomainName]}\\{Data[TargetUserName]}", d3._inp_value.text())
+    d3._inp_title.setText("Account")
+    toks = __import__("evtx_tool.gui.custom_column_dialog", fromlist=["template_tokens"]).template_tokens(
+        d3._inp_value.text())
+    d3._remove_token(*toks[0][:2])
+    check("...the last one left", d3._inp_value.text() == "{Data[TargetUserName]}", d3._inp_value.text())
+    check("a title the user typed is never replaced", d3._inp_title.text() == "Account", d3._inp_title.text())
+    d3._inp_value.setText("User: {Data[TargetUserName]} on {Data[TargetDomainName]}")
+    d3._cmb_join.setCurrentIndex(seps.index(" | "))
+    check("hand-written text between fields is left alone when the separator changes",
+          d3._inp_value.text() == "User: {Data[TargetUserName]} on {Data[TargetDomainName]}",
+          d3._inp_value.text())
+    d4 = CustomColumnDialog(col_id=4, sample_event=ev3)
+    item4 = {d4._tree.topLevelItem(i).data(0, 0x0100 + 1): d4._tree.topLevelItem(i)
+             for i in range(d4._tree.topLevelItemCount())}
+    d4._cmb_join.setCurrentIndex(seps.index(""))
+    d4._insert_field(item4["{Data[TargetDomainName]}"])
+    d4._insert_field(item4["{Data[TargetUserName]}"])
+    check("'Nothing' joins without a separator (when that is wanted)",
+          d4._inp_value.text() == "{Data[TargetDomainName]}{Data[TargetUserName]}", d4._inp_value.text())
+
     for jm in (False, True):
         tag = "JM" if jm else "Normal"
         print(f"\n=== B/C. {tag} ===")
