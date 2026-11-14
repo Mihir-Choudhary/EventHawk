@@ -140,7 +140,10 @@ def main() -> int:
     w._chains = correlate(sysmon_tree("WS1", 0, 8, 30, "g"))
     w._refresh_chains_tab()
     top = w._tree_chains.topLevelItem(0)
-    shown = sum(1 for i in range(top.childCount()) if top.child(i).text(0).startswith("EID ")) if top else 0
+    if top is not None:
+        w._tree_chains.expandItem(top)          # event rows are built on expand
+    # Each event row: "Event <id>  ·  record <n>" under Rule (column 1).
+    shown = sum(1 for i in range(top.childCount()) if top.child(i).text(1).startswith("Event ")) if top else 0
     check("GUI chain tree shows every event of the chain (39)", shown == 39, str(shown))
     w.close()
 

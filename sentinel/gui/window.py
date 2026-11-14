@@ -55,7 +55,9 @@ class SentinelWindow(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Sentinel Baseline Engine")
-        self.setMinimumSize(1000, 720)
+        # 1000 x 720 did not fit a 1280 x 720 laptop screen (taskbar, title bar).
+        self.setMinimumSize(860, 560)
+        self.resize(1180, 760)
         self.setWindowFlags(
             Qt.Window |
             Qt.WindowMinimizeButtonHint |
@@ -102,9 +104,11 @@ class SentinelWindow(QDialog):
         self._tabs.addTab(self._results_tab, "Results")
         self._tabs.addTab(self._metrics_tab, "Metrics")
 
-        # Results and Metrics tabs are empty until analysis completes
-        self._tabs.setTabEnabled(2, False)
-        self._tabs.setTabEnabled(3, False)
+        # Results and Metrics say what will appear and how to get there until
+        # an analysis has run (they were disabled tabs that ignored a click).
+        for _tab in (self._results_tab, self._metrics_tab):
+            _tab.empty.action.connect(
+                lambda: self._tabs.setCurrentWidget(self._analysis_tab))
 
         root.addWidget(self._tabs)
 

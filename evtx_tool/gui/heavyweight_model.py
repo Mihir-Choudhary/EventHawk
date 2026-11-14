@@ -87,7 +87,6 @@ _LEVEL_FG: dict = {}
 _refresh_theme_colors()
 __import__("evtx_tool.gui.theme", fromlist=["add_theme_listener"]).add_theme_listener(
     _refresh_theme_colors)
-_MONO_FONT   = QFont("Consolas", 9)
 
 class _PreparedValues:
     """A custom column's values and sort keys, already Arrow arrays."""
@@ -776,6 +775,11 @@ class ArrowTableModel(QAbstractTableModel):
                     ArrowTableModel._header_font = QFont("Segoe UI", 8)
                     ArrowTableModel._header_font.setBold(True)
                 return ArrowTableModel._header_font
+            if role == Qt.ItemDataRole.TextAlignmentRole:
+                # Headers line up with their column's values (numbers right).
+                if section in (COL_NUM, COL_EID, COL_RECORD_ID, COL_EVENT_RECORD_ID):
+                    return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         return None
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
@@ -806,6 +810,11 @@ class ArrowTableModel(QAbstractTableModel):
 
         if role == Qt.ItemDataRole.DisplayRole:
             return self._cell_text(local, row, col)
+        if role == Qt.ItemDataRole.DecorationRole:
+            if col == COL_LEVEL:
+                from .icons import level_dot
+                return level_dot(self._cell_text(local, row, col))
+            return None
         if role == Qt.ItemDataRole.ForegroundRole:
             return self._cell_fg(local, col)
         if role == Qt.ItemDataRole.BackgroundRole:
@@ -821,12 +830,7 @@ class ArrowTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.TextAlignmentRole:
             if col in (COL_NUM, COL_EID, COL_RECORD_ID, COL_EVENT_RECORD_ID):
                 return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            if col == COL_LEVEL:
-                return Qt.AlignmentFlag.AlignCenter
             return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        if role == Qt.ItemDataRole.FontRole:
-            if col == COL_SOURCE:
-                return _MONO_FONT
         if role == Qt.ItemDataRole.UserRole:
             # Wrapped, NOT the bare dict — see EventRef in gui/models.py.
             # get_event() returns None for an out-of-range row, and this must

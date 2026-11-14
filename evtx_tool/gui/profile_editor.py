@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QTextEdit, QPushButton, QComboBox,
     QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QScrollArea, QWidget, QMessageBox, QFrame,
+    QScrollArea, QWidget, QMessageBox, QFrame, QGridLayout,
 )
 
 from .theme import COLORS
@@ -93,6 +93,7 @@ class ProfileEditorDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body_widget = QWidget()
         body = QVBoxLayout(body_widget)
         body.setSpacing(10)
@@ -151,18 +152,21 @@ class ProfileEditorDialog(QDialog):
         self._inp_keywords.setPlaceholderText("mimikatz, pass-the-hash, ...")
         form_filter.addRow("Keywords", self._inp_keywords)
 
-        # Levels row
+        # Levels: a grid of four columns.  One row of seven checkboxes was
+        # wider than the dialog and pushed the whole form into a sideways
+        # scroll, clipping every field's right edge.
         lvl_widget = QWidget()
-        lvl_layout = QHBoxLayout(lvl_widget)
+        lvl_layout = QGridLayout(lvl_widget)
         lvl_layout.setContentsMargins(0, 0, 0, 0)
-        lvl_layout.setSpacing(8)
+        lvl_layout.setHorizontalSpacing(14)
+        lvl_layout.setVerticalSpacing(4)
         self._level_checks: dict[str, QCheckBox] = {}
-        for name in _LEVEL_NAMES:
+        for i, name in enumerate(_LEVEL_NAMES):
             chk = QCheckBox(name)
             chk.setChecked(False)
             self._level_checks[name] = chk
-            lvl_layout.addWidget(chk)
-        lvl_layout.addStretch()
+            lvl_layout.addWidget(chk, i // 4, i % 4)
+        lvl_layout.setColumnStretch(4, 1)
         form_filter.addRow("Levels", lvl_widget)
 
         body.addWidget(grp_filter)
@@ -430,7 +434,7 @@ class ProfileEditorDialog(QDialog):
             QLineEdit, QTextEdit {{
                 background: {COLORS['bg_input']};
                 color: {COLORS['text']};
-                border: 1px solid {COLORS['border']};
+                border: 1px solid {COLORS['border_input']};
                 border-radius: 3px;
                 padding: 3px 5px;
             }}
@@ -448,7 +452,8 @@ class ProfileEditorDialog(QDialog):
             QHeaderView::section {{
                 background: {COLORS['bg_panel']};
                 color: {COLORS['text']};
-                border: 1px solid {COLORS['border']};
+                border: none;
+                border-bottom: 1px solid {COLORS['border']};
                 padding: 3px;
             }}
             QPushButton {{

@@ -43,16 +43,16 @@ from evtx_tool.output.exporters import SafeDictWriter as _SafeDictWriter    # no
 from evtx_tool.output.exporters import event_data_text as _event_data_text  # noqa: E402
 
 from PySide6.QtCore import (
-    QEvent, QModelIndex, QPoint, QSortFilterProxyModel, Qt, QThread, QTimer, Signal, Slot,
+    QEvent, QModelIndex, QObject, QPoint, QSortFilterProxyModel, Qt, QThread, QTimer, Signal, Slot,
     QPropertyAnimation, QEasingCurve, QSettings, QFileSystemWatcher,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QKeySequence, QIcon, QPainter, QPixmap,
+    QAction, QColor, QFont, QKeySequence, QIcon, QPainter, QPixmap, QShortcut,
     QStandardItem, QStandardItemModel,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateTimeEdit,
-    QDialog, QDialogButtonBox, QFileDialog, QFrame, QGroupBox, QHBoxLayout,
+    QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QProgressBar, QProgressDialog, QPushButton, QRadioButton,
     QScrollArea,
@@ -82,6 +82,28 @@ def _sep(parent=None) -> QFrame:
     f.setFrameShape(QFrame.Shape.HLine)
     f.setFrameShadow(QFrame.Shadow.Plain)
     return f
+
+
+def _menu_icon(name: str):
+    """Line icon for a context-menu entry (the entries used emoji / glyph
+    prefixes, which drew in the emoji font's colours and sizes)."""
+    from .icons import icon
+    return icon(name, "text_dim", 16)
+
+
+def _short_log_name(path: str) -> str:
+    """A log's file name as people read it in the file list:
+    "Microsoft-Windows-PowerShell%4Operational.evtx" -> "PowerShell / Operational".
+    ("%4" is how Windows writes the "/" of a channel name in a file name.)
+    Display only -- the path itself is kept with the item and shown as its
+    tooltip."""
+    name = os.path.basename(path)
+    if name.lower().endswith(".evtx"):
+        name = name[:-5]
+    name = name.replace("%4", " / ")
+    if name.startswith("Microsoft-Windows-") and len(name) > len("Microsoft-Windows-"):
+        name = name[len("Microsoft-Windows-"):]
+    return name or os.path.basename(path)
 
 
 def _section_label(text: str) -> QLabel:
@@ -640,7 +662,7 @@ class ColumnFilterPopup(QDialog):
             sorted_values = sorted(self._all_values.items(), key=lambda kv: (-kv[1], str(kv[0])))
             for val, count in sorted_values:
                 display = str(val) if val else "(empty)"
-                chk = QCheckBox(f"{display}  ({count})")
+                chk = QCheckBox(f"{display}  ({count:,})" if isinstance(count, int) else f"{display}  ({count})")
                 chk.setChecked(True)
                 chk.setProperty("filter_value", str(val))
                 self._checkboxes.append(chk)
@@ -1150,11 +1172,11 @@ class ColumnFilterPopup(QDialog):
             QCheckBox { color: #1e1a14; font-size: 9pt; spacing: 4px; background: transparent; }
             QCheckBox::indicator { width: 13px; height: 13px; border: 1px solid #c4bba8;
                 border-radius: 2px; background: #faf7f2; }
-            QCheckBox::indicator:checked { background: #7a5c1e; border-color: #9b7a2e; }
-            QCheckBox::indicator:hover { border-color: #9a8878; }
-            QLineEdit { background: #faf7f2; color: #1e1a14; border: 1px solid #c4bba8;
+            QCheckBox::indicator:checked { background: #73571c; border-color: #9b7a2e; }
+            QCheckBox::indicator:hover { border-color: #67594d; }
+            QLineEdit { background: #faf7f2; color: #1e1a14; border: 1px solid #938464;
                 border-radius: 2px; padding: 3px 6px; font-size: 9pt; }
-            QLineEdit:focus { border-color: #b8924a; }
+            QLineEdit:focus { border-color: #73571c; }
             QPushButton { background: #e4ddd3; color: #1e1a14; border: 1px solid #c4bba8;
                 border-radius: 2px; padding: 2px 8px; font-size: 8pt; }
             QPushButton:hover { background: #d8d1c5; }
@@ -1165,9 +1187,9 @@ class ColumnFilterPopup(QDialog):
             QTreeWidget::item:hover { background: #e4ddd3; }
             QTreeWidget::indicator { width: 13px; height: 13px; border: 1px solid #c4bba8;
                 border-radius: 2px; background: #faf7f2; }
-            QTreeWidget::indicator:checked { background: #7a5c1e; border-color: #9b7a2e; }
-            QTreeWidget::indicator:indeterminate { background: #b8924a; border-color: #9b7a2e; }
-            QTreeWidget::indicator:hover { border-color: #9a8878; }
+            QTreeWidget::indicator:checked { background: #73571c; border-color: #9b7a2e; }
+            QTreeWidget::indicator:indeterminate { background: #98783c; border-color: #9b7a2e; }
+            QTreeWidget::indicator:hover { border-color: #67594d; }
             QTreeWidget::item:selected { background: #e4ddd3; color: #1e1a14; }
         """ + self._branch_qss())
 
@@ -1334,7 +1356,7 @@ class ColumnFilterPopup(QDialog):
             if sval in existing:
                 continue
             display = sval if sval else "(empty)"
-            chk = QCheckBox(f"{display}  ({count})")
+            chk = QCheckBox(f"{display}  ({count:,})" if isinstance(count, int) else f"{display}  ({count})")
             chk.setChecked(False)
             chk.setProperty("filter_value", sval)
             self._checkboxes.append(chk)
@@ -1551,11 +1573,29 @@ class ColumnFilterPopup(QDialog):
 # ── Empty-table overlay ───────────────────────────────────────────────────────
 
 class _EventTableView(QTableView):
-    """QTableView that paints a centred 'No events' message when the model is
-    empty (e.g. after a filter yields 0 rows).  Works for both proxy-model and
-    direct-model usage because it simply checks rowCount() == 0."""
+    """QTableView that explains itself when it has no rows to show.
 
-    _OVERLAY_TEXT = "No events match the current filter"
+    Two states, both painted in the empty viewport:
+
+    * data is loaded but every row is filtered away -- says so and how to get
+      the rows back;
+    * nothing is loaded -- what to do next.  The window can supply that text
+      through ``empty_hint`` (a callable returning ``(icon, title, body)`` or
+      None), so it can say "8 files queued" or "Parsing..." instead.
+    """
+
+    _OVERLAY_TEXT = "No events match the current filters"
+    _OVERLAY_BODY = "Loosen a filter, or use Clear All Filters to see every event."
+
+    empty_hint = None   # callable -> (icon_name, title, body) | None
+    copy_handler = None  # callable: Ctrl+C copies the selected event
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.matches(QKeySequence.StandardKey.Copy) and callable(self.copy_handler):
+            self.copy_handler()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
@@ -1563,36 +1603,68 @@ class _EventTableView(QTableView):
         if mdl is None or mdl.rowCount() > 0:
             return
 
-        # Only show the overlay when data was actually loaded but every row was
-        # filtered away.  Without this guard the message also appears on the
-        # empty table shown at startup before any file is opened.
-        #
         # • Proxy models (normal mode): source model has rows but proxy has 0.
         # • Direct models (JM / ArrowTableModel): expose total_unfiltered_rows.
-        # If neither check is satisfiable we stay silent (safe default).
         if hasattr(mdl, "sourceModel"):
             src = mdl.sourceModel()
             has_data = src is not None and src.rowCount() > 0
         else:
             has_data = bool(getattr(mdl, "total_unfiltered_rows", 0))
-        if not has_data:
-            return
 
-        painter = QPainter(self.viewport())
-        painter.save()
-        pen_color = self.palette().color(self.palette().ColorRole.PlaceholderText)
-        if not pen_color.isValid():
-            pen_color = QColor("#888888")
-        painter.setPen(pen_color)
-        font = painter.font()
-        font.setPointSize(max(font.pointSize() + 2, 13))
-        painter.setFont(font)
-        painter.drawText(
-            self.viewport().rect(),
-            Qt.AlignmentFlag.AlignCenter,
-            self._OVERLAY_TEXT,
-        )
-        painter.restore()
+        if has_data:
+            content = ("search-x", self._OVERLAY_TEXT, self._OVERLAY_BODY)
+        else:
+            content = None
+            if callable(self.empty_hint):
+                try:
+                    content = self.empty_hint()
+                except Exception:
+                    content = None
+            if not content:
+                return
+        self._paint_empty_state(*content)
+
+    def _paint_empty_state(self, icon_name: str, title: str, body: str) -> None:
+        from .icons import pixmap as _icon_pixmap
+        vp = self.viewport()
+        r = vp.rect()
+        if r.height() < 90 or r.width() < 200:
+            return
+        painter = QPainter(vp)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        width = min(r.width() - 48, 460)
+        left = r.left() + (r.width() - width) // 2
+
+        title_font = QFont(self.font())
+        title_font.setPointSizeF(max(self.font().pointSizeF(), 9.0) + 2.5)
+        title_font.setWeight(QFont.Weight.DemiBold)
+        body_font = QFont(self.font())
+        body_font.setPointSizeF(max(self.font().pointSizeF(), 9.0))
+
+        flags = int(Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap)
+        from PySide6.QtGui import QFontMetrics
+        from PySide6.QtCore import QRect
+        t_rect = QFontMetrics(title_font).boundingRect(QRect(0, 0, width, 1000), flags, title)
+        b_rect = QFontMetrics(body_font).boundingRect(QRect(0, 0, width, 1000), flags, body)
+        icon_size = 40 if r.height() > 220 else 0
+        gap = 12
+        total = (icon_size + gap if icon_size else 0) + t_rect.height() + 6 + b_rect.height()
+        y = r.top() + max(8, (r.height() - total) // 2 - 10)
+
+        if icon_size:
+            pm = _icon_pixmap(icon_name, COLORS["text_muted"], icon_size, stroke=1.25)
+            painter.drawPixmap(r.left() + (r.width() - icon_size) // 2, y, pm)
+            y += icon_size + gap
+        painter.setFont(title_font)
+        painter.setPen(QColor(COLORS["text"]))
+        painter.drawText(QRect(left, y, width, t_rect.height()), flags, title)
+        y += t_rect.height() + 6
+        painter.setFont(body_font)
+        painter.setPen(QColor(COLORS["text_dim"]))
+        painter.drawText(QRect(left, y, width, b_rect.height()), flags, body)
+        painter.end()
 
 
 # ── Per-file tab state ────────────────────────────────────────────────────────
@@ -1920,15 +1992,15 @@ class EventTimeZoneDialog(QDialog):
         p.setColor(QPalette.ColorRole.Text,            qc("#1e1a14"))
         p.setColor(QPalette.ColorRole.Button,          qc("#e4ddd3"))
         p.setColor(QPalette.ColorRole.ButtonText,      qc("#1e1a14"))
-        p.setColor(QPalette.ColorRole.Highlight,       qc("#7a5c1e"))
+        p.setColor(QPalette.ColorRole.Highlight,       qc("#73571c"))
         p.setColor(QPalette.ColorRole.HighlightedText, qc("#ffffff"))
         p.setColor(QPalette.ColorRole.ToolTipBase,     qc("#e4ddd3"))
         p.setColor(QPalette.ColorRole.ToolTipText,     qc("#1e1a14"))
-        p.setColor(QPalette.ColorRole.PlaceholderText, qc("#9a8878"))
+        p.setColor(QPalette.ColorRole.PlaceholderText, qc("#67594d"))
         # Disabled group – warm-muted on cream background
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, qc("#9a8878"))
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,       qc("#9a8878"))
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, qc("#9a8878"))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, qc("#67594d"))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,       qc("#67594d"))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, qc("#67594d"))
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,       qc("#ede8df"))
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Button,     qc("#ede8df"))
         return p
@@ -1962,26 +2034,26 @@ class EventTimeZoneDialog(QDialog):
             color: #9b7a2e;
             font-weight: bold;
         }
-        QRadioButton:disabled { color: #9a8878; }
+        QRadioButton:disabled { color: #67594d; }
 
         QRadioButton::indicator {
-            width: 14px;
-            height: 14px;
+            width: 12px;
+            height: 12px;
             border-radius: 7px;
-            border: 2px solid #9a8878;
+            border: 1px solid #67594d;
             background: #faf7f2;
         }
         QRadioButton::indicator:hover {
-            border-color: #7a5c1e;
-            background: #e8e0d0;
+            border-color: #73571c;
         }
         QRadioButton::indicator:checked {
-            border: 1px solid #9b7a2e;
-            background: #9b7a2e;
+            width: 6px;
+            height: 6px;
+            border: 4px solid #73571c;
+            background: #faf7f2;
         }
         QRadioButton::indicator:checked:hover {
-            border-color: #7a5c1e;
-            background: #7a5c1e;
+            border-color: #9b7a2e;
         }
         QRadioButton::indicator:disabled {
             border-color: #c4bba8;
@@ -1992,17 +2064,17 @@ class EventTimeZoneDialog(QDialog):
         QComboBox {
             background: #faf7f2;
             color: #1e1a14;
-            border: 1px solid #c4bba8;
+            border: 1px solid #938464;
             border-radius: 3px;
             padding: 3px 6px;
             min-height: 24px;
         }
-        QComboBox:hover  { border-color: #7a5c1e; }
-        QComboBox:focus  { border-color: #7a5c1e; }
-        QComboBox:on     { border-color: #7a5c1e; }
+        QComboBox:hover  { border-color: #73571c; }
+        QComboBox:focus  { border-color: #73571c; }
+        QComboBox:on     { border-color: #73571c; }
         QComboBox:disabled {
             background: #ede8df;
-            color: #9a8878;
+            color: #67594d;
             border-color: #c4bba8;
         }
         QComboBox::drop-down {
@@ -2026,16 +2098,16 @@ class EventTimeZoneDialog(QDialog):
         QSpinBox {
             background: #faf7f2;
             color: #1e1a14;
-            border: 1px solid #c4bba8;
+            border: 1px solid #938464;
             border-radius: 3px;
             padding: 2px 4px;
             min-height: 24px;
         }
-        QSpinBox:hover { border-color: #7a5c1e; }
-        QSpinBox:focus { border-color: #7a5c1e; }
+        QSpinBox:hover { border-color: #73571c; }
+        QSpinBox:focus { border-color: #73571c; }
         QSpinBox:disabled {
             background: #ede8df;
-            color: #9a8878;
+            color: #67594d;
             border-color: #c4bba8;
         }
         QSpinBox::up-button, QSpinBox::down-button {
@@ -2064,17 +2136,17 @@ class EventTimeZoneDialog(QDialog):
             border-top:   5px solid #5a4e42;
         }
         QSpinBox::up-arrow:disabled, QSpinBox::down-arrow:disabled {
-            border-top-color:    #9a8878;
-            border-bottom-color: #9a8878;
+            border-top-color:    #67594d;
+            border-bottom-color: #67594d;
         }
 
         /* -- Sign toggle button -- */
         QPushButton#signToggle {
             font-weight: bold;
             font-size: 14pt;
-            color: #7a5c1e;
+            color: #73571c;
             background: #e8e0cc;
-            border: 1px solid #7a5c1e;
+            border: 1px solid #73571c;
             border-radius: 4px;
             min-width: 32px;
             max-width: 32px;
@@ -2085,15 +2157,15 @@ class EventTimeZoneDialog(QDialog):
         QPushButton#signToggle:hover   { background: #d4c8a8; }
         QPushButton#signToggle:pressed { background: #c4b898; }
         QPushButton#signToggle:disabled {
-            color: #9a8878;
+            color: #67594d;
             border-color: #c4bba8;
             background: #ede8df;
         }
 
         /* -- OK button -- */
         QPushButton#okBtn {
-            background: #7a5c1e;
-            color: #ffffff;
+            background: #73571c;
+            color: #fffdf8;
             border: none;
             border-radius: 4px;
             padding: 5px 20px;
@@ -2128,7 +2200,7 @@ class EventTimeZoneDialog(QDialog):
             border-radius: 5px;
             min-height: 20px;
         }
-        QScrollBar::handle:vertical:hover { background: #9a8878; }
+        QScrollBar::handle:vertical:hover { background: #67594d; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
     """
 
@@ -2139,8 +2211,8 @@ class EventTimeZoneDialog(QDialog):
         QAbstractItemView {
             background: #faf7f2;
             color: #1e1a14;
-            selection-background-color: #7a5c1e;
-            selection-color: #ffffff;
+            selection-background-color: #73571c;
+            selection-color: #fffdf8;
             border: 1px solid #c4bba8;
             outline: none;
             font-size: 9pt;
@@ -2154,8 +2226,8 @@ class EventTimeZoneDialog(QDialog):
             color: #1e1a14;
         }
         QAbstractItemView::item:selected {
-            background: #7a5c1e;
-            color: #ffffff;
+            background: #73571c;
+            color: #fffdf8;
         }
         QScrollBar:vertical {
             background: #f5f0e8;
@@ -2496,9 +2568,24 @@ class _LogonSessionDialog(QDialog):
 
     _HEADERS = [
         "User", "Computer", "Logon Type", "Initiation", "Session ID",
-        "Start", "End", "Duration", "Procs", "Priv Events", "⚠ Dangerous",
+        "Start", "End", "Duration", "Procs", "Priv Events", "Dangerous privs",
         "Last Activity",
     ]
+
+    # Windows' own accounts: the font driver (UMFD-n) and window manager
+    # (DWM-n) get a session at every logon, SYSTEM / LOCAL SERVICE / NETWORK
+    # SERVICE run services, NAME$ is the computer itself.  On a real log they
+    # were most of the list and buried the people's sessions.
+    _SYSTEM_USERS = frozenset({"system", "local service", "network service", "localservice",
+                               "networkservice"})
+
+    @classmethod
+    def _is_system_account(cls, user: str) -> bool:
+        u = str(user or "").strip().lower()
+        if "\\" in u:
+            u = u.rsplit("\\", 1)[1]
+        return (u in cls._SYSTEM_USERS or u.endswith("$")
+                or u.startswith(("dwm-", "umfd-", "font driver host", "window manager")))
 
     def __init__(self, events: list[dict], on_filter_fn, parent=None):
         super().__init__(parent)
@@ -2928,20 +3015,21 @@ class _LogonSessionDialog(QDialog):
                 alternate-background-color: #f3ede3;
             }
             QTableWidget::item:selected {
-                background: #7a5c1e;
-                color: white;
+                background: #73571c;
+                color: #fffdf8;
             }
             QHeaderView::section {
                 background: #ede8df;
                 color: #3a2a10;
-                border: 1px solid #c4bba8;
+                border: none;
+                border-bottom: 1px solid #c4bba8;
                 padding: 3px 6px;
                 font-size: 8pt;
                 font-weight: bold;
             }
             QLineEdit {
                 background: #faf7f2;
-                border: 1px solid #c4bba8;
+                border: 1px solid #938464;
                 border-radius: 3px;
                 padding: 3px 6px;
                 font-size: 9pt;
@@ -2976,7 +3064,27 @@ class _LogonSessionDialog(QDialog):
         )
         self._chk_hide_service.toggled.connect(self._apply_display_filters)
         search_row.addWidget(self._chk_hide_service)
+        self._chk_hide_system = QCheckBox("Hide system accounts")
+        self._chk_hide_system.setChecked(True)
+        self._chk_hide_system.setToolTip(
+            "Windows' own accounts: SYSTEM, LOCAL SERVICE, NETWORK SERVICE, the font driver (UMFD-n), "
+            "the window manager (DWM-n) and the computer account (NAME$).\n"
+            "Untick to include them.")
+        self._chk_hide_system.toggled.connect(self._apply_display_filters)
+        search_row.addWidget(self._chk_hide_system)
         root.addLayout(search_row)
+
+        # What the row tints mean (they had no legend).
+        legend = QHBoxLayout()
+        legend.setSpacing(6)
+        for text, colour in (("Dangerous privileges assigned", "#fde8e0"),
+                             ("No logoff recorded", "#fdf5dc")):
+            chip = QLabel(text)
+            chip.setStyleSheet(f"background:{colour}; color:#1e1a14; border-radius:3px; "
+                               "padding:1px 7px; font-size:8pt;")
+            legend.addWidget(chip)
+        legend.addStretch()
+        root.addLayout(legend)
 
         # ── Table ─────────────────────────────────────────────────────────
         self._tbl = QTableWidget(0, len(self._HEADERS))
@@ -2992,9 +3100,13 @@ class _LogonSessionDialog(QDialog):
         hdr = self._tbl.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(False)
-        # Col order: User, Computer, Logon Type, Initiation, Session ID, Start, End, Duration, Procs, Priv Events, ⚠ Dangerous
-        for i, w in enumerate([120, 120, 155, 280, 90, 140, 140, 80, 50, 70, 80]):
+        # Col order: User, Computer, Logon Type, Initiation, Session ID, Start, End, Duration, Procs, Priv Events,
+        # Dangerous privs, Last Activity.  Every column fits a 1280 px screen without scrolling sideways:
+        # the Initiation text (what the logon type means) is the Logon Type cell's tooltip instead.
+        for i, w in enumerate([150, 80, 150, 0, 90, 130, 130, 150, 46, 70, 96, 120]):
             self._tbl.setColumnWidth(i, w)
+        self._tbl.setColumnHidden(3, True)
+        hdr.setStretchLastSection(True)
 
         self._tbl.doubleClicked.connect(self._on_filter_clicked)
         self._tbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -3004,7 +3116,7 @@ class _LogonSessionDialog(QDialog):
         # ── Active filter badge ───────────────────────────────────────────
         self._filter_badge = QLabel()
         self._filter_badge.setStyleSheet(
-            "background:#7a5c1e; color:white; border-radius:3px;"
+            "background:#73571c; color:#fffdf8; border-radius:3px;"
             " padding:3px 8px; font-size:8.5pt; font-weight:bold;"
         )
         self._filter_badge.setVisible(False)
@@ -3077,7 +3189,7 @@ class _LogonSessionDialog(QDialog):
                 s["duration"],
                 str(s["proc_count"]),
                 str(s["priv_count"]),
-                "⚠ Yes" if s["has_dangerous"] else "No",
+                "Yes" if s["has_dangerous"] else "No",
                 last_disp,
             ]
             right_align_cols = {8, 9}   # Procs, Priv Events (shifted +1 by new column)
@@ -3105,8 +3217,13 @@ class _LogonSessionDialog(QDialog):
                     )
                 if row_bg:
                     item.setBackground(row_bg)
-                if col == 10 and s["has_dangerous"]:   # ⚠ Dangerous column (shifted +1)
+                if col == 10 and s["has_dangerous"]:   # Dangerous privs column
                     item.setForeground(danger_fg)
+                    _f = item.font()
+                    _f.setBold(True)
+                    item.setFont(_f)
+                if col == 2 and s.get("initiation"):    # what the logon type means
+                    item.setToolTip(s["initiation"])
                 self._tbl.setItem(row, col, item)
 
         self._tbl.setSortingEnabled(True)
@@ -3122,6 +3239,10 @@ class _LogonSessionDialog(QDialog):
         sessions = self._all_sessions
         if hide_service:
             sessions = [s for s in sessions if s["logon_type"] != "5"]
+        n_sys = sum(1 for s in sessions if self._is_system_account(s["user"]))
+        self._chk_hide_system.setText(f"Hide system accounts ({n_sys:,})")
+        if self._chk_hide_system.isChecked():
+            sessions = [s for s in sessions if not self._is_system_account(s["user"])]
         if t:
             sessions = [
                 s for s in sessions
@@ -3325,8 +3446,8 @@ class _MissingRecordIdDialog(QDialog):
             "QTextBrowser { background:#faf7f2; border:1px solid #c4bba8;"
             " border-radius:3px; padding:4px; font-size:9pt; color:#1e1a14; }"
             "QScrollBar:vertical { background:#f5f0e8; width:8px; margin:0; }"
-            "QScrollBar::handle:vertical { background:#5a3e1e; border-radius:4px; min-height:20px; }"
-            "QScrollBar::handle:vertical:hover { background:#7a5c1e; }"
+            "QScrollBar::handle:vertical { background:#c4bba8; border-radius:3px; min-height:28px; }"
+            "QScrollBar::handle:vertical:hover { background:#73571c; }"
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
         )
         browser.setHtml("<br>".join(sections))
@@ -4222,20 +4343,21 @@ class _WifiHistoryDialog(QDialog):
                 alternate-background-color: #f3ede3;
             }
             QTableWidget::item:selected {
-                background: #7a5c1e;
-                color: white;
+                background: #73571c;
+                color: #fffdf8;
             }
             QHeaderView::section {
                 background: #ede8df;
                 color: #3a2a10;
-                border: 1px solid #c4bba8;
+                border: none;
+                border-bottom: 1px solid #c4bba8;
                 padding: 3px 6px;
                 font-size: 8pt;
                 font-weight: bold;
             }
             QLineEdit {
                 background: #faf7f2;
-                border: 1px solid #c4bba8;
+                border: 1px solid #938464;
                 border-radius: 3px;
                 padding: 3px 6px;
                 font-size: 9pt;
@@ -4756,7 +4878,7 @@ class _RemoteAssistanceDialog(QDialog):
     _TYPE_COLORS: dict[str, str] = {
         "Classic RA":  "#1e4d8c",
         "Remote Help": "#2e6820",
-        "RDP Session": "#7a5c1e",     # inbound / destination-side (this host was accessed)
+        "RDP Session": "#73571c",     # inbound / destination-side (this host was accessed)
         "RDP (Outbound)": "#0f6e6e",  # source-side (this host connected OUT to elsewhere)
         "Quick Assist":"#6b1e6b",
     }
@@ -4766,18 +4888,18 @@ class _RemoteAssistanceDialog(QDialog):
         QLabel  { color: #1e1a14; font-size: 9pt; }
         QLineEdit {
             background: #faf7f2; color: #1e1a14;
-            border: 1px solid #c4bba8; border-radius: 3px;
+            border: 1px solid #938464; border-radius: 3px;
             padding: 2px 6px; font-size: 9pt;
         }
-        QLineEdit:focus { border-color: #7a5c1e; }
+        QLineEdit:focus { border-color: #73571c; }
         QComboBox {
             background: #faf7f2; color: #1e1a14;
-            border: 1px solid #c4bba8; border-radius: 3px;
+            border: 1px solid #938464; border-radius: 3px;
             padding: 2px 6px; font-size: 9pt; min-width: 110px;
         }
         QComboBox QAbstractItemView {
             background: #faf7f2; color: #1e1a14;
-            selection-background-color: #7a5c1e;
+            selection-background-color: #73571c;
         }
         QPushButton {
             background: #e4ddd3; color: #1e1a14;
@@ -4787,7 +4909,7 @@ class _RemoteAssistanceDialog(QDialog):
         QPushButton:hover    { background: #d6cdbf; }
         QPushButton:pressed  { background: #c4bba8; }
         QPushButton#okBtn {
-            background: #7a5c1e; color: #ffffff;
+            background: #73571c; color: #fffdf8;
             border: 1px solid #5a3e1e;
         }
         QPushButton#okBtn:hover   { background: #8a6c2e; }
@@ -4799,25 +4921,25 @@ class _RemoteAssistanceDialog(QDialog):
         }
         QTableWidget::item { padding: 1px 4px; }
         QTableWidget::item:selected {
-            background: #7a5c1e; color: #ffffff;
+            background: #73571c; color: #fffdf8;
         }
         QHeaderView::section {
             background: #e4ddd3; color: #1e1a14;
-            border: none; border-right: 1px solid #c4bba8;
+            border: none;
             border-bottom: 1px solid #c4bba8;
             padding: 3px 6px; font-size: 9pt; font-weight: bold;
         }
         QScrollBar:vertical { background: #f5f0e8; width: 8px; margin: 0; }
         QScrollBar::handle:vertical {
-            background: #5a3e1e; border-radius: 4px; min-height: 20px;
+            background: #c4bba8; border-radius: 3px; min-height: 28px;
         }
-        QScrollBar::handle:vertical:hover { background: #7a5c1e; }
+        QScrollBar::handle:vertical:hover { background: #67594d; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         QScrollBar:horizontal { background: #f5f0e8; height: 8px; margin: 0; }
         QScrollBar::handle:horizontal {
-            background: #5a3e1e; border-radius: 4px; min-width: 20px;
+            background: #c4bba8; border-radius: 3px; min-width: 28px;
         }
-        QScrollBar::handle:horizontal:hover { background: #7a5c1e; }
+        QScrollBar::handle:horizontal:hover { background: #67594d; }
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
     """
 
@@ -6087,8 +6209,14 @@ class _RemoteAssistanceDialog(QDialog):
         for orig_row, s in enumerate(self._shown_sessions):
             r = tbl.rowCount()
             tbl.insertRow(r)
+            _origin = self._rdp_origin(s)
             cells = [
-                s["type"],
+                # An inbound Terminal Services session is RDP access only when
+                # its source is a remote address.  Every one used to read "RDP
+                # Session" in the accent colour -- remote access at a glance --
+                # also console logons (Address 'LOCAL') and sessions whose
+                # events carry no source at all (logoff, disconnect).
+                {"local": "Console (local)", "unknown": "Session (no source)"}.get(_origin, s["type"]),
                 s["computer"],
                 _ts_disp(s, "start"),
                 _ts_disp(s, "end"),
@@ -6144,8 +6272,20 @@ class _RemoteAssistanceDialog(QDialog):
                 if c == _COL_TYPE:
                     # Store the shown_sessions index for context-menu lookup.
                     item.setData(Qt.ItemDataRole.UserRole, orig_row)
-                    color = self._TYPE_COLORS.get(s["type"], "#1e1a14")
-                    item.setForeground(qc(color))
+                    if _origin == "local":
+                        item.setForeground(qc("#5a4e42"))
+                        item.setToolTip(f"{s['type']} record with source Address 'LOCAL'.\n"
+                                        + self._FLAG_HELP["LOCAL_CONSOLE"])
+                    elif _origin == "unknown":
+                        item.setForeground(qc("#5a4e42"))
+                        item.setToolTip(
+                            f"{s['type']} record whose events name no source address "
+                            "(e.g. only a logoff or disconnect was logged).\nOn its own it "
+                            "cannot show remote access: the same events are logged for "
+                            "console sessions.  RDP access needs a remote source address.")
+                    else:
+                        color = self._TYPE_COLORS.get(s["type"], "#1e1a14")
+                        item.setForeground(qc(color))
                 tbl.setItem(r, c, item)
         tbl.setSortingEnabled(True)
 
@@ -6166,8 +6306,34 @@ class _RemoteAssistanceDialog(QDialog):
         )
         if type_parts:
             html += f"&ensp;—&ensp;<span style='color:{tc('#5a4030')};'>{type_parts}</span>"
+        origins = [self._rdp_origin(s) for s in self._all_sessions]
+        n_rdp = sum(1 for o in origins if o is not None)
+        if n_rdp:
+            n_remote, n_local, n_unknown = (origins.count("remote"), origins.count("local"),
+                                            origins.count("unknown"))
+            html += (f"<br><span style='color:{tc('#7a4c00')};'>Of the {n_rdp} RDP session record(s): "
+                     f"<b>{n_remote}</b> from a remote address &ensp;·&ensp; <b>{n_local}</b> local "
+                     f"console (Address LOCAL) &ensp;·&ensp; <b>{n_unknown}</b> with no source address"
+                     f"</span>")
         if hasattr(self, "_lbl_summary"):
             self._lbl_summary.setText(html)
+
+    @staticmethod
+    def _is_local_console(s: dict) -> bool:
+        return any(str(f).split(":", 1)[0] == "LOCAL_CONSOLE" for f in s.get("flags", ()))
+
+    @classmethod
+    def _rdp_origin(cls, s: dict):
+        """For an inbound "RDP Session" record: "remote" (a remote source
+        address or host), "local" (Address 'LOCAL'), "unknown" (no source in
+        its events); None for any other type."""
+        if s.get("type") != "RDP Session":
+            return None
+        if (s.get("remote_ip") or "").strip() or (s.get("remote_host") or "").strip():
+            return "remote"
+        if cls._is_local_console(s):
+            return "local"
+        return "unknown"
 
     # ── Context menu ───────────────────────────────────────────────────────
 
@@ -7010,18 +7176,18 @@ class _ComputerNormalisationDialog(QDialog):
         QLabel  { color: #1e1a14; font-size: 9pt; }
         QLineEdit {
             background: #faf7f2; color: #1e1a14;
-            border: 1px solid #c4bba8; border-radius: 3px;
+            border: 1px solid #938464; border-radius: 3px;
             padding: 2px 6px; font-size: 9pt;
         }
-        QLineEdit:focus { border-color: #7a5c1e; }
+        QLineEdit:focus { border-color: #73571c; }
         QComboBox {
             background: #faf7f2; color: #1e1a14;
-            border: 1px solid #c4bba8; border-radius: 3px;
+            border: 1px solid #938464; border-radius: 3px;
             padding: 2px 6px; font-size: 9pt; min-width: 130px;
         }
         QComboBox QAbstractItemView {
             background: #faf7f2; color: #1e1a14;
-            selection-background-color: #7a5c1e;
+            selection-background-color: #73571c;
         }
         QPushButton {
             background: #e4ddd3; color: #1e1a14;
@@ -7031,7 +7197,7 @@ class _ComputerNormalisationDialog(QDialog):
         QPushButton:hover    { background: #d6cdbf; }
         QPushButton:pressed  { background: #c4bba8; }
         QPushButton#okBtn {
-            background: #7a5c1e; color: #ffffff;
+            background: #73571c; color: #fffdf8;
             border: 1px solid #5a3e1e;
         }
         QPushButton#okBtn:hover   { background: #8a6c2e; }
@@ -7043,25 +7209,25 @@ class _ComputerNormalisationDialog(QDialog):
         }
         QTableWidget::item { padding: 1px 4px; }
         QTableWidget::item:selected {
-            background: #7a5c1e; color: #ffffff;
+            background: #73571c; color: #fffdf8;
         }
         QHeaderView::section {
             background: #e4ddd3; color: #1e1a14;
-            border: none; border-right: 1px solid #c4bba8;
+            border: none;
             border-bottom: 1px solid #c4bba8;
             padding: 3px 6px; font-size: 9pt; font-weight: bold;
         }
         QScrollBar:vertical { background: #f5f0e8; width: 8px; margin: 0; }
         QScrollBar::handle:vertical {
-            background: #5a3e1e; border-radius: 4px; min-height: 20px;
+            background: #c4bba8; border-radius: 3px; min-height: 28px;
         }
-        QScrollBar::handle:vertical:hover { background: #7a5c1e; }
+        QScrollBar::handle:vertical:hover { background: #67594d; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         QScrollBar:horizontal { background: #f5f0e8; height: 8px; margin: 0; }
         QScrollBar::handle:horizontal {
-            background: #5a3e1e; border-radius: 4px; min-width: 20px;
+            background: #c4bba8; border-radius: 3px; min-width: 28px;
         }
-        QScrollBar::handle:horizontal:hover { background: #7a5c1e; }
+        QScrollBar::handle:horizontal:hover { background: #67594d; }
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
     """
 
@@ -7329,7 +7495,7 @@ class _ComputerNormalisationDialog(QDialog):
                     # Stash orig_row index for context-menu lookup.
                     item.setData(Qt.ItemDataRole.UserRole, orig_row)
                     if r["variant_count"] > 1:
-                        item.setForeground(qc("#7a5c1e"))   # highlight
+                        item.setForeground(qc("#73571c"))   # highlight
                 if c == 4 and r["forwarded"]:
                     item.setForeground(qc("#8a4800"))       # amber
                 if c == 5:
@@ -7436,9 +7602,9 @@ class _ComputerNormalisationDialog(QDialog):
             menu.addSeparator()
             for ln in r["suggestions"]:
                 what = self._link_label(ln)
-                act_c = menu.addAction(f"✔  Confirm suggested link  ({what})")
+                act_c = menu.addAction(_menu_icon("check"), f"Confirm suggested link  ({what})")
                 act_c.triggered.connect(lambda _=False, l=ln: self._confirm_link(l))
-                act_r = menu.addAction(f"✖  Reject suggested link  ({what})")
+                act_r = menu.addAction(_menu_icon("x"), f"Reject suggested link  ({what})")
                 act_r.triggered.connect(lambda _=False, l=ln: self._reject_link(l))
 
         menu.exec(self._tbl.viewport().mapToGlobal(pos))
@@ -7564,8 +7730,8 @@ class AddRemoveColumnsDialog(QDialog):
             border: none;
         }
         QListWidget::item:selected {
-            background: #7a5c1e;
-            color: #ffffff;
+            background: #73571c;
+            color: #fffdf8;
         }
         QListWidget::item:hover:!selected {
             background: #e0d8c4;
@@ -7582,10 +7748,10 @@ class AddRemoveColumnsDialog(QDialog):
         }
         QPushButton:hover   { background: #ccc5b5; }
         QPushButton:pressed { background: #b8b0a0; }
-        QPushButton:disabled { color: #9a8878; background: #ede8df; border-color: #c4bba8; }
+        QPushButton:disabled { color: #67594d; background: #ede8df; border-color: #c4bba8; }
         QPushButton#okBtn {
-            background: #7a5c1e;
-            color: #ffffff;
+            background: #73571c;
+            color: #fffdf8;
             border: none;
             border-radius: 3px;
             padding: 4px 18px;
@@ -8207,7 +8373,6 @@ class _ExportScopeDialog(QDialog):
             QDialog {{ background: {COLORS['bg_panel']}; color: {COLORS['text']}; }}
             QLabel  {{ color: {COLORS['text']}; font-size: 9pt; }}
             QRadioButton {{ color: {COLORS['text']}; font-size: 9pt; spacing: 6px; }}
-            QRadioButton::indicator {{ width: 14px; height: 14px; }}
             QCheckBox {{ color: {COLORS['text']}; font-size: 9pt; spacing: 4px; }}
             QCheckBox::indicator {{ width: 13px; height: 13px; }}
             QGroupBox {{
@@ -8221,7 +8386,7 @@ class _ExportScopeDialog(QDialog):
                 border: 1px solid {COLORS['border']}; border-radius: 3px;
                 padding: 4px 12px; font-size: 9pt;
             }}
-            QPushButton:hover {{ background: {COLORS.get('accent', '#7a5c1e')}; color: white; }}
+            QPushButton:hover {{ background: {COLORS.get('accent', '#73571c')}; color: white; }}
             QScrollArea {{ border: none; background: transparent; }}
         """)
 
@@ -8444,6 +8609,354 @@ class _CustomColumnWorker(QThread):
             self.failed.emit(str(exc))
 
 
+def fit_rect_to_screen(x: int, y: int, w: int, h: int,
+                       ax: int, ay: int, aw: int, ah: int, margin: int = 24):
+    """Geometry for a window (x, y, w, h) so it fits the available screen area
+    (ax, ay, aw, ah): shrunk to at most the area less *margin* on each side,
+    and moved inside it.  A window that already fits is returned unchanged."""
+    max_w, max_h = max(200, aw - 2 * margin), max(150, ah - 2 * margin)
+    if w <= aw and h <= ah and x >= ax and y >= ay and x + w <= ax + aw and y + h <= ay + ah:
+        return x, y, w, h
+    nw, nh = min(w, max_w), min(h, max_h)
+    nx = min(max(x, ax + margin), ax + aw - nw - margin)
+    ny = min(max(y, ay + margin), ay + ah - nh - margin)
+    if w > max_w:
+        nx = ax + (aw - nw) // 2
+    if h > max_h:
+        ny = ay + (ah - nh) // 2
+    return nx, ny, nw, nh
+
+
+class _FitWindowsToScreen(QObject):
+    """App-wide: a window opened larger than its screen is fitted to it.
+
+    Several tool windows were sized for a big monitor (Logon Sessions 1340,
+    WiFi 1400, System Activity 1450 px wide; the profile editor 740 px tall)
+    and opened past the edges of a 1366x768 or 1280x720 laptop screen, with
+    their buttons out of reach.  Runs once per window, on its first show.
+    """
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() == QEvent.Type.Show and isinstance(obj, (QDialog, QMainWindow)) \
+                and obj.isWindow() and not obj.property("_eh_fitted"):
+            obj.setProperty("_eh_fitted", True)
+            try:
+                scr = obj.screen()
+                if scr is not None:
+                    a = scr.availableGeometry()
+                    g = obj.frameGeometry() if obj.isVisible() else obj.geometry()
+                    x, y, w, h = fit_rect_to_screen(g.x(), g.y(), obj.width(), obj.height(),
+                                                    a.x(), a.y(), a.width(), a.height())
+                    if (w, h) != (obj.width(), obj.height()):
+                        obj.resize(w, h)
+                    if (x, y) != (g.x(), g.y()):
+                        obj.move(x, y)
+            except RuntimeError:
+                pass
+        return False
+
+
+class _ElidedCellTooltip(QObject):
+    """A cell whose text is cut off shows its full text on hover.
+
+    Long values (notes, paths, command lines) were clipped with "…" and could
+    be read only by dragging the column wider.  A cell with a tooltip of its
+    own keeps it.
+    """
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() != QEvent.Type.ToolTip:
+            return False
+        view = obj.parent()
+        if not isinstance(view, QAbstractItemView):
+            return False
+        try:
+            idx = view.indexAt(event.pos())
+            if not idx.isValid() or idx.data(Qt.ItemDataRole.ToolTipRole):
+                return False
+            text = idx.data(Qt.ItemDataRole.DisplayRole)
+            if text is None:
+                return False
+            text = str(text)
+            rect = view.visualRect(idx)
+            if view.fontMetrics().horizontalAdvance(text) + 14 <= rect.width():
+                return False
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.showText(event.globalPos(), text if len(text) <= 3000 else text[:3000] + "\u2026",
+                              view, rect)
+            return True
+        except RuntimeError:
+            return False
+
+
+def _name_for_assistive_tech(w, refresh: bool = False) -> None:
+    """WCAG 4.1.2: a control a screen reader cannot name is unusable to its
+    user.  Icon-only buttons (sidebar, refresh, close tab, "..." browse) and
+    unlabelled boxes take their tooltip -- or a text box its placeholder --
+    as accessible name, unless the code gave them one.  Re-derived when the
+    tooltip changes (the Brief/Bookmark buttons change theirs)."""
+    try:
+        from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox as _QCB, QLineEdit as _QLE
+        if not isinstance(w, (QAbstractButton, _QLE, _QCB, QAbstractSpinBox)):
+            return
+        auto = bool(w.property("_eh_auto_name"))
+        if w.accessibleName() and not (refresh and auto):
+            return
+        name = ""
+        if isinstance(w, QAbstractButton):
+            if w.text().strip(" .…&"):
+                return                         # its text is its name
+            name = w.toolTip()
+            if not name and isinstance(w.parent(), _QLE):
+                # The x Qt puts in a text box with a clear button.
+                name = "Clear text"
+                w.setToolTip(name)
+        elif isinstance(w, _QLE):
+            name = w.placeholderText() or w.toolTip()
+        else:
+            name = w.toolTip()
+        name = " ".join(str(name).split())[:140]
+        if name:
+            w.setAccessibleName(name)
+            w.setProperty("_eh_auto_name", True)
+    except RuntimeError:
+        pass
+
+
+class _CalmTables(QObject):
+    """App-wide: tables draw no grid lines unless View > Grid Lines is on,
+    and every item view shows the full text of a clipped cell on hover.
+
+    The tool windows each turned the grid on, which drew a line at every
+    row AND column boundary -- the "divider lines" that made dense tables
+    hard to read.  Alternating row shading carries the eye along a row;
+    an analyst who prefers the grid turns it on for every table at once.
+    """
+
+    grid_on = False
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._tips = _ElidedCellTooltip(self)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        et = event.type()
+        if et == QEvent.Type.Polish or et == QEvent.Type.ToolTipChange:
+            _name_for_assistive_tech(obj, et == QEvent.Type.ToolTipChange)
+        if event.type() == QEvent.Type.Polish and isinstance(obj, QAbstractItemView):
+            vp = obj.viewport()
+            if vp is not None and not vp.property("_eh_tips"):
+                vp.setProperty("_eh_tips", True)
+                vp.installEventFilter(self._tips)
+            if isinstance(obj, QTableView):
+                if obj.showGrid() != _CalmTables.grid_on:
+                    obj.setShowGrid(_CalmTables.grid_on)
+                if not obj.alternatingRowColors():
+                    obj.setAlternatingRowColors(True)
+        return False
+
+
+def set_grid_lines(app, on: bool) -> None:
+    """View > Grid Lines: every table, open now or later."""
+    _CalmTables.grid_on = bool(on)
+    for w in app.allWidgets():
+        if isinstance(w, QTableView):
+            w.setShowGrid(_CalmTables.grid_on)
+
+
+def install_calm_tables(app) -> None:
+    if app is None or getattr(app, "_eh_calm_tables", None) is not None:
+        return
+    f = _CalmTables(app)
+    app.installEventFilter(f)
+    app._eh_calm_tables = f
+
+
+def install_fit_windows_to_screen(app) -> None:
+    """Install _FitWindowsToScreen once (not on headless test platforms,
+    whose virtual screen is far smaller than any real one)."""
+    if app is None or getattr(app, "_eh_fit_filter", None) is not None:
+        return
+    if QApplication.platformName() in ("offscreen", "minimal"):
+        return
+    f = _FitWindowsToScreen(app)
+    app.installEventFilter(f)
+    app._eh_fit_filter = f
+
+
+class _OnEnabled(QObject):
+    """Call *callback* whenever *widget* becomes enabled (and *on_disabled*,
+    if given, whenever it becomes disabled)."""
+
+    def __init__(self, widget: QWidget, callback, on_disabled=None):
+        super().__init__(widget)
+        self._cb = callback
+        self._off = on_disabled
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() == QEvent.Type.EnabledChange:
+            cb = self._cb if obj.isEnabled() else self._off
+            if cb is not None:
+                try:
+                    cb()
+                except RuntimeError:
+                    pass
+        return False
+
+
+class _IocColumnFitter(QObject):
+    """IOC tables: the value keeps room to be read.  The other columns had
+    fixed widths (395 px together), so on a laptop-width pane the stretching
+    Value column was left ~45 px ("255.2...").  Now First/Last Seen give way
+    first, down to the date (the time of day elides, the tooltip and the
+    events still have it), and only then does the value narrow."""
+
+    VALUE_MIN, TIME_MAX, TIME_MIN = 160, 140, 84
+
+    @classmethod
+    def install(cls, tbl) -> None:
+        f = cls(tbl)
+        tbl.viewport().installEventFilter(f)
+        tbl._ioc_col_fitter = f          # keep it alive with the table
+        f.fit()
+
+    def fit(self) -> None:
+        tbl = self.parent()
+        try:
+            fixed = tbl.columnWidth(1) + tbl.columnWidth(4)
+            spare = tbl.viewport().width() - fixed - self.VALUE_MIN
+        except RuntimeError:
+            return
+        t = max(self.TIME_MIN, min(self.TIME_MAX, spare // 2))
+        for c in (2, 3):
+            if tbl.columnWidth(c) != t:
+                tbl.setColumnWidth(c, t)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() == QEvent.Type.Resize:
+            self.fit()
+        return False
+
+
+def _wrap_summary(label) -> None:
+    """A summary line above an analysis table wraps instead of setting the
+    pane's minimum width.  Unwrapped, the IOC summary (a sentence plus two
+    buttons) made its tab 660 px wide the first time it was shown: the
+    splitter pushed Event Detail left and never gave the width back."""
+    from PySide6.QtWidgets import QSizePolicy
+    label.setWordWrap(True)
+    label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    label.setMinimumWidth(120)
+
+
+def _make_wrap_name_delegate(tree):
+    """Item delegate for the file list's name column: the row is as tall as
+    its wrapped name.  Qt's own size hint ignores wrapping when the tree has
+    a stylesheet with item padding, so a long name wrapped inside a one-line
+    row and its second line was cut off with an ellipsis."""
+    from PySide6.QtCore import QRect, QSize
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
+
+    # Measured and painted with the same rules, so a wrapped name always fits
+    # the row it was measured for (Qt's painter wrapped differently and clipped).
+    # Lines break at spaces and after hyphens; inside a word only when that
+    # one word is wider than the column ("LessPrivilegedAppContainer").
+    import re as _re
+    _WORD = int(Qt.TextFlag.TextWordWrap)
+    _ANY = int(Qt.TextFlag.TextWordWrap | Qt.TextFlag.TextWrapAnywhere)
+
+    def _layout(text, width, fm):
+        """(text to draw, flags).  A word wider than the column gets break
+        points at its capitals (LessPrivileged|App|Container); only if a piece
+        is still too wide does the line break anywhere."""
+        def fit(part):
+            return fm.horizontalAdvance(part + "-") <= width
+        out = []
+        for tok in _re.split(r"(\s+|-)", text):
+            if tok and not tok.isspace() and tok != "-" and not fit(tok):
+                tok = _re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "\u200b", tok)
+            out.append(tok)
+        shown = "".join(out)
+        for piece in _re.split(r"[\s\u200b-]+", shown):
+            if piece and not fit(piece):
+                return shown, _ANY
+        return shown, _WORD
+
+    class _D(QStyledItemDelegate):
+        _PAD_W, _PAD_H = 16, 8           # QTreeWidget::item { padding: 4px 8px }
+
+        def paint(self, painter, option, index):
+            if index.column() != 0:
+                return super().paint(painter, option, index)
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            text = opt.text
+            opt.text = ""                 # background, selection, hover: the style draws them
+            style = opt.widget.style() if opt.widget is not None else QApplication.style()
+            style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+            fg = index.data(Qt.ItemDataRole.ForegroundRole)
+            colour = fg.color() if hasattr(fg, "color") else QColor(COLORS["text"])
+            painter.save()
+            painter.setFont(opt.font)
+            painter.setPen(colour)
+            r = option.rect.adjusted(self._PAD_W // 2, self._PAD_H // 2, -self._PAD_W // 2, -self._PAD_H // 2)
+            shown, flags = _layout(text, r.width(), opt.fontMetrics)
+            painter.drawText(r, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter) | flags, shown)
+            painter.restore()
+
+        def sizeHint(self, option, index):  # noqa: N802
+            base = super().sizeHint(option, index)
+            if index.column() != 0:
+                return base
+            text = str(index.data() or "")
+            depth, parent = 0, index.parent()
+            while parent.isValid():
+                depth, parent = depth + 1, parent.parent()
+            # Top-level rows are not indented when the root has no branch marks.
+            levels = depth + (1 if tree.rootIsDecorated() else 0)
+            width = tree.header().sectionSize(0) - self._PAD_W - tree.indentation() * levels
+            if width <= 20 or not text:
+                return base
+            # The item's own font: an open file's name is bold, and bold is
+            # wider, so a name that fits one line in the regular weight can
+            # need two (measured in the regular font, the second line was cut).
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            fm = opt.fontMetrics
+            shown, flags = _layout(text, width, fm)
+            r = fm.boundingRect(QRect(0, 0, width, 10_000), flags, shown)
+            return QSize(base.width(), max(base.height(), r.height() + self._PAD_H))
+
+    return _D(tree)
+
+
+class _FileQueueList(QListWidget):
+    """The queued inputs: long paths elided in the middle, a hint while empty."""
+
+    _HINT = "Drop .evtx files or folders here"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setWordWrap(False)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if self.count():
+            return
+        p = QPainter(self.viewport())
+        p.setPen(QColor(COLORS["text_muted"]))
+        f = QFont(self.font())
+        f.setPointSizeF(max(f.pointSizeF(), 8.0))
+        p.setFont(f)
+        p.drawText(self.viewport().rect().adjusted(8, 0, -8, 0),
+                   int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap), self._HINT)
+        p.end()
+
+
 class _DropOverlay(QWidget):
     """Drop-zone highlight shown over the window while files are dragged in."""
 
@@ -8482,6 +8995,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("EventHawk  v2.0")
         self.resize(1420, 860)
         self.setMinimumSize(900, 600)
+        install_fit_windows_to_screen(QApplication.instance())
+        install_calm_tables(QApplication.instance())
 
 
         # ── Live state (set after parse finishes) ──────────────────────────
@@ -8564,7 +9079,7 @@ class MainWindow(QMainWindow):
 
         # ── Left panel collapse state ────────────────────────────────────────
         self._panel_open:         bool   = True
-        self._panel_stored_width: int    = 270
+        self._panel_stored_width: int    = 290
         self._panel_anim:         object = None   # keep QPropertyAnimation alive
 
         # ── Build UI ───────────────────────────────────────────────────────
@@ -8596,6 +9111,7 @@ class MainWindow(QMainWindow):
             for p in initial_paths:
                 self._add_path(p)
 
+        self._restore_layout()
         self._set_status("Ready")
 
     # =========================================================================
@@ -8614,6 +9130,11 @@ class MainWindow(QMainWindow):
         a = fm.addAction("Add Directory...")
         a.setShortcut(QKeySequence("Ctrl+Shift+O"))
         a.triggered.connect(self._on_add_dir)
+
+        # Recently added files and folders: a case is usually reopened.
+        self._recent_menu = fm.addMenu("Open Recent")
+        self._recent_menu.setToolTipsVisible(True)
+        self._recent_menu.aboutToShow.connect(self._populate_recent_menu)
 
         fm.addSeparator()
         self._act_export = fm.addAction("Export Events...")
@@ -8660,6 +9181,14 @@ class MainWindow(QMainWindow):
         a.triggered.connect(self._on_show_computer_norm)
 
         tm.addSeparator()
+        self._act_ps_extract = tm.addAction("PowerShell History\u2026")
+        self._act_ps_extract.setToolTip(
+            "Export PowerShell artifacts — commands and scripts executed"
+        )
+        self._act_ps_extract.setEnabled(False)
+        self._act_ps_extract.triggered.connect(self._on_ps_extract)
+
+        tm.addSeparator()
         a = tm.addAction("Clear Results")
         a.triggered.connect(self._clear_results)
 
@@ -8668,8 +9197,10 @@ class MainWindow(QMainWindow):
         a.setToolTip("Differential EVTX log analysis — compare target against a known-good baseline")
         a.triggered.connect(self._launch_sentinel)
 
-        # ── Time zone ─────────────────────────────────────────────────────
-        tz_act = mb.addAction("Time zone")
+        # ── View: time zone, timestamp precision, theme ───────────────────
+        view_menu = mb.addMenu("View")
+        view_menu.setToolTipsVisible(True)
+        tz_act = view_menu.addAction("Time Zone\u2026")
         tz_act.setToolTip("Configure how event timestamps are displayed")
         tz_act.triggered.connect(self._on_timezone_action)
 
@@ -8678,13 +9209,7 @@ class MainWindow(QMainWindow):
         # by default; the underlying value is stored at full precision so this
         # is display-only and applies live with no re-parse.
         from PySide6.QtGui import QActionGroup
-        hm = mb.addMenu("Help")
-        a = hm.addAction("Open Log Folder")
-        a.setToolTip("Open the folder holding EventHawk's log files")
-        a.triggered.connect(self._open_log_folder)
-        self._act_open_log_folder = a
-
-        prec_menu = mb.addMenu("Precision")
+        prec_menu = view_menu.addMenu("Timestamp Precision")
         prec_menu.setToolTip(
             "Fractional-second precision for displayed timestamps "
             "(connect/disconnect times and WiFi session durations)"
@@ -8709,7 +9234,7 @@ class MainWindow(QMainWindow):
         # ── Theme ──────────────────────────────────────────────────────────
         # Light (warm cream) or Dark.  Applies live and is remembered.
         from .theme import current_theme, add_theme_listener
-        theme_menu = mb.addMenu("Theme")
+        theme_menu = view_menu.addMenu("Theme")
         theme_menu.setToolTip("Switch between the light and dark colour themes")
         self._theme_group = QActionGroup(self)
         self._theme_group.setExclusive(True)
@@ -8724,13 +9249,56 @@ class MainWindow(QMainWindow):
         _listener = self._on_theme_applied
         self.destroyed.connect(lambda *_a: remove_theme_listener(_listener))
 
-        # ── PowerShell History ─────────────────────────────────────────────
-        self._act_ps_extract = mb.addAction("PowerShell History")
-        self._act_ps_extract.setToolTip(
-            "Export PowerShell artifacts — commands and scripts executed"
-        )
-        self._act_ps_extract.setEnabled(False)
-        self._act_ps_extract.triggered.connect(self._on_ps_extract)
+        # ── Keyboard shortcuts with no menu item of their own ─────────────
+        for _keys, _slot in (("Ctrl+Shift+F", self._on_advanced_filter_clicked),
+                             ("Ctrl+B", self._shortcut_bookmark),
+                             ("Ctrl+\\", lambda: self._toggle_left_panel())):
+            _sc = QShortcut(QKeySequence(_keys), self)
+            _sc.activated.connect(_slot)
+
+        # The analysis tabs beside the event detail: on by default, remembered.
+        view_menu.addSeparator()
+        self._act_analysis_panel = view_menu.addAction("Analysis Panel")
+        self._act_analysis_panel.setCheckable(True)
+        self._act_analysis_panel.setChecked(True)
+        self._act_analysis_panel.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self._act_analysis_panel.setToolTip("ATT&CK, IOCs, Chains and Bookmarks beside the event detail")
+        self._act_analysis_panel.toggled.connect(self._set_analysis_panel_visible)
+        if self._persist_layout_enabled():
+            try:
+                if not QSettings("EventHawk", "GUI").value("analysis_panel_visible", True, type=bool):
+                    QTimer.singleShot(0, lambda: self._set_analysis_panel_visible(False))
+            except Exception:
+                pass
+
+        # Grid lines between cells: off by default (calm), one switch for all.
+        view_menu.addSeparator()
+        self._act_grid = view_menu.addAction("Grid Lines")
+        self._act_grid.setCheckable(True)
+        self._act_grid.setToolTip("Lines between the cells of every table")
+        _grid = False
+        if self._persist_layout_enabled():
+            try:
+                _grid = QSettings("EventHawk", "GUI").value("grid_lines", False, type=bool)
+            except Exception:
+                _grid = False
+        self._act_grid.setChecked(bool(_grid))
+        self._act_grid.toggled.connect(self._on_grid_lines)
+        if _grid:
+            QTimer.singleShot(0, lambda: self._on_grid_lines(True))
+
+        # ── Help ──────────────────────────────────────────────────────────
+        hm = mb.addMenu("Help")
+        a = hm.addAction("Keyboard Shortcuts")
+        a.setShortcut(QKeySequence("Ctrl+/"))
+        a.triggered.connect(self._show_shortcuts)
+        hm.addSeparator()
+        a = hm.addAction("About EventHawk")
+        a.triggered.connect(self._on_about)
+        a = hm.addAction("Open Log Folder")
+        a.setToolTip("Open the folder holding EventHawk's log files")
+        a.triggered.connect(self._open_log_folder)
+        self._act_open_log_folder = a
 
 
     # =========================================================================
@@ -8753,12 +9321,17 @@ class MainWindow(QMainWindow):
 
         right_splitter.addWidget(top_panel)
         right_splitter.addWidget(bottom_panel)
-        right_splitter.setSizes([480, 340])
+        right_splitter.setSizes([540, 300])
+        self._right_splitter = right_splitter
+        # The events table takes extra height; the detail/analysis strip keeps
+        # its size, so a short laptop screen still shows a useful number of rows.
+        right_splitter.setStretchFactor(0, 1)
+        right_splitter.setStretchFactor(1, 0)
 
         root_splitter.addWidget(left_wrapper)
         root_splitter.addWidget(right_splitter)
         # 270 panel + 16 toggle button = 286 for the left wrapper
-        root_splitter.setSizes([286, 1134])
+        root_splitter.setSizes([306, 1114])
 
         self.setCentralWidget(root_splitter)
 
@@ -8779,7 +9352,10 @@ class MainWindow(QMainWindow):
         so the QSplitter sees the size change and expands the right panel.
         """
         wrapper = QWidget()
-        wrapper.setMinimumWidth(16)   # always at least as wide as the toggle button
+        # While open the panel never gets narrower than its controls (it used
+        # to shrink with the window and clip its own buttons on a laptop
+        # screen); folded, it is just the toggle strip.
+        wrapper.setMinimumWidth(self._PANEL_OPEN_MIN_WIDTH)
         self._left_panel_wrapper = wrapper   # stored for animation
 
         hbox = QHBoxLayout(wrapper)
@@ -8793,8 +9369,12 @@ class MainWindow(QMainWindow):
         hbox.addWidget(self._left_panel_scroll)
 
         # ── Collapse / expand toggle button (right edge of left panel) ────
-        self._btn_panel_toggle = QPushButton("◀")
-        self._btn_panel_toggle.setFixedWidth(16)
+        self._btn_panel_toggle = QPushButton()
+        # 24 px with a 16 px amber arrow when folded: the 16 px strip with a
+        # faint 12 px arrow was easy to miss, and the panel looked stuck.
+        self._btn_panel_toggle.setFixedWidth(self._RAIL_WIDTH)
+        self._btn_panel_toggle.setAccessibleName("Show or hide the side panel")
+        self._btn_panel_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_panel_toggle.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
         )
@@ -8819,8 +9399,9 @@ class MainWindow(QMainWindow):
                 color: {COLORS['accent_hover']};
             }}
         """)
-        self._btn_panel_toggle.clicked.connect(self._toggle_left_panel)
+        self._btn_panel_toggle.clicked.connect(lambda: self._toggle_left_panel())
         hbox.addWidget(self._btn_panel_toggle)
+        self._sync_panel_toggle_icon()
 
         return wrapper
 
@@ -8829,127 +9410,144 @@ class MainWindow(QMainWindow):
     # =========================================================================
 
     def _build_left_panel(self) -> QWidget:
+        """Set-up panel: inputs, profiles, analysis options, Parse.
+
+        Laid out for a laptop screen first: no separator rules (spacing does
+        the grouping), settings that only matter for one option appear with
+        that option (the Hayabusa path), and the parse progress appears once a
+        parse starts.  Every widget keeps its attribute name.
+        """
+        from .icons import set_icon
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         container = QWidget()
+        container.setObjectName("leftPanel")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+
+        def _section(title: str, first: bool = False) -> None:
+            if not first:
+                layout.addSpacing(10)
+            layout.addWidget(_section_label(title))
+
+        def _icon_button(name: str, tip: str) -> QPushButton:
+            b = QPushButton()
+            set_icon(b, name)
+            b.setToolTip(tip)
+            b.setFixedWidth(30)
+            return b
 
         # ── FILES ─────────────────────────────────────────────────────────
-        layout.addWidget(_section_label("Files"))
+        _section("Files", first=True)
 
-        self._file_list = QListWidget()
-        self._file_list.setMaximumHeight(110)
+        self._file_list = _FileQueueList()
+        self._file_list.setMaximumHeight(96)
         self._file_list.setSpacing(0)
-        self._file_list.setToolTip("Files/directories to parse")
+        self._file_list.setToolTip("Files and folders to parse")
         layout.addWidget(self._file_list)
 
         btn_row = QHBoxLayout()
-        btn_add_files = QPushButton("+ Files")
-        btn_add_files.setToolTip("Add EVTX files (Ctrl+O)")
+        btn_row.setSpacing(6)
+        btn_add_files = QPushButton("Add files")
+        self._btn_add_files = btn_add_files
+        set_icon(btn_add_files, "file-plus")
+        btn_add_files.setToolTip("Add .evtx files  (Ctrl+O)")
         btn_add_files.clicked.connect(self._on_add_files)
-        btn_add_dir = QPushButton("+ Dir")
-        btn_add_dir.setToolTip("Add directory (Ctrl+Shift+O)")
+        btn_add_dir = QPushButton("Add folder")
+        set_icon(btn_add_dir, "folder-plus")
+        btn_add_dir.setToolTip("Add every .evtx file in a folder  (Ctrl+Shift+O)")
         btn_add_dir.clicked.connect(self._on_add_dir)
-        btn_clear_files = QPushButton("✕")
-        btn_clear_files.setToolTip("Clear file list and parsed results")
-        btn_clear_files.setMaximumWidth(28)
+        btn_clear_files = _icon_button("x", "Clear the file list and the parsed results")
         btn_clear_files.clicked.connect(self._on_clear_files)
-        btn_row.addWidget(btn_add_files)
-        btn_row.addWidget(btn_add_dir)
+        btn_row.addWidget(btn_add_files, 1)
+        btn_row.addWidget(btn_add_dir, 1)
         btn_row.addWidget(btn_clear_files)
         layout.addLayout(btn_row)
 
-        layout.addWidget(_sep())
-
         # ── PROFILES ──────────────────────────────────────────────────────
-        layout.addWidget(_section_label("Profiles"))
+        _section("Profiles")
 
-        self._profile_combo = CheckableComboBox(placeholder="— no profile —")
+        prof_top = QHBoxLayout()
+        prof_top.setSpacing(6)
+        self._profile_combo = CheckableComboBox(placeholder="No profile")
+        self._profile_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self._profile_combo.setMinimumContentsLength(8)
         self._profile_combo.setToolTip(
-            "Click to open list — tick the profiles you want to activate.\n"
-            "The dropdown stays open while you select."
+            "Tick the profiles to use, then Apply.\n"
+            "The list stays open while you tick."
         )
-        layout.addWidget(self._profile_combo)
+        btn_refresh = _icon_button("refresh", "Reload profiles from disk")
+        btn_refresh.clicked.connect(self._refresh_profiles)
+        prof_top.addWidget(self._profile_combo, 1)
+        prof_top.addWidget(btn_refresh)
+        layout.addLayout(prof_top)
 
         prof_btn_row = QHBoxLayout()
-        btn_all = QPushButton("All")
-        btn_all.setToolTip("Select all profiles")
-        btn_all.clicked.connect(self._select_all_profiles)
-        btn_none = QPushButton("None")
-        btn_none.setToolTip("Deselect all profiles")
-        btn_none.clicked.connect(self._select_no_profiles)
-        btn_refresh = QPushButton('↻')
-        btn_refresh.setToolTip('Refresh profiles from disk')
-        btn_refresh.setMaximumWidth(28)
-        btn_refresh.clicked.connect(self._refresh_profiles)
-        prof_btn_row.addWidget(btn_all)
-        prof_btn_row.addWidget(btn_none)
-        prof_btn_row.addWidget(btn_refresh)
-        layout.addLayout(prof_btn_row)
-
+        prof_btn_row.setSpacing(6)
         # Explicit apply — profiles do NOT auto-apply on toggle.  The user ticks
         # the profiles they want, then clicks Apply so a single filter pass runs.
         # Works in BOTH Juggernaut and normal mode WITHOUT re-parsing the logs.
-        self._btn_apply_profiles = QPushButton("✓ Apply Profiles")
+        self._btn_apply_profiles = QPushButton("Apply")
+        set_icon(self._btn_apply_profiles, "check")
         self._btn_apply_profiles.setToolTip(
-            "Apply the ticked profiles to the already-parsed events.\n"
-            "Filters in place — does NOT re-parse the logs.\n"
-            "Tick several profiles first, then click once."
+            "Apply the ticked profiles to the parsed events.\n"
+            "Filters in place — the logs are not parsed again."
         )
         self._btn_apply_profiles.clicked.connect(self._on_apply_profiles_clicked)
-        layout.addWidget(self._btn_apply_profiles)
-
-        prof_edit_row = QHBoxLayout()
-        btn_new_profile = QPushButton("＋ New Profile")
-        btn_new_profile.setToolTip("Create a new custom profile")
+        btn_all = QPushButton("All")
+        btn_all.setToolTip("Tick every profile")
+        btn_all.clicked.connect(self._select_all_profiles)
+        btn_none = QPushButton("None")
+        btn_none.setToolTip("Untick every profile")
+        btn_none.clicked.connect(self._select_no_profiles)
+        btn_new_profile = _icon_button("plus", "New profile")
         btn_new_profile.clicked.connect(self._on_new_profile)
-        self._btn_edit_profile = QPushButton("✎ Edit Profile")
-        self._btn_edit_profile.setToolTip(
+        self._btn_edit_profile = _icon_button(
+            "pencil",
             "Edit or view the selected profile\n"
-            "(built-in profiles can be copied to a new custom profile)"
+            "(a built-in profile can be copied to a new custom profile)",
         )
         self._btn_edit_profile.clicked.connect(self._on_edit_profile)
-        prof_edit_row.addWidget(btn_new_profile)
-        prof_edit_row.addWidget(self._btn_edit_profile)
-        layout.addLayout(prof_edit_row)
-
-        layout.addWidget(_sep())
-
+        prof_btn_row.addWidget(self._btn_apply_profiles, 1)
+        prof_btn_row.addWidget(btn_all)
+        prof_btn_row.addWidget(btn_none)
+        prof_btn_row.addWidget(btn_new_profile)
+        prof_btn_row.addWidget(self._btn_edit_profile)
+        layout.addLayout(prof_btn_row)
 
         # ── ANALYSIS ──────────────────────────────────────────────────────
-        layout.addWidget(_section_label("Analysis"))
+        _section("Analysis")
         self._chk_attack   = QCheckBox("ATT&&CK Mapping")
         self._chk_attack.setChecked(True)
+        self._chk_attack.setToolTip("Tag events with MITRE ATT&CK tactics and techniques")
         self._chk_ioc      = QCheckBox("IOC Extraction")
+        self._chk_ioc.setToolTip("Pull IPs, domains, hashes, processes, users and more out of the events")
         self._chk_correlate = QCheckBox("Correlation Engine")
+        self._chk_correlate.setToolTip("Link related events into attack chains")
         self._chk_hayabusa  = QCheckBox("Hayabusa Rules")
         self._chk_hayabusa.setToolTip(
             "Run Hayabusa sigma-based threat detection rules against the loaded EVTX files.\n"
             "Hayabusa is a free, open-source Windows event log fast-forensics tool.\n"
-            "Requires the Hayabusa executable — use the Browse button below to set its path.\n"
+            "Requires the Hayabusa executable — set its path with Browse.\n"
             "Download: https://github.com/Yamato-Security/hayabusa/releases"
         )
-        layout.addWidget(self._chk_attack)
-        layout.addWidget(self._chk_ioc)
-        layout.addWidget(self._chk_correlate)
-        layout.addWidget(self._chk_hayabusa)
+        for _chk in (self._chk_attack, self._chk_ioc, self._chk_correlate, self._chk_hayabusa):
+            layout.addWidget(_chk)
 
-        # Hayabusa binary path picker
-        lbl_hayabusa_hint = QLabel("Hayabusa path  (hayabusa.exe)")
-        lbl_hayabusa_hint.setStyleSheet("font-size: 11px; color: #9a8878; margin-bottom: 0px;")
-        lbl_hayabusa_hint.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(lbl_hayabusa_hint)
-        layout.addSpacing(-4)
-
-        hayabusa_row = QHBoxLayout()
+        # Hayabusa binary path: shown with the Hayabusa option, since it only
+        # matters when that is ticked.
+        self._hayabusa_box = QWidget()
+        hayabusa_row = QHBoxLayout(self._hayabusa_box)
+        hayabusa_row.setContentsMargins(22, 0, 0, 0)
+        hayabusa_row.setSpacing(6)
         self._lbl_hayabusa_path = QLabel("Not configured")
-        self._lbl_hayabusa_path.setStyleSheet("font-size: 11px; color: #aaa;")
+        self._lbl_hayabusa_path.setStyleSheet(f"font-size: 8pt; color: {COLORS['text_dim']};")
         self._btn_hayabusa_path = QPushButton("Browse…")
-        self._btn_hayabusa_path.setFixedHeight(24)
         self._btn_hayabusa_path.setToolTip(
             "Select the Hayabusa executable (hayabusa.exe or hayabusa on Linux/macOS).\n\n"
             "Hayabusa is a standalone .exe — download the latest release from:\n"
@@ -8957,19 +9555,27 @@ class MainWindow(QMainWindow):
             "After selecting, the path is saved automatically for future sessions."
         )
         self._btn_hayabusa_path.clicked.connect(self._pick_hayabusa_path)
-        hayabusa_row.addWidget(self._lbl_hayabusa_path)
-        hayabusa_row.addStretch()
+        hayabusa_row.addWidget(self._lbl_hayabusa_path, 1)
         hayabusa_row.addWidget(self._btn_hayabusa_path)
-        layout.addLayout(hayabusa_row)
+        layout.addWidget(self._hayabusa_box)
+        self._hayabusa_box.setVisible(False)
+        self._chk_hayabusa.toggled.connect(self._hayabusa_box.setVisible)
 
         # Auto-detect or load saved path
         self._hayabusa_path: str | None = None
         self._load_hayabusa_path()
 
-        layout.addWidget(QLabel("Max threads:"))
+        threads_row = QHBoxLayout()
+        threads_row.setSpacing(8)
+        lbl_threads = QLabel("Threads")
+        lbl_threads.setToolTip("How many worker processes parse files in parallel")
         self._cmb_threads = QComboBox()
+        self._cmb_threads.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self._cmb_threads.setMinimumContentsLength(6)
+        self._cmb_threads.setToolTip("How many worker processes parse files in parallel")
         cpu = os.cpu_count() or 4
-        self._cmb_threads.addItem(f"Auto (CPU-1 = {max(1, cpu - 1)})", None)
+        self._cmb_threads.addItem(f"Auto ({max(1, cpu - 1)})", None)
         # Build dynamic list: powers of 2, half-cpu, cpu-1 — all < cpu, deduped, sorted
         _seen: set[int] = set()
         _cands: list[int] = []
@@ -8981,58 +9587,93 @@ class MainWindow(QMainWindow):
                 _cands.append(_extra); _seen.add(_extra)
         for n in sorted(_cands):
             self._cmb_threads.addItem(str(n), n)
-        layout.addWidget(self._cmb_threads)
+        threads_row.addWidget(lbl_threads)
+        threads_row.addWidget(self._cmb_threads, 1)
+        layout.addSpacing(2)
+        layout.addLayout(threads_row)
 
-        layout.addWidget(_sep())
-
-        # ── VIEW MODE ────────────────────────────────────────────────────
-        layout.addWidget(_section_label("View Mode"))
+        # ── VIEW ──────────────────────────────────────────────────────────
+        _section("View")
         vm_row = QHBoxLayout()
-        self._radio_merge = QRadioButton("Merge All")
+        vm_row.setSpacing(12)
+        self._radio_merge = QRadioButton("Merge all")
         self._radio_merge.setChecked(True)
         self._radio_merge.setToolTip("Combine all files into a single chronological view")
-        self._radio_separate = QRadioButton("Separate Tabs")
+        self._radio_separate = QRadioButton("Tab per file")
         self._radio_separate.setToolTip("Each file gets its own tab — browse via file tree")
         vm_row.addWidget(self._radio_merge)
         vm_row.addWidget(self._radio_separate)
+        vm_row.addStretch()
         layout.addLayout(vm_row)
 
-        layout.addWidget(_sep())
-
-        # ── ACTION ────────────────────────────────────────────────────────
-        layout.addWidget(_section_label("Action"))
-
-        self._btn_parse = QPushButton("▶   PARSE")
+        # ── PARSE ─────────────────────────────────────────────────────────
+        layout.addSpacing(12)
+        action_row = QHBoxLayout()
+        action_row.setSpacing(6)
+        self._btn_parse = QPushButton("Parse")
         self._btn_parse.setObjectName("parseBtn")
         self._btn_parse.setMinimumHeight(32)
-        layout.addWidget(self._btn_parse)
-
-        self._btn_stop = QPushButton("■   STOP")
+        self._btn_parse.setToolTip("Parse the queued files")
+        set_icon(self._btn_parse, "play", "#ffffff", size=14)
+        self._btn_stop = QPushButton()
         self._btn_stop.setObjectName("stopBtn")
+        self._btn_stop.setMinimumHeight(32)
+        self._btn_stop.setFixedWidth(36)
+        self._btn_stop.setToolTip("Stop parsing")
+        set_icon(self._btn_stop, "stop", "level_error", size=12)
         self._btn_stop.setEnabled(False)
-        layout.addWidget(self._btn_stop)
+        action_row.addWidget(self._btn_parse, 1)
+        action_row.addWidget(self._btn_stop)
+        layout.addLayout(action_row)
 
+        # Progress + run stats: appear with the first parse.
+        self._run_stats_box = QWidget()
+        rs = QVBoxLayout(self._run_stats_box)
+        rs.setContentsMargins(0, 2, 0, 0)
+        rs.setSpacing(4)
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self._progress_bar.setFormat("%p%")
-        self._progress_bar.setTextVisible(True)
-        layout.addWidget(self._progress_bar)
-
+        # A slim line: the numbers are in the row below and the status bar.
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setFixedHeight(4)
+        rs.addWidget(self._progress_bar)
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(10)
         self._lbl_matched = QLabel("Events: —")
         self._lbl_matched.setObjectName("statsLabel")
         self._lbl_speed = QLabel("Speed: —")
         self._lbl_speed.setObjectName("statsLabel")
         self._lbl_elapsed = QLabel("Time: —")
         self._lbl_elapsed.setObjectName("statsLabel")
-        layout.addWidget(self._lbl_matched)
-        layout.addWidget(self._lbl_speed)
-        layout.addWidget(self._lbl_elapsed)
+        stats_row.addWidget(self._lbl_matched)
+        stats_row.addStretch()
+        stats_row.addWidget(self._lbl_speed)
+        stats_row.addWidget(self._lbl_elapsed)
+        rs.addLayout(stats_row)
+        layout.addWidget(self._run_stats_box)
+        self._run_stats_box.setVisible(False)
+        # Every parse path (Normal, Juggernaut, analysis) enables Stop when it
+        # starts, so that one signal reveals the progress for all of them.
+        # The bar itself shows only while something runs: left full after a
+        # parse it was a heavy block saying what the stats row and the status
+        # bar already say.  Its space is kept, so nothing below jumps.
+        _keep = self._progress_bar.sizePolicy()
+        _keep.setRetainSizeWhenHidden(True)
+        self._progress_bar.setSizePolicy(_keep)
 
-        layout.addWidget(_sep())
+        def _running():
+            self._run_stats_box.setVisible(True)
+            self._progress_bar.setVisible(True)
+        self._stop_enable_watch = _OnEnabled(
+            self._btn_stop, _running, on_disabled=lambda: self._progress_bar.setVisible(False))
 
-        self._btn_export = QPushButton("⬇   Export Report")
+        layout.addSpacing(6)
+        self._btn_export = QPushButton("Export report…")
         self._btn_export.setObjectName("exportBtn")
+        self._btn_export.setToolTip("Export the events in view to CSV, JSON, HTML, PDF and more  (Ctrl+S)")
+        set_icon(self._btn_export, "download")
         self._btn_export.setEnabled(False)
         layout.addWidget(self._btn_export)
 
@@ -9055,84 +9696,85 @@ class MainWindow(QMainWindow):
         filter_row = QHBoxLayout()
         # Qt assigns 9 px style-based margins to sub-layouts by default;
         # explicitly zero them so there is no blank gap above/below the filter bar.
-        filter_row.setContentsMargins(4, 0, 4, 0)
+        filter_row.setContentsMargins(6, 4, 8, 4)
         filter_row.setSpacing(6)
+        from .icons import set_icon
 
         # Advanced filter button (funnel icon)
-        self._btn_adv_filter = QPushButton("🔍  Filter")
+        # Quick search: the Advanced Filter's Text criterion, without the dialog.
+        self._quick_search = QLineEdit()
+        self._quick_search.setObjectName("quickSearch")
+        self._quick_search.setPlaceholderText("Search all event text\u2026")
+        self._quick_search.setClearButtonEnabled(True)
+        self._quick_search.setMinimumWidth(160)
+        self._quick_search.setMaximumWidth(360)
+        self._quick_search.setToolTip(
+            "Search every field of every event — the same as the Text box in Filter\u2026\n"
+            "Enter applies, Esc clears.  Ctrl+F jumps here.")
+        _qs_act = self._quick_search.addAction(QIcon(), QLineEdit.ActionPosition.LeadingPosition)
+        set_icon(_qs_act, "search", "text_muted")
+        self._quick_search.returnPressed.connect(self._apply_quick_search)
+        self._quick_search.textChanged.connect(self._on_quick_search_edited)
+        _qs_esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self._quick_search)
+        _qs_esc.setContext(Qt.ShortcutContext.WidgetShortcut)
+        _qs_esc.activated.connect(self._quick_search.clear)
+        _qs_find = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), self)
+        _qs_find.activated.connect(self._focus_quick_search)
+        self._quick_search_owned_cfg = False   # the Advanced Filter cfg exists only for the search
+        self._quick_search_applied = ""
+        filter_row.addWidget(self._quick_search, 1)
+
+        self._btn_adv_filter = QPushButton("Filter\u2026")
         self._btn_adv_filter.setObjectName("advFilterBtn")
-        self._btn_adv_filter.setToolTip("Open advanced filter dialog  (Event Log Explorer style)")
-        self._btn_adv_filter.setMaximumHeight(24)
-        self._btn_adv_filter.setFixedWidth(90)
-        self._btn_adv_filter.setStyleSheet(f"""
-            QPushButton {{
-                background: {COLORS['bg_header']};
-                color: {COLORS['text']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 3px;
-                padding: 2px 8px;
-                font-size: 8pt;
-            }}
-            QPushButton:hover {{
-                background: {COLORS.get('accent', '#7a5c1e')};
-                color: white;
-            }}
-        """)
+        set_icon(self._btn_adv_filter, "filter")
+        self._btn_adv_filter.setToolTip(
+            "Advanced filter: event IDs, levels, sources, users, time range, text and field conditions")
         self._btn_adv_filter.clicked.connect(self._on_advanced_filter_clicked)
         filter_row.addWidget(self._btn_adv_filter)
 
         # Advanced filter active badge (hidden by default)
-        self._lbl_adv_filter_badge = QLabel("⚡ Filter Active")
+        self._lbl_adv_filter_badge = QLabel("Filter active")
+        self._lbl_adv_filter_badge.setToolTip("An advanced filter is narrowing the events shown")
         self._lbl_adv_filter_badge.setStyleSheet(
-            f"color:{COLORS.get('accent', '#7a5c1e')}; font-size:8pt; "
-            f"font-weight:bold; padding:1px 6px; "
-            f"border:1px solid {COLORS.get('accent', '#7a5c1e')}; "
-            f"border-radius:3px;"
+            f"color:{COLORS['accent']}; background:{COLORS['selected_bg']}; font-size:8pt; "
+            f"font-weight:bold; padding:2px 8px; border-radius:4px;"
         )
         self._lbl_adv_filter_badge.setVisible(False)
         filter_row.addWidget(self._lbl_adv_filter_badge)
 
         # Clear advanced filter button (hidden by default)
-        self._btn_clear_adv = QPushButton("✕")
-        self._btn_clear_adv.setMaximumSize(20, 20)
-        self._btn_clear_adv.setToolTip("Clear advanced filter")
+        self._btn_clear_adv = QPushButton()
+        set_icon(self._btn_clear_adv, "x", size=12)
+        self._btn_clear_adv.setFixedSize(22, 22)
+        self._btn_clear_adv.setToolTip("Clear the advanced filter")
         self._btn_clear_adv.setStyleSheet(
-            f"QPushButton{{font-size:7pt; padding:0; border:none; color:{COLORS['text_dim']};}}"
-            f"QPushButton:hover{{color:#a01800;}}"
+            "QPushButton{padding:0; border:none; background:transparent; min-height:0;}"
+            f"QPushButton:hover{{background:{COLORS['bg_hover']};}}"
         )
         self._btn_clear_adv.setVisible(False)
         self._btn_clear_adv.clicked.connect(self._clear_advanced_filter)
         filter_row.addWidget(self._btn_clear_adv)
 
         # ── Clear ALL filters — always visible ─────────────────────────────
-        self._btn_clear_all_filters = QPushButton("⟳  Clear All Filters")
-        self._btn_clear_all_filters.setMaximumHeight(24)
-        self._btn_clear_all_filters.setFixedWidth(130)
+        self._btn_clear_all_filters = QPushButton("Clear All Filters")
+        set_icon(self._btn_clear_all_filters, "filter-x")
         self._btn_clear_all_filters.setToolTip(
             "Reset everything: text search, advanced filter, quick filters, "
             "session filter, tactic filter, bookmark/IOC pivot"
         )
-        self._btn_clear_all_filters.setStyleSheet("""
-            QPushButton {
-                background: #3d2e0a;
-                color: #d4a843;
-                border: 1px solid #7a5c1e;
-                border-radius: 3px;
-                padding: 2px 10px;
-                font-size: 8pt;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: #7a5c1e;
-                color: white;
-            }
-            QPushButton:pressed {
-                background: #5a3e0e;
-            }
-        """)
         self._btn_clear_all_filters.clicked.connect(self._clear_all_filters)
         filter_row.addWidget(self._btn_clear_all_filters)
 
+        filter_row.addStretch(1)
+        self._lbl_mode_chip = QLabel("Juggernaut")
+        self._lbl_mode_chip.setObjectName("modeChip")
+        self._lbl_mode_chip.setToolTip(
+            "Juggernaut Mode: for large collections. Events stay on disk and are "
+            "read as you scroll, filter and search.\n"
+            "ATT&CK mapping is not available; IOC extraction and correlation run "
+            "on events rebuilt from disk.")
+        self._lbl_mode_chip.setVisible(False)
+        filter_row.addWidget(self._lbl_mode_chip)
         self._lbl_count = QLabel("0 events")
         self._lbl_count.setObjectName("countLabel")
         self._lbl_count.setMinimumWidth(100)
@@ -9151,7 +9793,8 @@ class MainWindow(QMainWindow):
         self._lbl_tactic_active.setStyleSheet(
             "color:#7a4c00; font-size:8pt; font-weight:bold; padding:1px 4px;"
         )
-        self._btn_clear_tactic = QPushButton("✕  Clear Tactic Filter")
+        self._btn_clear_tactic = QPushButton("Clear Tactic Filter")
+        set_icon(self._btn_clear_tactic, "x", size=12)
         self._btn_clear_tactic.setMaximumHeight(22)
         self._btn_clear_tactic.setStyleSheet(
             "QPushButton{font-size:8pt; padding:0 6px;}"
@@ -9170,7 +9813,8 @@ class MainWindow(QMainWindow):
         qf_row.setContentsMargins(2, 0, 2, 0)
         qf_row.setSpacing(6)
 
-        self._btn_clear_quick = QPushButton("✕  Clear Quick Filters")
+        self._btn_clear_quick = QPushButton("Clear Quick Filters")
+        set_icon(self._btn_clear_quick, "x", size=12)
         self._btn_clear_quick.setMaximumHeight(22)
         self._btn_clear_quick.setStyleSheet(
             "QPushButton{font-size:8pt; padding:0 6px;}"
@@ -9192,7 +9836,8 @@ class MainWindow(QMainWindow):
         self._lbl_session_filter.setStyleSheet(
             "color:#7a3a00; font-size:8pt; font-weight:bold; padding:1px 4px;"
         )
-        self._btn_clear_session = QPushButton("✕  Clear Session Filter")
+        self._btn_clear_session = QPushButton("Clear Session Filter")
+        set_icon(self._btn_clear_session, "x", size=12)
         self._btn_clear_session.setMaximumHeight(22)
         self._btn_clear_session.setStyleSheet(
             "QPushButton{font-size:8pt; padding:0 6px;}"
@@ -9212,6 +9857,10 @@ class MainWindow(QMainWindow):
         self._proxy_model.setSourceModel(self._event_model)
 
         self._table = self._create_configured_table(self._proxy_model)
+        self._table.empty_hint = self._main_table_empty_hint
+        _fl_model = self._file_list.model()
+        for _sig in (_fl_model.rowsInserted, _fl_model.rowsRemoved, _fl_model.modelReset):
+            _sig.connect(self._refresh_empty_table_hint)
 
         # ── File tree panel (left side, hidden until separate mode) ────
         self._file_tree_panel = QWidget()
@@ -9233,13 +9882,30 @@ class MainWindow(QMainWindow):
         self._file_tree = QTreeWidget()
         self._file_tree.setObjectName("fileTree")
         self._file_tree.setHeaderHidden(True)
-        self._file_tree.setColumnCount(1)
+        # Name | event count (right-aligned, so counts line up and a long
+        # name never pushes its count out of sight).
+        self._file_tree.setColumnCount(2)
         self._file_tree.setRootIsDecorated(False)
         self._file_tree.setIndentation(8)
-        self._file_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Entries show a short log name (see _short_log_name); the full path
+        # is the tooltip.
+        self._file_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._file_tree.header().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
+            0, QHeaderView.ResizeMode.Stretch
         )
+        self._file_tree.header().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self._file_tree.header().setStretchLastSection(False)
+        # Long log names wrap onto a second line instead of ending in "…"
+        # ("Resource-Exhaustion-Detector / Operational"); rows take the
+        # height their name needs and are re-measured when the panel resizes.
+        self._file_tree.setWordWrap(True)
+        self._file_tree.setUniformRowHeights(False)
+        self._file_tree.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self._file_tree.setItemDelegateForColumn(0, _make_wrap_name_delegate(self._file_tree))
+        self._file_tree.header().sectionResized.connect(
+            lambda *_a: self._file_tree.doItemsLayout())
         self._file_tree.itemClicked.connect(self._on_tree_item_clicked)
         self._file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._file_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
@@ -9295,21 +9961,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._events_content_splitter, 1)  # stretch=1: absorbs all extra height
 
         # ── Tree toggle button (in filter bar, left of adv filter) ────
-        self._btn_tree_toggle = QPushButton("🗂")
-        self._btn_tree_toggle.setToolTip("Toggle file tree (separate mode only)")
-        self._btn_tree_toggle.setMaximumSize(28, 24)
-        self._btn_tree_toggle.setStyleSheet(f"""
-            QPushButton {{
-                background: {COLORS['bg_header']};
-                color: {COLORS['text_dim']};
-                border: 1px solid {COLORS['border']};
-                border-radius: 3px;
-                font-size: 9pt;
-                padding: 0;
-            }}
-            QPushButton:hover {{ background: {COLORS.get('accent', '#7a5c1e')}; color: white; }}
-            QPushButton:checked {{ background: {COLORS.get('accent', '#7a5c1e')}; color: white; }}
-        """)
+        self._btn_tree_toggle = QPushButton()
+        from .icons import set_icon as _set_icon
+        _set_icon(self._btn_tree_toggle, "sidebar")
+        self._btn_tree_toggle.setToolTip("Show or hide the file list (Tab per file view)")
+        self._btn_tree_toggle.setFixedWidth(30)
         self._btn_tree_toggle.setCheckable(True)
         self._btn_tree_toggle.setChecked(False)
         self._btn_tree_toggle.setEnabled(False)  # disabled until separate mode
@@ -9365,6 +10021,95 @@ class MainWindow(QMainWindow):
         if getattr(self, "_proxy_busy_shown", False):
             self._close_hw_loading_dialog()
             self._proxy_busy_shown = False
+        QTimer.singleShot(0, self._restore_focus_after_filter)
+
+    # ── Keep the event being read in view across filter changes ─────────────
+
+    def _remember_focus(self, ev: dict, proxy, proxy_row) -> None:
+        """The event the analyst has selected: its identity, and (Normal mode)
+        where it sits in its source model, so a filter pass can find it again."""
+        rid = ev.get("record_id")
+        try:
+            rid = int(rid) if rid is not None else None
+        except (TypeError, ValueError):
+            rid = None
+        src_row = None
+        if proxy is not None and proxy_row is not None:
+            try:
+                src_row = proxy.mapToSource(proxy.index(proxy_row, 0)).row()
+            except Exception:
+                src_row = None
+        self._focus_event = (ev.get("source_file", ""), rid, src_row)
+
+    def _restore_focus_after_filter(self) -> None:
+        """After a filter change, re-select the event that was being read and
+        scroll it to the middle when it is still in the view.  The table used to
+        stay wherever the pass left it, so after applying a profile the detail
+        pane described an event scrolled far out of sight."""
+        fe = getattr(self, "_focus_event", None)
+        if not fe or fe[1] is None:
+            return
+        sf, rid, src_row = fe
+        try:
+            table = self._active_table
+            model = table.model()
+            if model is None or model.rowCount() == 0:
+                return
+            row = None
+            if hasattr(model, "find_row"):                       # Juggernaut tab
+                row = model.find_row(sf, rid)
+            elif hasattr(model, "mapFromSource"):                # Normal: proxy
+                src = model.sourceModel()
+                events = getattr(src, "_events", None) or []
+                if src_row is None or not (0 <= src_row < len(events)) or not (
+                        events[src_row].get("source_file", "") == sf
+                        and events[src_row].get("record_id") == rid):
+                    src_row = next((i for i, e in enumerate(events)
+                                    if e.get("record_id") == rid and e.get("source_file", "") == sf), None)
+                if src_row is not None:
+                    pidx = model.mapFromSource(src.index(src_row, 0))
+                    row = pidx.row() if pidx.isValid() else None
+            if row is None or row < 0:
+                return
+            sel = table.selectionModel().selectedRows() if table.selectionModel() else []
+            if sel and sel[0].row() == row:
+                table.scrollTo(model.index(row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
+            else:
+                self._select_and_centre(table, row)
+        except RuntimeError:
+            pass
+
+    _DEFAULT_COL_WIDTHS = {
+        0: 58,   # #  (six-digit row numbers)
+        1: 70,   # Event ID
+        2: 112,  # Level (marker + "Information")
+        3: 170,  # Timestamp
+        4: 130,  # Computer
+        5: 150,  # Channel
+        6: 110,  # User
+        7: 80,   # ATT&CK
+        8: 130,  # Source File
+        9: 110,  # Keywords
+        10: 100, # Operational Code
+        11: 130, # Log
+        12: 75,  # Process ID
+        13: 75,  # Thread ID
+        14: 80,  # Processor ID
+        15: 75,  # Session ID
+        16: 80,  # Kernel Time
+        17: 80,  # User Time
+        18: 90,  # Processor Time
+        19: 120, # Correlation Id
+        20: 90,  # Record Number
+        22: 100, # Event Record ID
+    }
+
+    def _apply_default_col_widths(self, table) -> None:
+        """Default column widths.  Re-applied after every setModel(): swapping
+        the model resets the header, which left per-file tabs with every column
+        at Qt's 100 px default (a wide # column, a clipped Timestamp)."""
+        for i, w_val in self._DEFAULT_COL_WIDTHS.items():
+            table.setColumnWidth(i, w_val)
 
     def _create_configured_table(self, proxy: EventFilterProxyModel) -> _EventTableView:
         """Create and configure a QTableView with standard settings."""
@@ -9401,36 +10146,11 @@ class MainWindow(QMainWindow):
 
         hdr.setSortIndicatorShown(False)
 
-        # ── Default column widths (COLUMNS currently has 22 entries) ──────
-        col_widths = {
-            0: 40,   # #
-            1: 70,   # Event ID
-            2: 90,   # Level
-            3: 170,  # Timestamp
-            4: 130,  # Computer
-            5: 150,  # Channel
-            6: 110,  # User
-            7: 80,   # ATT&CK
-            8: 130,  # Source File
-            9: 110,  # Keywords
-            10: 100, # Operational Code
-            11: 130, # Log
-            12: 75,  # Process ID
-            13: 75,  # Thread ID
-            14: 80,  # Processor ID
-            15: 75,  # Session ID
-            16: 80,  # Kernel Time
-            17: 80,  # User Time
-            18: 90,  # Processor Time
-            19: 120, # Correlation Id
-            20: 90,  # Record Number
-            22: 100, # Event Record ID
-        }
-        for i, w_val in col_widths.items():
-            table.setColumnWidth(i, w_val)
+        self._apply_default_col_widths(table)
 
         # Apply current column visibility
         self._apply_col_visibility(table, self._visible_cols)
+        table.copy_handler = self._copy_selected_event
 
         return table
 
@@ -9449,7 +10169,14 @@ class MainWindow(QMainWindow):
 
         bottom_split.addWidget(detail_widget)
         bottom_split.addWidget(analysis_widget)
-        bottom_split.setSizes([550, 550])
+        # The event detail is what an analyst reads most: it gets the larger
+        # share (it was 50/50, which left the viewer cramped), and the
+        # analysis tabs can be hidden to give it the whole width.
+        bottom_split.setSizes([640, 460])
+        bottom_split.setStretchFactor(0, 3)
+        bottom_split.setStretchFactor(1, 2)
+        self._bottom_split = bottom_split
+        self._analysis_widget = analysis_widget
         return bottom_split
 
     def _build_detail_widget(self) -> QWidget:
@@ -9458,52 +10185,88 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        from .icons import set_icon
         header = QWidget()
-        header.setFixedHeight(28)
-        header.setStyleSheet(f"background:{COLORS['bg_header']};border-bottom:1px solid {COLORS['border']};")
+        header.setObjectName("detailHeader")
+        header.setFixedHeight(32)
+        header.setStyleSheet(f"QWidget#detailHeader{{background:{COLORS['bg_panel']};"
+                             f"border-bottom:1px solid {COLORS['border']};}}")
         hdr_layout = QHBoxLayout(header)
-        hdr_layout.setContentsMargins(8, 0, 8, 0)
+        hdr_layout.setContentsMargins(10, 0, 6, 0)
+        hdr_layout.setSpacing(6)
         lbl = QLabel("EVENT DETAIL")
         lbl.setObjectName("sectionHeader")
-        lbl.setStyleSheet("color:#9a8878;font-size:8pt;font-weight:bold;letter-spacing:1px;border:none;")
-        # Brief / Full toggle
+        lbl.setStyleSheet(f"color:{COLORS['text_dim']};font-size:8pt;font-weight:bold;letter-spacing:1px;border:none;")
+        # Full | Brief: a two-part switch that always shows both modes and
+        # highlights the one in use.  A single "Brief" button read as the
+        # opposite state (backlog item 4).  _btn_detail_mode stays the Brief
+        # half (checked = Brief) so the rest of the window is unchanged.
+        from PySide6.QtWidgets import QButtonGroup
+        self._btn_detail_full = QPushButton("Full")
+        self._btn_detail_full.setCheckable(True)
+        self._btn_detail_full.setChecked(True)    # Full is the default
+        self._btn_detail_full.setToolTip("Full: every field of the event, its description and the XML")
         self._btn_detail_mode = QPushButton("Brief")
-        self._btn_detail_mode.setMaximumHeight(22)
         self._btn_detail_mode.setCheckable(True)
-        self._btn_detail_mode.setChecked(False)   # Full mode is default (not "Brief")
-        self._btn_detail_mode.setToolTip(
-            "Toggle between Full detail (all fields) and Brief (header only)"
-        )
-        self._btn_detail_mode.setStyleSheet(
-            "QPushButton { background:#e4ddd3; color:#5a4e42; border:1px solid #c4bba8;"
-            " border-radius:3px; padding:1px 8px; font-size:8pt; }"
-            "QPushButton:checked { background:#ddd4bc; color:#7a5c1e; border-color:#7a5c1e; }"
-            "QPushButton:hover { color:#1e1a14; }"
-        )
+        self._btn_detail_mode.setChecked(False)
+        self._btn_detail_mode.setToolTip("Brief: only the header and the event's description")
+        self._detail_mode_group = QButtonGroup(self)
+        self._detail_mode_group.setExclusive(True)
+        seg_css = (f"QPushButton{{border:1px solid {COLORS['border']};background:{COLORS['bg_input']};"
+                   f"color:{COLORS['text_dim']};padding:2px 10px;min-height:20px;}}"
+                   f"QPushButton:hover{{color:{COLORS['text']};}}"
+                   f"QPushButton:checked{{background:{COLORS['border']};color:{COLORS['text']};"
+                   f"font-weight:bold;}}")
+        # Corner and seam rules go after the base rule's "border" shorthand
+        # (which would reset them) and zero the app-wide radius first, so the
+        # two halves read as one control.
+        for b, radius in ((self._btn_detail_full, "border-radius:0;border-top-left-radius:4px;"
+                                                  "border-bottom-left-radius:4px;border-right:none;"),
+                          (self._btn_detail_mode, "border-radius:0;border-top-right-radius:4px;"
+                                                  "border-bottom-right-radius:4px;")):
+            self._detail_mode_group.addButton(b)
+            b.setStyleSheet(seg_css.replace("}", radius + "}", 1))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_detail_mode.toggled.connect(self._on_detail_mode_toggled)
+        detail_mode = QWidget()
+        detail_mode.setAccessibleName("Event detail: Full or Brief")
+        dm_lay = QHBoxLayout(detail_mode)
+        dm_lay.setContentsMargins(0, 0, 0, 0)
+        dm_lay.setSpacing(0)
+        dm_lay.addWidget(self._btn_detail_full)
+        dm_lay.addWidget(self._btn_detail_mode)
 
         # Bookmark toggle button — disabled until an event is selected
-        self._btn_bookmark_event = QPushButton("☆ Bookmark")
+        self._btn_bookmark_event = QPushButton("Bookmark")
+        set_icon(self._btn_bookmark_event, "star", checked_name="star-filled")
         self._btn_bookmark_event.setMaximumHeight(22)
         self._btn_bookmark_event.setCheckable(True)
         self._btn_bookmark_event.setEnabled(False)
         self._btn_bookmark_event.setToolTip("Bookmark this event for quick reference (Bookmarks tab)")
-        self._btn_bookmark_event.setStyleSheet(
-            "QPushButton { background:#e4ddd3; color:#5a4e42; border:1px solid #c4bba8;"
-            " border-radius:3px; padding:1px 8px; font-size:8pt; }"
-            "QPushButton:checked { background:#e8dcc8; color:#7a5c1e; border-color:#c4a535; }"
-            "QPushButton:hover { color:#1e1a14; }"
-        )
+        self._btn_bookmark_event.setMinimumHeight(24)
         self._btn_bookmark_event.clicked.connect(self._on_bookmark_toggle)
+
+        self._btn_analysis_panel = QPushButton("Analysis")
+        self._btn_analysis_panel.setCheckable(True)
+        self._btn_analysis_panel.setChecked(True)
+        self._btn_analysis_panel.setMinimumHeight(24)
+        self._btn_analysis_panel.setToolTip(
+            "Show or hide the ATT&CK, IOCs, Chains and Bookmarks panel (Ctrl+Shift+A).\n"
+            "Hidden, the event detail takes the whole width.")
+        set_icon(self._btn_analysis_panel, "sidebar")
+        self._btn_analysis_panel.toggled.connect(self._set_analysis_panel_visible)
 
         hdr_layout.addWidget(lbl)
         hdr_layout.addStretch()
+        hdr_layout.addWidget(self._btn_analysis_panel)
         hdr_layout.addWidget(self._btn_bookmark_event)
-        hdr_layout.addWidget(self._btn_detail_mode)
+        hdr_layout.addWidget(detail_mode)
         layout.addWidget(header)
 
         self._detail_browser = QTextBrowser()
         self._detail_browser.setOpenLinks(False)
+        self._detail_browser.setPlaceholderText(
+            "Select an event to see its fields, description and XML here.")
         layout.addWidget(self._detail_browser)
         return w
 
@@ -9515,15 +10278,12 @@ class MainWindow(QMainWindow):
         wrapper_layout.setSpacing(0)
 
         # ── Analysis scope row (hidden until separate mode) ───────────────
+        # Sits in the tab bar's top-right corner (it was a 28 px row of its own
+        # above the tabs, with a 20 px combo that clipped "This File").
         self._scope_row_widget = QWidget()
-        self._scope_row_widget.setFixedHeight(28)
-        self._scope_row_widget.setStyleSheet(
-            f"background:{COLORS['bg_header']};"
-            f"border-bottom:1px solid {COLORS['border']};"
-        )
         scope_row = QHBoxLayout(self._scope_row_widget)
-        scope_row.setContentsMargins(8, 0, 8, 0)
-        scope_row.setSpacing(8)
+        scope_row.setContentsMargins(8, 2, 6, 2)
+        scope_row.setSpacing(6)
 
         lbl_scope = QLabel("Analysis:")
         lbl_scope.setStyleSheet(
@@ -9533,21 +10293,20 @@ class MainWindow(QMainWindow):
 
         self._cmb_analysis_scope = QComboBox()
         self._cmb_analysis_scope.addItems(["This File", "All Files"])
-        self._cmb_analysis_scope.setMaximumWidth(110)
-        self._cmb_analysis_scope.setFixedHeight(20)
+        self._cmb_analysis_scope.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._cmb_analysis_scope.setAccessibleName("Analysis scope")
         self._cmb_analysis_scope.setToolTip(
             "This File — show analysis for the currently active file tab\n"
             "All Files — show analysis for all parsed events combined"
         )
         self._cmb_analysis_scope.currentTextChanged.connect(self._on_analysis_scope_changed)
         scope_row.addWidget(self._cmb_analysis_scope)
-        scope_row.addStretch()
 
         self._scope_row_widget.setVisible(False)  # shown only in separate mode
-        wrapper_layout.addWidget(self._scope_row_widget)
 
         # ── Main analysis tab widget ──────────────────────────────────────
         self._analysis_tabs = QTabWidget()
+        self._analysis_tabs.setCornerWidget(self._scope_row_widget, Qt.Corner.TopRightCorner)
 
         # ATT&CK tab
         self._tab_attack = self._build_attack_tab()
@@ -9575,6 +10334,7 @@ class MainWindow(QMainWindow):
 
         self._lbl_attack_summary = QLabel("No ATT&CK data — run with ATT&CK Mapping enabled.")
         self._lbl_attack_summary.setObjectName("statsLabel")
+        _wrap_summary(self._lbl_attack_summary)
         layout.addWidget(self._lbl_attack_summary)
 
         self._tbl_attack = QTableWidget(0, 4)
@@ -9584,6 +10344,7 @@ class MainWindow(QMainWindow):
         _atk_hdr = self._tbl_attack.horizontalHeader()
         _atk_hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)  # all cols user-draggable
         _atk_hdr.setStretchLastSection(False)
+        _atk_hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._tbl_attack.setColumnWidth(0, 160)  # Tactic
         self._tbl_attack.setColumnWidth(1, 80)   # Events
         self._tbl_attack.setColumnWidth(2, 200)  # Top Technique
@@ -9613,10 +10374,12 @@ class MainWindow(QMainWindow):
         hdr = QHBoxLayout()
         self._lbl_ioc_summary = QLabel("No IOC data — run with IOC Extraction enabled.")
         self._lbl_ioc_summary.setObjectName("statsLabel")
-        hdr.addWidget(self._lbl_ioc_summary)
-        hdr.addStretch()
+        _wrap_summary(self._lbl_ioc_summary)
+        hdr.addWidget(self._lbl_ioc_summary, 1)
 
-        self._btn_threat_intel = QPushButton("🔍  Threat Intel")
+        self._btn_threat_intel = QPushButton("Threat Intel")
+        from .icons import set_icon as _set_icon
+        _set_icon(self._btn_threat_intel, "shield-search")
         self._btn_threat_intel.setObjectName("exportBtn")
         self._btn_threat_intel.setToolTip(
             "Check IOC values against offline known-bad lists or VirusTotal API.\n"
@@ -9627,7 +10390,8 @@ class MainWindow(QMainWindow):
         self._btn_threat_intel.clicked.connect(self._on_threat_intel_clicked)
         hdr.addWidget(self._btn_threat_intel)
 
-        self._btn_export_iocs = QPushButton("⬇  Export IOCs")
+        self._btn_export_iocs = QPushButton("Export IOCs")
+        _set_icon(self._btn_export_iocs, "download")
         self._btn_export_iocs.setObjectName("exportBtn")
         self._btn_export_iocs.setToolTip(
             "Save extracted IOC values to CSV, TXT, STIX 2.1, MISP, YARA, or clipboard.\n"
@@ -9638,9 +10402,67 @@ class MainWindow(QMainWindow):
         hdr.addWidget(self._btn_export_iocs)
         layout.addLayout(hdr)
 
+        # Up to 18 categories.  While their tabs fit they show as tabs; when
+        # they would not (scroll arrows hid categories off to the side on a
+        # laptop-width pane) a "Category" drop-down with every category and
+        # its count takes the tab bar's place.  Same pages, same order.
+        cat_row = QHBoxLayout()
+        cat_row.setContentsMargins(0, 0, 0, 0)
+        self._lbl_ioc_cat = QLabel("Category:")
+        self._cmb_ioc_cat = QComboBox()
+        self._cmb_ioc_cat.setAccessibleName("IOC category")
+        self._cmb_ioc_cat.setToolTip("Every IOC category in these events, with its count")
+        self._cmb_ioc_cat.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        cat_row.addWidget(self._lbl_ioc_cat)
+        cat_row.addWidget(self._cmb_ioc_cat)
+        cat_row.addStretch()
+        self._ioc_cat_row = QWidget()
+        self._ioc_cat_row.setLayout(cat_row)
+        self._ioc_cat_row.hide()
+        layout.addWidget(self._ioc_cat_row)
+
         self._ioc_tabs = QTabWidget()
+        self._ioc_tabs.setObjectName("iocTabs")
+        self._ioc_tabs.setDocumentMode(True)
+        self._ioc_tabs.setStyleSheet(
+            "QTabWidget#iocTabs QTabBar::tab { padding: 4px 9px; font-size: 8pt; }")
+        self._cmb_ioc_cat.currentIndexChanged.connect(
+            lambda i: self._ioc_tabs.setCurrentIndex(i) if i >= 0 else None)
+        self._ioc_tabs.currentChanged.connect(self._sync_ioc_cat_combo)
+        self._ioc_tabs.installEventFilter(self)
         layout.addWidget(self._ioc_tabs)
         return w
+
+    def _sync_ioc_cat_combo(self, i: int) -> None:
+        if self._cmb_ioc_cat.currentIndex() != i:
+            self._cmb_ioc_cat.blockSignals(True)
+            self._cmb_ioc_cat.setCurrentIndex(i)
+            self._cmb_ioc_cat.blockSignals(False)
+
+    def _fit_ioc_categories(self) -> None:
+        """Tabs while every category's tab fits the pane, else the drop-down."""
+        try:
+            tabs, bar = self._ioc_tabs, self._ioc_tabs.tabBar()
+            need = sum(bar.tabSizeHint(i).width() for i in range(bar.count()))
+            narrow = bar.count() > 1 and need > tabs.width()   # Qt scrolls exactly then
+            bar.setVisible(not narrow)
+            self._ioc_cat_row.setVisible(narrow)
+        except RuntimeError:
+            pass
+
+    def _fill_ioc_cat_combo(self) -> None:
+        self._cmb_ioc_cat.blockSignals(True)
+        self._cmb_ioc_cat.clear()
+        for i in range(self._ioc_tabs.count()):
+            self._cmb_ioc_cat.addItem(self._ioc_tabs.tabIcon(i), self._ioc_tabs.tabText(i))
+        self._cmb_ioc_cat.setCurrentIndex(self._ioc_tabs.currentIndex())
+        self._cmb_ioc_cat.blockSignals(False)
+        self._fit_ioc_categories()
+
+    def eventFilter(self, obj, event):  # noqa: N802  (Qt naming)
+        if event.type() == QEvent.Type.Resize and obj is getattr(self, "_ioc_tabs", None):
+            self._fit_ioc_categories()
+        return super().eventFilter(obj, event)
 
     def _build_chains_tab(self) -> QWidget:
         w = QWidget()
@@ -9649,6 +10471,7 @@ class MainWindow(QMainWindow):
 
         self._lbl_chains_summary = QLabel("No correlation data — run with Correlation Engine enabled.")
         self._lbl_chains_summary.setObjectName("statsLabel")
+        _wrap_summary(self._lbl_chains_summary)
         layout.addWidget(self._lbl_chains_summary)
 
         self._tree_chains = QTreeWidget()
@@ -9658,14 +10481,20 @@ class MainWindow(QMainWindow):
         self._tree_chains.setRootIsDecorated(True)
         _ch_hdr = self._tree_chains.header()
         _ch_hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        # The rule name takes the spare width (it was cut off while First Seen
+        # had room to spare); the other columns fit their content.
         _ch_hdr.setStretchLastSection(False)
-        for _ci, _cw in enumerate([80, 260, 110, 65, 140]):
+        for _ci, _cw in enumerate([80, 260, 90, 60, 150]):
             self._tree_chains.setColumnWidth(_ci, _cw)
+        _ch_hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         # Allow the user to Ctrl/Shift-click multiple chains, then right-click → new tab
         self._tree_chains.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._tree_chains.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree_chains.customContextMenuRequested.connect(self._on_chains_context_menu)
         self._tree_chains.itemDoubleClicked.connect(self._on_chain_double_click)
+        # A chain's event rows are built when it is expanded (all 739 chains'
+        # rows up front was half a second of frozen window as the analysis ended).
+        self._tree_chains.itemExpanded.connect(self._fill_chain_events)
         layout.addWidget(self._tree_chains)
         return w
 
@@ -9680,7 +10509,7 @@ class MainWindow(QMainWindow):
         self._lbl_status_stats = QLabel("")
         self._lbl_analysis_progress = QLabel("")
         self._lbl_analysis_progress.setStyleSheet(
-            "font-size: 11px; color: #8cf; padding-right: 10px;"
+            f"font-size: 8pt; color: {COLORS['accent']}; padding-right: 10px;"
         )
         self._lbl_analysis_progress.setVisible(False)
         self._component_pcts: dict[str, int] = {}
@@ -9691,9 +10520,75 @@ class MainWindow(QMainWindow):
         self.setStatusBar(sb)
 
     def _set_status(self, text: str, files: str = "", stats: str = "") -> None:
+        self._last_say = None
+        self._status_seq = getattr(self, "_status_seq", 0) + 1
         self._lbl_status.setText(text)
         self._lbl_status_files.setText(files)
         self._lbl_status_stats.setText(stats)
+        # The empty table's guidance follows the state (queued, parsing ...).
+        self._refresh_empty_table_hint()
+
+    def _say_after(self, message: str) -> None:
+        """Status line message once the current action has finished, with the
+        resulting count.  Only the message changes (the run statistics on the
+        right stay); it used to keep saying whatever the last long operation
+        said ("Column 'Path' ready") through searches, filters and profiles."""
+        self._last_say = message
+
+        def _go():
+            if getattr(self, "_last_say", None) != message:
+                return
+            try:
+                self._lbl_status.setText(f"{message}  —  {self._lbl_count.text()}")
+            except RuntimeError:
+                pass
+        QTimer.singleShot(0, _go)
+
+    def _refresh_empty_table_hint(self, *_args) -> None:
+        try:
+            self._table.viewport().update()
+        except (AttributeError, RuntimeError):   # not built yet / already torn down
+            pass
+
+    def _main_table_empty_hint(self):
+        """What the empty events table should say: (icon, title, body)."""
+        try:
+            parsing = ((self._worker is not None and self._worker.isRunning())
+                       or (getattr(self, "_hw_worker", None) is not None
+                           and self._hw_worker.isRunning()))
+        except RuntimeError:
+            parsing = False
+        if parsing:
+            # Progress where the analyst is looking (it was only a thin bar in
+            # the side panel and a line in the status bar).
+            st = getattr(self, "_parse_state", None)
+            if st:
+                done, total, events, rate, elapsed = st
+                pct = int(done / total * 100) if total else 0
+                return ("clock", f"Parsing {done:,} of {total:,} files ({pct}%)",
+                        f"{events:,} events so far  \u00b7  {rate:,.0f} events/s  \u00b7  {elapsed:,.0f} s\n\n"
+                        "Events appear here when parsing finishes. "
+                        "Stop (beside Parse) cancels.")
+            return ("clock", "Parsing\u2026",
+                    "Events appear here when parsing finishes. "
+                    "Stop (beside Parse) cancels.")
+        queued = self._file_list.count()
+        if queued:
+            paths = [self._file_list.item(i).data(Qt.ItemDataRole.UserRole) or ""
+                     for i in range(queued)]
+            n_dirs = sum(1 for p in paths if os.path.isdir(p))
+            n_files = queued - n_dirs
+            parts = []
+            if n_files:
+                parts.append("1 file" if n_files == 1 else f"{n_files} files")
+            if n_dirs:
+                parts.append("1 folder" if n_dirs == 1 else f"{n_dirs} folders")
+            return ("circle-play", " and ".join(parts) + " queued",
+                    "Press Parse in the side panel to load the events. "
+                    "Tick profiles or analysis options first if you need them.")
+        return ("inbox", "No event logs loaded",
+                "Add .evtx files or a folder from the side panel, or drop them "
+                "anywhere on this window.\n\nCtrl+O  add files      Ctrl+Shift+O  add a folder")
 
     def _warn_blocking(self, title: str, text: str, *,
                        icon=None, detail: "str | None" = None) -> None:
@@ -9811,6 +10706,9 @@ class MainWindow(QMainWindow):
         if filepath == "__all_events__":
             self._open_all_events_tab()
             return
+        if filepath == self._EMPTY_GROUP_KEY:
+            self._toggle_empty_group(item)
+            return
         if filepath in self._file_tabs:
             # Tab exists — switch to it
             state = self._file_tabs[filepath]
@@ -9862,6 +10760,7 @@ class MainWindow(QMainWindow):
 
         file_view = self._create_configured_table(file_model)
         file_view.horizontalHeader().setSortIndicatorShown(False)
+        self._apply_default_col_widths(file_view)
         self._apply_col_visibility(file_view, self._visible_cols)
         file_view.selectionModel().selectionChanged.connect(self._on_hw_row_selected)
         file_model.busy_started.connect(self._on_hw_filter_busy_started)
@@ -9872,14 +10771,7 @@ class MainWindow(QMainWindow):
         self._events_tab_widget.setTabToolTip(tab_idx, filepath)
 
         # Close button
-        _btn_x = QPushButton("×")
-        _btn_x.setFixedSize(16, 16)
-        _btn_x.setStyleSheet(
-            "QPushButton{color:#7a5c1e;font-size:12pt;font-weight:bold;"
-            "border:none;background:transparent;padding:0;margin:0;}"
-            "QPushButton:hover{color:#a01800;background:#f5e0dc;border-radius:2px;}"
-        )
-        _btn_x.clicked.connect(
+        _btn_x = self._make_tab_close_button(
             lambda _=False, t=file_view: self._on_file_tab_close_requested(
                 self._events_tab_widget.indexOf(t)
             )
@@ -9986,8 +10878,8 @@ class MainWindow(QMainWindow):
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.selectionModel().selectionChanged.connect(self._on_row_selected)
 
-        # Column widths + visibility already applied by _create_configured_table.
-        # Re-apply visibility after model re-attach (setModel(None) above resets hidden state).
+        # setModel(None) above reset the header: widths and visibility again.
+        self._apply_default_col_widths(table)
         self._apply_col_visibility(table, self._visible_cols)
 
         proxy.setDynamicSortFilter(True)
@@ -9998,14 +10890,7 @@ class MainWindow(QMainWindow):
         self._events_tab_widget.setTabToolTip(tab_idx, filepath)
 
         # Brown × close button (replaces Qt's default platform close button)
-        _btn_close = QPushButton("×")
-        _btn_close.setFixedSize(16, 16)
-        _btn_close.setStyleSheet(
-            "QPushButton { color: #7a5c1e; font-size: 12pt; font-weight: bold;"
-            " border: none; background: transparent; padding: 0; margin: 0; }"
-            "QPushButton:hover { color: #a01800; background: #f5e0dc; border-radius: 2px; }"
-        )
-        _btn_close.clicked.connect(
+        _btn_close = self._make_tab_close_button(
             lambda _=False, t=table: self._on_file_tab_close_requested(
                 self._events_tab_widget.indexOf(t)
             )
@@ -10111,6 +10996,7 @@ class MainWindow(QMainWindow):
                 self._active_file_tab = None
 
         self._update_count_label()
+        self._update_adv_filter_badge()
         # Bug 6 fix: refresh header ▼ indicators to match the newly active tab.
         # Guard with _table (plain attribute) — _active_table is a property that
         # always exists, so hasattr on it would never be False.
@@ -10142,24 +11028,60 @@ class MainWindow(QMainWindow):
         """Remove a file completely — close tab + free memory."""
         self._close_file_tab(filepath)
         self._per_file_data.pop(filepath, None)
-        # Remove from tree
-        root = self._file_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            if item and item.data(0, Qt.ItemDataRole.UserRole) == filepath:
-                root.removeChild(item)
+        # Remove from tree (an empty log sits inside the Empty logs group)
+        from PySide6.QtWidgets import QTreeWidgetItemIterator
+        it = QTreeWidgetItemIterator(self._file_tree)
+        while it.value():
+            item = it.value()
+            if item.data(0, Qt.ItemDataRole.UserRole) == filepath:
+                parent = item.parent() or self._file_tree.invisibleRootItem()
+                parent.removeChild(item)
+                if parent is not self._file_tree.invisibleRootItem():
+                    if parent.childCount():
+                        parent.setText(1, f"{parent.childCount():,}")
+                    else:
+                        self._file_tree.invisibleRootItem().removeChild(parent)
                 break
+            it += 1
 
     def _update_tree_item_style(self, filepath: str, is_open: bool) -> None:
-        """Bold tree items that have an open tab."""
-        root = self._file_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            if item and item.data(0, Qt.ItemDataRole.UserRole) == filepath:
+        """Bold tree items that have an open tab (also inside the empty group)."""
+        from PySide6.QtWidgets import QTreeWidgetItemIterator
+        it = QTreeWidgetItemIterator(self._file_tree)
+        while it.value():
+            item = it.value()
+            if item.data(0, Qt.ItemDataRole.UserRole) == filepath:
                 f = item.font(0)
                 f.setBold(is_open)
                 item.setFont(0, f)
                 break
+            it += 1
+
+    def _add_tree_entry(self, item) -> None:
+        """Add a top-level entry (a pivot tab) above the Empty logs group."""
+        root = self._file_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            if root.child(i).data(0, Qt.ItemDataRole.UserRole) == self._EMPTY_GROUP_KEY:
+                self._file_tree.insertTopLevelItem(i, item)
+                return
+        self._file_tree.addTopLevelItem(item)
+
+    def _make_tab_close_button(self, on_click) -> QPushButton:
+        """The close button on an event tab: a small line icon that shows a
+        soft background on hover (it was a bold 12 pt amber "x" glyph)."""
+        from .icons import set_icon
+        btn = QPushButton()
+        set_icon(btn, "x", "text_muted", size=10)
+        btn.setFixedSize(18, 18)
+        btn.setToolTip("Close this tab")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 0; margin: 0;"
+            " min-height: 0; border-radius: 3px; }"
+            f"QPushButton:hover {{ background: {COLORS['bg_hover']}; }}"
+        )
+        btn.clicked.connect(on_click)
+        return btn
 
     def _attach_all_events_close_btn(self) -> None:
         """Attach a close button to the All Events tab (index 0) for separate mode."""
@@ -10168,14 +11090,7 @@ class MainWindow(QMainWindow):
         existing = bar.tabButton(0, bar.ButtonPosition.RightSide)
         if existing is not None:
             existing.deleteLater()
-        btn = QPushButton("×")
-        btn.setFixedSize(16, 16)
-        btn.setStyleSheet(
-            "QPushButton { color: #7a5c1e; font-size: 12pt; font-weight: bold;"
-            " border: none; background: transparent; padding: 0; margin: 0; }"
-            "QPushButton:hover { color: #a01800; background: #f5e0dc; border-radius: 2px; }"
-        )
-        btn.clicked.connect(lambda: self._on_file_tab_close_requested(0))
+        btn = self._make_tab_close_button(lambda: self._on_file_tab_close_requested(0))
         bar.setTabButton(0, bar.ButtonPosition.RightSide, btn)
 
     def _open_all_events_tab(self) -> None:
@@ -10188,20 +11103,70 @@ class MainWindow(QMainWindow):
 
     def _populate_file_tree(self) -> None:
         """Fill the file tree with loaded file names."""
+        counts = {fp: len(d.get("events") or []) for fp, d in self._per_file_data.items()}
+        self._fill_file_tree(counts, empty_openable=True)
+
+    _EMPTY_GROUP_KEY = "__empty_logs__"
+
+    def _fill_file_tree(self, counts: dict, empty_openable: bool) -> None:
+        """The Tab-per-file list: "All Events (total)", then each log with its
+        event count, then a collapsed "Empty logs (N)" group.
+
+        Empty logs are grouped, not dropped: an empty Security log can be the
+        finding (cleared), and a collection often holds dozens of empty logs
+        that only push the ones with events out of sight.  *empty_openable*:
+        whether an empty log's entry opens a tab (Normal mode keeps one per
+        file; Juggernaut Mode has no rows to show for it).
+        """
+        from .icons import icon as _icon
         self._file_tree.clear()
+        total = sum(counts.values())
         # "All Events" entry at top so user can reopen the merged tab
-        all_item = QTreeWidgetItem(["All Events"])
+        all_item = QTreeWidgetItem(["All Events", f"{total:,}"])
         all_item.setData(0, Qt.ItemDataRole.UserRole, "__all_events__")
         all_item.setToolTip(0, "View all events from all files combined")
         f = all_item.font(0)
         f.setBold(True)
         all_item.setFont(0, f)
         self._file_tree.addTopLevelItem(all_item)
-        for filepath in sorted(self._per_file_data.keys()):
-            item = QTreeWidgetItem([os.path.basename(filepath)])
+        self._style_count_column(all_item)
+        names = {fp: _short_log_name(fp) for fp in counts}
+        order = sorted(counts, key=lambda fp: (names[fp].casefold(), fp))
+        empty = [fp for fp in order if not counts[fp]]
+        for filepath in order:
+            if not counts[filepath]:
+                continue
+            item = QTreeWidgetItem([names[filepath], f"{counts[filepath]:,}"])
             item.setData(0, Qt.ItemDataRole.UserRole, filepath)
-            item.setToolTip(0, filepath)
+            item.setToolTip(0, f"{filepath}\n{counts[filepath]:,} events")
+            self._style_count_column(item)
             self._file_tree.addTopLevelItem(item)
+        if empty:
+            grp = QTreeWidgetItem(["Empty logs", f"{len(empty):,}"])
+            grp.setData(0, Qt.ItemDataRole.UserRole, self._EMPTY_GROUP_KEY)
+            grp.setToolTip(0, "Logs with no events -- empty, or cleared. Click to show them.")
+            grp.setIcon(0, _icon("chevron-right", "text_muted", 12))
+            grp.setForeground(0, QColor(COLORS["text_dim"]))
+            self._style_count_column(grp)
+            self._file_tree.addTopLevelItem(grp)
+            for filepath in empty:
+                ch = QTreeWidgetItem([names[filepath]])
+                ch.setData(0, Qt.ItemDataRole.UserRole, filepath if empty_openable else None)
+                ch.setToolTip(0, f"{filepath}\nNo events: the log is empty or was cleared")
+                ch.setForeground(0, QColor(COLORS["text_muted"]))
+                grp.addChild(ch)
+            grp.setExpanded(False)
+
+    @staticmethod
+    def _style_count_column(item) -> None:
+        item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        item.setForeground(1, QColor(COLORS["text_dim"]))
+
+    def _toggle_empty_group(self, item) -> None:
+        from .icons import icon as _icon
+        item.setExpanded(not item.isExpanded())
+        item.setIcon(0, _icon("chevron-down" if item.isExpanded() else "chevron-right",
+                              "text_muted", 12))
 
     # =========================================================================
     # FILE MANAGEMENT
@@ -10226,7 +11191,115 @@ class MainWindow(QMainWindow):
         item.setData(Qt.ItemDataRole.UserRole, path)
         item.setToolTip(path)
         self._file_list.addItem(item)
+        if self._persist_layout_enabled():
+            self._remember_input(path)
         self._act_ps_extract.setEnabled(True)
+
+    # ── Recent inputs ─────────────────────────────────────────────────────────
+
+    _RECENT_KEY = "recent_inputs"
+    _RECENT_MAX = 10
+
+    def _recent_inputs(self) -> list[str]:
+        try:
+            v = QSettings("EventHawk", "GUI").value(self._RECENT_KEY, []) or []
+        except Exception:
+            return []
+        if isinstance(v, str):
+            v = [v]
+        return [str(x) for x in v if str(x).strip()]
+
+    def _remember_input(self, path: str) -> None:
+        if not path:
+            return
+        norm = os.path.normcase(os.path.abspath(path))
+        items = [x for x in self._recent_inputs() if os.path.normcase(os.path.abspath(x)) != norm]
+        items.insert(0, path)
+        QSettings("EventHawk", "GUI").setValue(self._RECENT_KEY, items[: self._RECENT_MAX])
+
+    def _populate_recent_menu(self) -> None:
+        m = self._recent_menu
+        m.clear()
+        items = self._recent_inputs()
+        if not items:
+            a = m.addAction("No recent files or folders")
+            a.setEnabled(False)
+            return
+        for path in items:
+            label = path if len(path) <= 70 else path[:30] + "\u2026" + path[-38:]
+            a = m.addAction(label.replace("&", "&&"))
+            a.setToolTip(path)
+            a.triggered.connect(lambda _c=False, pp=path: self._open_recent(pp))
+        m.addSeparator()
+        m.addAction("Clear Recent").triggered.connect(
+            lambda: QSettings("EventHawk", "GUI").remove(self._RECENT_KEY))
+
+    def _open_recent(self, path: str) -> None:
+        if not os.path.exists(path):
+            items = [x for x in self._recent_inputs() if x != path]
+            QSettings("EventHawk", "GUI").setValue(self._RECENT_KEY, items)
+            self._set_status(f"Not found, removed from Open Recent: {path}")
+            return
+        self._add_path(path)
+        self._set_status(f"Queued {os.path.basename(path.rstrip(os.sep)) or path} \u2014 press Parse to load it")
+
+    # ── Keyboard shortcuts ────────────────────────────────────────────────────
+
+    SHORTCUTS = (
+        ("Ctrl+O", "Add files"),
+        ("Ctrl+Shift+O", "Add a folder"),
+        ("Ctrl+F", "Search all event text (Enter applies, Esc clears)"),
+        ("Ctrl+Shift+F", "Advanced filter"),
+        ("Ctrl+B", "Bookmark / unbookmark the selected event"),
+        ("Ctrl+C", "Copy the selected event (in the event table)"),
+        ("Ctrl+\\", "Show / hide the side panel"),
+        ("Ctrl+Shift+A", "Show / hide the analysis panel (ATT&CK, IOCs, Chains, Bookmarks)"),
+        ("Ctrl+S", "Export events"),
+        ("Ctrl+/", "This list"),
+        ("Ctrl+Q", "Exit"),
+    )
+
+    def _set_analysis_panel_visible(self, on: bool) -> None:
+        """Show or hide the analysis tabs beside the event detail (remembered)."""
+        w = getattr(self, "_analysis_widget", None)
+        if w is None:
+            return
+        on = bool(on)
+        w.setVisible(on)
+        for ctl in (getattr(self, "_btn_analysis_panel", None), getattr(self, "_act_analysis_panel", None)):
+            if ctl is not None and ctl.isChecked() != on:
+                ctl.blockSignals(True)
+                ctl.setChecked(on)
+                ctl.blockSignals(False)
+        if self._persist_layout_enabled():
+            QSettings("EventHawk", "GUI").setValue("analysis_panel_visible", on)
+
+    def _shortcut_bookmark(self) -> None:
+        if self._btn_bookmark_event.isEnabled():
+            self._btn_bookmark_event.click()
+
+    def _show_shortcuts(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Keyboard Shortcuts")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(18, 16, 18, 14)
+        lay.setSpacing(10)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(6)
+        for r, (keys, what) in enumerate(self.SHORTCUTS):
+            k = QLabel(keys)
+            k.setStyleSheet(
+                f"font-family: Consolas, monospace; color: {COLORS['text']}; "
+                f"background: {COLORS['bg_header']}; border-radius: 3px; padding: 2px 6px;")
+            grid.addWidget(k, r, 0, Qt.AlignmentFlag.AlignLeft)
+            grid.addWidget(QLabel(what), r, 1)
+        lay.addLayout(grid)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        bb.rejected.connect(dlg.reject)
+        bb.accepted.connect(dlg.accept)
+        lay.addWidget(bb)
+        dlg.exec()
 
     # ── Drag and drop ─────────────────────────────────────────────────────────
 
@@ -10778,6 +11851,7 @@ class MainWindow(QMainWindow):
         # A per-file or around tab starts empty and fills here; the count was
         # last set on the tab switch, so without this it kept saying 0 events.
         self._update_count_label()
+        QTimer.singleShot(0, self._restore_focus_after_filter)
         # The view has settled — get the column popups ready NOW rather than
         # when the analyst clicks a header.
         self._schedule_col_prewarm()
@@ -10924,12 +11998,21 @@ class MainWindow(QMainWindow):
         # threads each walking the event list in Python, contending on the GIL
         # and stuttering the UI this prewarm exists to keep smooth.
         _w = NormalColValuePrewarmWorker(by_col, parent=self)
-        _w.column_ready.connect(
-            lambda ck, vals, sz=_sizes, px=id(self._active_proxy): (
-                self._col_cache().__setitem__(("normal", ck, sz.get(ck, 0), px), vals)
-                if vals else None
-            )
-        )
+
+        def _ready(ck, vals, w=_w, sz=_sizes, px=id(self._active_proxy), cache=self._col_cache()):
+            # Every change of the visible slice replaces the cache dict.  A
+            # sweep started for the old slice could still deliver (its signals
+            # were already queued, or nothing cancelled it) and filed the old
+            # slice's values in the new cache, keyed by the old slice's SIZE:
+            # a later filter selecting the same number of events was then
+            # offered the old values (wrong counts, dates matching no rows).
+            # So a sweep files only into the cache it started with, and only
+            # while it is the current, uncancelled sweep.
+            if (not vals or w._cancel or w is not getattr(self, "_norm_prewarm_worker", None)
+                    or self.__dict__.get("_col_value_cache") is not cache):
+                return
+            cache[("normal", ck, sz.get(ck, 0), px)] = vals
+        _w.column_ready.connect(_ready)
         self._norm_prewarm_worker = _w
         _w.start()
         self._track_col_worker(_w)
@@ -10977,6 +12060,7 @@ class MainWindow(QMainWindow):
 
         self._clear_results()
         self._parse_start_ts = time.monotonic()
+        self._parse_state = None
         self._progress_bar.setValue(0)
         self._btn_parse.setEnabled(False)
         self._btn_stop.setEnabled(True)
@@ -11017,8 +12101,12 @@ class MainWindow(QMainWindow):
         if total_files > 0:
             pct = int(done_files / total_files * 100)
             self._progress_bar.setValue(pct)
+        _t0 = getattr(self, "_parse_start_ts", None)
+        self._parse_state = (done_files, total_files, done_events, eps,
+                             (time.monotonic() - _t0) if _t0 else 0)
+        self._table.viewport().update()
         self._set_status(
-            f"\u26a1 Juggernaut: {done_files}/{total_files} files",
+            f"Juggernaut: {done_files}/{total_files} files",
             stats=f"{done_events:,} events  |  {eps:,.0f} rec/s",
         )
         # Keep the loading dialog's detail line in sync with parse progress
@@ -11217,19 +12305,17 @@ class MainWindow(QMainWindow):
             self._jm_file_models: list = []
 
             # Populate file tree — "All Events" at top, then per-file entries
-            self._file_tree.clear()
-            all_item = QTreeWidgetItem(["All Events"])
-            all_item.setData(0, Qt.ItemDataRole.UserRole, "__all_events__")
-            all_item.setToolTip(0, "View all events from all files combined")
-            f = all_item.font(0)
-            f.setBold(True)
-            all_item.setFont(0, f)
-            self._file_tree.addTopLevelItem(all_item)
-            for fp in source_files:
-                ti = QTreeWidgetItem([os.path.basename(fp)])
-                ti.setData(0, Qt.ItemDataRole.UserRole, fp)
-                ti.setToolTip(0, fp)
-                self._file_tree.addTopLevelItem(ti)
+            # with their counts (value_counts on the dictionary-encoded column
+            # is as cheap as unique()), and the parsed files that produced no
+            # rows grouped as empty logs.
+            try:
+                _vc = arrow_table["source_file"].value_counts()
+                _counts = {str(v["values"]): int(v["counts"]) for v in _vc.to_pylist() if v["values"]}
+            except Exception:
+                _counts = {fp: 1 for fp in source_files}   # names without counts beats nothing
+            for _fp in getattr(self, "_last_parsed_files", None) or []:
+                _counts.setdefault(_fp, 0)
+            self._fill_file_tree(_counts, empty_openable=False)
 
             # Show the All Events tab with a close button
             self._events_tab_widget.setTabVisible(0, True)
@@ -11326,6 +12412,9 @@ class MainWindow(QMainWindow):
                 "_on_hw_finished: model loaded %d events from %s", total, parquet_dir,
             )
 
+        if total:
+            QTimer.singleShot(250, self._fold_panel_for_room)
+            QTimer.singleShot(0, self._carry_custom_columns)
         self._progress_bar.setValue(100)
         self._btn_parse.setEnabled(True)
         self._btn_stop.setEnabled(False)
@@ -11475,6 +12564,8 @@ class MainWindow(QMainWindow):
         active_model = self._active_table.model()
         model = active_model if isinstance(active_model, _ATM) else self._hw_model
         ev = model.get_event(indexes[0].row())
+        if ev:
+            self._remember_focus(ev, None, None)
         if ev:
             self._render_event_detail(ev)
             self._update_bookmark_button(ev)
@@ -11712,6 +12803,9 @@ class MainWindow(QMainWindow):
         ON TOP of any active Advanced Filter cfg (same slot), so applying a
         profile never wipes the advanced filter and vice-versa.
         """
+        _names = self._get_checked_profiles() if hasattr(self, "_get_checked_profiles") else []
+        self._say_after(("Profile applied: " if len(_names) == 1 else "Profiles applied: ")
+                        + ", ".join(map(str, _names)) if _names else "Profiles cleared")
         self._applied_profiles = self._get_checked_profiles()
         logger.info("Apply Profiles: %s", self._applied_profiles or "(none)")
         fc = self._build_filter_config(base=getattr(self, "_adv_filter_cfg", None))
@@ -12403,11 +13497,61 @@ class MainWindow(QMainWindow):
         if not editing:
             self._next_custom_col_id = getattr(self, "_next_custom_col_id", 0) + 1
             col_id = self._next_custom_col_id
-        dlg = CustomColumnDialog(col_id, sample_event=self._selected_event_for_picker(),
-                                 spec=spec, parent=self)
+        sample = self._selected_event_for_picker()
+        peers, peer_total = self._peer_fields_for(sample, model)
+        dlg = CustomColumnDialog(col_id, sample_event=sample, spec=spec, parent=self,
+                                 peer_fields=peers, peer_total=peer_total)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._compute_custom_column(model, dlg.compiled(), editing)
+
+    _PEER_SCAN_LIMIT = 2000
+
+    def _peer_fields_for(self, sample, model) -> tuple:
+        """Fields other events with the sample's provider + ID carry (see
+        core.custom_columns.peer_fields).  At most _PEER_SCAN_LIMIT events are
+        read, so the dialog opens at once even on millions of events."""
+        from evtx_tool.core.custom_columns import peer_fields
+        if not sample:
+            return [], 0
+        try:
+            eid = int(sample.get("event_id"))
+        except (TypeError, ValueError):
+            return [], 0
+        prov = sample.get("provider") or ""
+        try:
+            if self._hw_model is not None:
+                return peer_fields(sample, self._jm_peer_events(eid, prov), self._PEER_SCAN_LIMIT)
+            events = getattr(model, "_events", None) or []
+            peers = (ev for ev in events
+                     if ev.get("event_id") == eid and (ev.get("provider") or "") == prov)
+            return peer_fields(sample, peers, self._PEER_SCAN_LIMIT)
+        except Exception:
+            logger.warning("custom column: reading other events' fields failed", exc_info=True)
+            return [], 0
+
+    def _jm_peer_events(self, eid: int, prov: str):
+        """Up to _PEER_SCAN_LIMIT events' data with this ID + provider, from the
+        Parquet shards (Juggernaut keeps event data on disk)."""
+        import json as _json
+        import duckdb
+        shards = self._hw_model._get_shard_paths()
+        if not shards:
+            return
+        quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in shards)
+        con = duckdb.connect()
+        try:
+            rows = con.execute(
+                f"SELECT event_data_json FROM parquet_scan([{quoted}]) "
+                f"WHERE event_id = ? AND COALESCE(provider, '') = ? LIMIT {int(self._PEER_SCAN_LIMIT)}",
+                [eid, prov]).fetchall()
+        finally:
+            con.close()
+        for (js,) in rows:
+            try:
+                yield {"event_data": _json.loads(js or "{}")}
+            except (ValueError, TypeError):
+                continue
 
     def _edit_custom_column(self, col_id: int) -> None:
         model = self._custom_cols_model()
@@ -12416,7 +13560,7 @@ class MainWindow(QMainWindow):
         if cc is not None:
             self._add_custom_column_dialog(spec=cc.spec, col_id=col_id)
 
-    def _compute_custom_column(self, model, compiled, editing: bool) -> None:
+    def _compute_custom_column(self, model, compiled, editing: bool, quiet: bool = False) -> None:
         from evtx_tool.core.custom_columns import arrow_column_values
         from evtx_tool.gui.models import compute_custom_values
         _holder: list = []            # the worker, for fn's cancel check
@@ -12454,9 +13598,55 @@ class MainWindow(QMainWindow):
         _holder.append(worker)
         self._custom_col_workers = [w for w in getattr(self, "_custom_col_workers", [])
                                     if self._thread_running(w)] + [worker]
-        worker.done.connect(lambda values: self._on_custom_column_ready(model, compiled, values, editing))
+        worker.done.connect(lambda values: self._on_custom_column_ready(model, compiled, values, editing, quiet))
         worker.failed.connect(lambda msg: self._on_custom_column_failed(compiled, msg))
         worker.start()
+
+    @staticmethod
+    def _scroll_column_into_view(tbl, col: int) -> None:
+        try:
+            m = tbl.model()
+            row = tbl.currentIndex().row() if tbl.currentIndex().isValid() else 0
+            if m is not None and m.rowCount() > 0:
+                tbl.scrollTo(m.index(max(0, row), col))
+            else:
+                tbl.horizontalScrollBar().setValue(tbl.horizontalScrollBar().maximum())
+        except RuntimeError:
+            pass
+
+    def _remember_custom_columns(self) -> None:
+        """Keep the main table's custom column definitions before a new parse
+        clears them, so _carry_custom_columns can rebuild them on the new events
+        (they used to vanish with every parse and had to be made again)."""
+        try:
+            main = self._hw_model if self._hw_model is not None else self._event_model
+            specs = [cc.spec for cc in getattr(main, "custom_columns", lambda: [])()]
+        except RuntimeError:
+            specs = []
+        if specs:
+            self._carry_specs = specs
+
+    def _carry_custom_columns(self) -> None:
+        specs = getattr(self, "_carry_specs", None) or []
+        self._carry_specs = []
+        if not specs:
+            return
+        from evtx_tool.core.custom_columns import compile_spec, CustomColumnError
+        main = self._hw_model if self._hw_model is not None else self._event_model
+        if not hasattr(main, "add_custom_column"):
+            return
+        have = {cc.spec.col_id for cc in getattr(main, "custom_columns", lambda: [])()}
+        for spec in specs:
+            if spec.col_id in have:
+                continue
+            try:
+                compiled = compile_spec(spec)
+            except CustomColumnError:
+                continue
+            self._compute_custom_column(main, compiled, editing=False, quiet=True)
+        self.statusBar().showMessage(
+            f"Custom column{'s' if len(specs) != 1 else ''} carried over from the previous "
+            f"collection: " + ", ".join(f"\u2018{sp.title}\u2019" for sp in specs), 8000)
 
     def _on_custom_column_failed(self, compiled, msg: str) -> None:
         if getattr(self, "_close_stop_requested", False):
@@ -12467,7 +13657,7 @@ class MainWindow(QMainWindow):
             "Custom column", f"The column ‘{compiled.spec.title}’ could not be computed:\n{msg}",
             icon=QMessageBox.Icon.Critical)
 
-    def _on_custom_column_ready(self, model, compiled, values, editing: bool) -> None:
+    def _on_custom_column_ready(self, model, compiled, values, editing: bool, quiet: bool = False) -> None:
         if values is None:                   # cancelled (Exit or a new dataset)
             self._set_status(f"Column ‘{compiled.spec.title}’ not computed (cancelled)")
             return
@@ -12483,6 +13673,9 @@ class MainWindow(QMainWindow):
                 for tbl in [self._table] + [st.table for st in self._file_tabs.values()]:
                     if tbl.model() is model or getattr(tbl.model(), "sourceModel", lambda: None)() is model:
                         tbl.setColumnHidden(idx, False)
+                        if tbl is self._active_table and not quiet:
+                            # A new column lands at the far right: bring it into view.
+                            self._scroll_column_into_view(tbl, idx)
         except RuntimeError:
             return                          # the tab was closed meanwhile
         self._invalidate_col_value_cache()
@@ -12491,6 +13684,13 @@ class MainWindow(QMainWindow):
         self._update_count_label()
         self._set_status(f"Column \u2018{compiled.spec.title}\u2019 ready")
         missing = [t for t in compiled.tokens if not compiled.hits.get(t)]
+        if quiet:
+            # Carried over from the previous collection: no box per column; a
+            # column with nothing to show here says so in the status bar.
+            if missing:
+                self._set_status(f"Column \u2018{compiled.spec.title}\u2019 carried over \u2014 "
+                                 "no event here has its field")
+            return
         if missing:
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Icon.Warning)
@@ -12679,7 +13879,7 @@ class MainWindow(QMainWindow):
             name = os.path.basename(self._hayabusa_path)
             self._lbl_hayabusa_path.setText(f"✓ {name}")
             self._lbl_hayabusa_path.setToolTip(self._hayabusa_path)
-            self._lbl_hayabusa_path.setStyleSheet("font-size: 11px; color: #5f5;")
+            self._lbl_hayabusa_path.setStyleSheet(f"font-size: 8pt; color: {COLORS['ioc_found']};")
         else:
             self._lbl_hayabusa_path.setText("⚠ Not configured")
             self._lbl_hayabusa_path.setToolTip(
@@ -12687,7 +13887,7 @@ class MainWindow(QMainWindow):
                 "Click Browse and select hayabusa.exe.\n"
                 "Download from: github.com/Yamato-Security/hayabusa/releases"
             )
-            self._lbl_hayabusa_path.setStyleSheet("font-size: 11px; color: #c07000;")
+            self._lbl_hayabusa_path.setStyleSheet("font-size: 8pt; color: #c07000;")
 
     def _pick_hayabusa_path(self) -> None:
         """Open file dialog to select Hayabusa binary."""
@@ -12705,7 +13905,7 @@ class MainWindow(QMainWindow):
             name = os.path.basename(path)
             self._lbl_hayabusa_path.setText(f"✓ {name}")
             self._lbl_hayabusa_path.setToolTip(path)
-            self._lbl_hayabusa_path.setStyleSheet("font-size: 11px; color: #5f5;")
+            self._lbl_hayabusa_path.setStyleSheet(f"font-size: 8pt; color: {COLORS['ioc_found']};")
 
 
     # =========================================================================
@@ -12740,9 +13940,19 @@ class MainWindow(QMainWindow):
 
         if not files:
             if self._file_list.count() == 0:
-                QMessageBox.warning(self, "No Files", "Add EVTX files or a directory first.")
+                # Not a modal: the empty table already says what to do; point
+                # at the way in instead of interrupting.
+                self._set_status("Nothing to parse yet")
+                self.statusBar().showMessage(
+                    "Add .evtx files or a folder first — Add files (Ctrl+O) / "
+                    "Add folder (Ctrl+Shift+O), or drop them on the window", 8000)
+                if getattr(self, "_btn_add_files", None) is not None and self._panel_open:
+                    self._btn_add_files.setFocus(Qt.FocusReason.OtherFocusReason)
             # else: the unresolved dialog above already explained why.
             return
+
+        # Custom columns of the current table carry over to the new collection.
+        self._remember_custom_columns()
 
         # ── Volume safety gate ───────────────────────────────────────────
         _volume_choice = self._check_volume(files)
@@ -12765,6 +13975,7 @@ class MainWindow(QMainWindow):
 
         self._clear_results()
         self._parse_start_ts = time.monotonic()
+        self._parse_state = None
         self._progress_bar.setValue(0)
         self._btn_parse.setEnabled(False)
         self._btn_stop.setEnabled(True)
@@ -12811,9 +14022,11 @@ class MainWindow(QMainWindow):
 
         pct = int(done / total * 100)
         self._progress_bar.setValue(pct)
-        self._lbl_matched.setText(f"Events: {matched:,}")
-        self._lbl_speed.setText(f"Speed: {rps:,.0f} rec/s")
-        self._lbl_elapsed.setText(f"Time: {elapsed:.1f}s")
+        self._parse_state = (done, total, matched, rps, elapsed)
+        self._table.viewport().update()          # the empty table shows this progress
+        self._lbl_matched.setText(f"{matched:,} events")
+        self._lbl_speed.setText(f"{rps:,.0f}/s")
+        self._lbl_elapsed.setText(f"{elapsed:.1f} s")
         self._set_status(
             f"Parsing...  {done}/{total} files",
             stats=f"{matched:,} events  |  {rps:,.0f} rec/s",
@@ -12934,9 +14147,7 @@ class MainWindow(QMainWindow):
             self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
             self._table.selectionModel().selectionChanged.connect(self._on_row_selected)
-            col_widths = [40, 70, 90, 170, 130, 150, 110, 80]
-            for i, w_val in enumerate(col_widths):
-                self._table.setColumnWidth(i, w_val)
+            self._apply_default_col_widths(self._table)
             self._apply_col_visibility(self._table, self._visible_cols)
             self._proxy_model.setDynamicSortFilter(True)
             self._table.setUpdatesEnabled(True)
@@ -13004,9 +14215,7 @@ class MainWindow(QMainWindow):
             self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
             self._table.selectionModel().selectionChanged.connect(self._on_row_selected)
 
-            col_widths = [40, 70, 90, 170, 130, 150, 110, 80]
-            for i, w_val in enumerate(col_widths):
-                self._table.setColumnWidth(i, w_val)
+            self._apply_default_col_widths(self._table)
 
             # Re-apply user's column visibility — setModel() above resets all
             # hidden-column state so every column becomes visible again.
@@ -13029,15 +14238,18 @@ class MainWindow(QMainWindow):
 
         # ── Show events + ATT&CK tab immediately ──────────────────────
         QTimer.singleShot(0, self._refresh_attack_tab)
+        if events:
+            QTimer.singleShot(250, self._fold_panel_for_room)
+            QTimer.singleShot(0, self._carry_custom_columns)
 
         self._btn_parse.setEnabled(True)
         export_ok = len(events) > 0
         self._btn_export.setEnabled(export_ok)
         self._act_export.setEnabled(export_ok)
 
-        self._lbl_matched.setText(f"Events: {len(events):,}")
+        self._lbl_matched.setText(f"{len(events):,} events")
         logger.info("Parse finished: %d events in %.1f s, Normal mode", len(events), elapsed)
-        self._lbl_elapsed.setText(f"Time: {elapsed:.1f}s")
+        self._lbl_elapsed.setText(f"{elapsed:.1f} s")
 
         parts = [f"{len(events):,} events", f"{elapsed:.1f}s"]
         if attack_summary:
@@ -13066,16 +14278,21 @@ class MainWindow(QMainWindow):
             )
         else:
             self._btn_stop.setEnabled(False)
-            self._set_status("Done", stats="  |  ".join(parts))
+            self._set_status("Parsed — no events found in these files",
+                             stats="  |  ".join(parts))
 
     # ── Analysis phase callbacks ─────────────────────────────────────────
 
     @Slot(str)
     def _on_analysis_progress(self, step_name: str) -> None:
+        if self._stale_analysis():
+            return
         self._set_status(f"Analysing…  {step_name}")
 
     @Slot(str, int)
     def _on_component_progress(self, component: str, pct: int) -> None:
+        if self._stale_analysis():
+            return
         """Update per-component progress in the status bar."""
         self._component_pcts[component] = pct
         parts = []
@@ -13097,10 +14314,21 @@ class MainWindow(QMainWindow):
         self._component_pcts.clear()
 
     @Slot(object, object, object)
+    def _stale_analysis(self) -> bool:
+        """True when the signal comes from an analysis run that is no longer
+        the current one.  A run stopped by a new parse could still deliver its
+        IOCs / chains, so the previous logs' findings sat in the tabs while a
+        different collection loaded."""
+        src = self.sender()
+        return src is not None and src is not self._analysis_runner and type(src).__name__ == "AnalysisRunner"
+
     def _on_analysis_finished(self, iocs, chains, metadata) -> None:
+        if self._stale_analysis():
+            return
         self._iocs     = iocs
         self._chains   = chains or []
         self._chains_ran = chains is not None   # 0 chains found vs correlation not run
+        self._iocs_ran = iocs is not None       # likewise for IOC extraction
         for _st in self._file_tabs.values():    # per-file IOC views come from these results
             _st.iocs = None
         # In Juggernaut Mode the analysis subprocess runs with events=[] so
@@ -13174,10 +14402,15 @@ class MainWindow(QMainWindow):
                 + "\n".join(f"  • {k}: {v}" for k, v in _an_errs.items()),
             )
             return
-        self._set_status("Done", stats="  |  ".join(parts))
+        _nf = len(getattr(self, "_last_parsed_files", None) or [])
+        self._set_status(f"Loaded {n_events:,} events"
+                         + (f" from {_nf:,} file{'s' if _nf != 1 else ''}" if _nf else ""),
+                         stats="  |  ".join(parts))
 
     @Slot(str)
     def _on_analysis_error(self, msg: str) -> None:
+        if self._stale_analysis():
+            return
         self._btn_stop.setEnabled(False)
         self._analysis_runner = None
         self._set_status("Done (analysis failed)")
@@ -13286,7 +14519,9 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         cfg = dlg.get_filter_config()
+        self._quick_search_owned_cfg = False   # the dialog owns the cfg now
         logger.info("Advanced Filter applied")
+        self._say_after("Advanced filter applied")
 
         # ── Stack the dialog cfg ON TOP of any active profile selection ──
         # Both the profile filter and the dialog filter are applied via the same
@@ -13353,6 +14588,7 @@ class MainWindow(QMainWindow):
         cfg is gone) so the profile filter survives the clear.
         """
         self._adv_filter_cfg = None
+        self._reset_quick_search_box()
         logger.info("Advanced Filter cleared")
         # Bug 3 fix: in Juggernaut Mode clear via hw_model — but keep profiles.
         if self._hw_model is not None:
@@ -13414,6 +14650,8 @@ class MainWindow(QMainWindow):
         keeps the applied profiles.
         """
         logger.info("Clear All Filters")
+        self._say_after("All filters cleared")
+        self._reset_quick_search_box()
         self._profile_combo.uncheckAll()
         self._applied_profiles = []
         # RA session filters are implemented on top of the bookmark/record-id
@@ -13505,6 +14743,95 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
 
+    # ── Quick search ─────────────────────────────────────────────────────────
+
+    def _focus_quick_search(self) -> None:
+        self._quick_search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._quick_search.selectAll()
+
+    def _reset_quick_search_box(self) -> None:
+        if not hasattr(self, "_quick_search"):
+            return
+        self._quick_search.blockSignals(True)
+        self._quick_search.clear()
+        self._quick_search.blockSignals(False)
+        self._quick_search_applied = ""
+        self._quick_search_owned_cfg = False
+
+    def _sync_quick_search_box(self) -> None:
+        """Show the Advanced Filter's text term in the box (set from the dialog,
+        a loaded filter file ...), unless the user is typing in it."""
+        if not hasattr(self, "_quick_search") or self._quick_search.hasFocus():
+            return
+        cfg = getattr(self, "_adv_filter_cfg", None) or {}
+        term = cfg.get("text_search")
+        term = term if isinstance(term, str) else ""
+        if self._quick_search.text() != term:
+            self._quick_search.blockSignals(True)
+            self._quick_search.setText(term)
+            self._quick_search.blockSignals(False)
+        self._quick_search_applied = term
+
+    def _on_quick_search_edited(self, text: str) -> None:
+        # Emptying the box (clear button, Esc, select-all + delete) removes the
+        # search at once; typing waits for Enter, since every pass over a big
+        # dataset is a visible wait.
+        if not text.strip() and self._quick_search_applied:
+            self._apply_quick_search()
+
+    def _has_loaded_events(self) -> bool:
+        return bool(self._events) or self._hw_model is not None
+
+    def _apply_quick_search(self) -> None:
+        text = self._quick_search.text().strip()
+        if text == self._quick_search_applied:
+            return
+        if not self._has_loaded_events():
+            if text:
+                self.statusBar().showMessage("Load events first \u2014 the search applies to parsed events", 5000)
+            return
+        from evtx_tool.core.filters import empty_filter
+        had_cfg = self._adv_filter_cfg is not None
+        if not text:
+            if self._quick_search_owned_cfg or not had_cfg:
+                # The Advanced Filter existed only for this search: remove it.
+                self._clear_advanced_filter()
+                return
+            cfg = dict(self._adv_filter_cfg)
+            cfg["text_search"] = ""
+        else:
+            cfg = dict(self._adv_filter_cfg) if had_cfg else empty_filter()
+            cfg["text_search"] = text
+            if not had_cfg:
+                self._quick_search_owned_cfg = True
+        logger.info("Quick search %s", "applied" if text else "removed")
+        self._say_after(f"Search “{text}”" if text else "Search removed")
+        self._apply_adv_cfg_to_all_views(cfg, busy_text="Searching\u2026")
+        self._quick_search_applied = text
+
+    def _apply_adv_cfg_to_all_views(self, cfg: dict, busy_text: str) -> None:
+        """Make *cfg* the Advanced Filter of All Events and every file tab
+        (not Around / pivot tabs, whose window is fixed), stacked on the
+        applied profiles -- the same views _clear_advanced_filter resets."""
+        cfg_effective = self._build_filter_config(base=cfg)
+        self._adv_filter_cfg = cfg
+        if self._hw_model is not None:
+            self._hw_model.apply_filter(cfg_effective)
+            for _fp, _st in self._file_tabs.items():
+                if not _is_pivot_tab_key(_fp) and getattr(_st, "model", None) is not None:
+                    try:
+                        _st.model.apply_filter(cfg_effective)
+                    except Exception:
+                        logger.exception("quick search: tab filter failed")
+        else:
+            with self._normal_filter_busy(busy_text):
+                self._proxy_model.set_advanced_filter(cfg_effective)
+                for _fp, _st in self._file_tabs.items():
+                    if not _is_pivot_tab_key(_fp) and getattr(_st, "proxy", None) is not None:
+                        _st.proxy.set_advanced_filter(cfg_effective)
+        self._update_adv_filter_badge()
+        self._update_count_label()
+
     def _update_adv_filter_badge(self) -> None:
         """Show/hide the 'Filter Active' badge and surface inverted/exclude modes.
 
@@ -13538,13 +14865,21 @@ class MainWindow(QMainWindow):
                 active = self._active_proxy.has_advanced_filter()
             except Exception:
                 pass
-        self._lbl_adv_filter_badge.setVisible(active)
-        self._btn_clear_adv.setVisible(active)
+        # A filter that is only the quick search is already shown (and cleared)
+        # by the search box itself; the badge would say the same thing twice.
+        only_search = active and getattr(self, "_quick_search_owned_cfg", False)
+        # An Around / chain tab keeps its fixed window: the Advanced Filter
+        # does not narrow it, so the badge would wrongly say events are hidden.
+        _tab = getattr(self, "_active_file_tab", None)
+        in_pivot = bool(_tab) and _is_pivot_tab_key(_tab)
+        self._lbl_adv_filter_badge.setVisible(active and not only_search and not in_pivot)
+        self._btn_clear_adv.setVisible(active and not only_search and not in_pivot)
+        self._sync_quick_search_box()
 
         if not active:
             # Reset to the default appearance — important when the user clears
             # an inverted filter and applies a non-inverted one in sequence.
-            self._lbl_adv_filter_badge.setText("⚡ Filter Active")
+            self._lbl_adv_filter_badge.setText("Filter active")
             self._lbl_adv_filter_badge.setToolTip("")
             return
 
@@ -13592,7 +14927,7 @@ class MainWindow(QMainWindow):
 
         if excludes:
             self._lbl_adv_filter_badge.setText(
-                f"⚡ Filter Active  ⚠ Exclude×{len(excludes)}"
+                f"Filter active \u00b7 exclude \u00d7{len(excludes)}"
             )
             tip_lines = ["Filter is INVERTED on the following layer(s):"]
             tip_lines.extend(f"  • {label}" for label in excludes)
@@ -13605,10 +14940,40 @@ class MainWindow(QMainWindow):
             )
             self._lbl_adv_filter_badge.setToolTip("\n".join(tip_lines))
         else:
-            self._lbl_adv_filter_badge.setText("⚡ Filter Active")
+            self._lbl_adv_filter_badge.setText("Filter active")
             self._lbl_adv_filter_badge.setToolTip("")
 
     def _update_count_label(self) -> None:
+        self._update_count_label_text()
+        self._refresh_view_cues()
+
+    def _refresh_view_cues(self) -> None:
+        """Make the view's state visible at a glance.
+
+        * Filtered: the count reads "shown / total" -- also emphasised, and
+          Clear All Filters looks active, so a narrowed view is never
+          mistaken for the whole collection.
+        * Juggernaut Mode: a chip beside the count (the window title said so,
+          but nothing in the window did once the status line moved on).
+        """
+        try:
+            filtered = "/" in self._lbl_count.text()
+            for w, prop in ((self._lbl_count, "filtered"), (self._btn_clear_all_filters, "active")):
+                if bool(w.property(prop)) != filtered:
+                    w.setProperty(prop, filtered)
+                    w.style().unpolish(w)
+                    w.style().polish(w)
+            self._btn_clear_all_filters.setToolTip(
+                ("The view is filtered. " if filtered else "") +
+                "Reset everything: text search, advanced filter, quick filters, "
+                "session filter, tactic filter, bookmark/IOC pivot")
+            self._lbl_mode_chip.setVisible(self._hw_model is not None)
+            if getattr(self, "_last_say", None):      # count arrived after the message
+                self._lbl_status.setText(f"{self._last_say}  —  {self._lbl_count.text()}")
+        except (AttributeError, RuntimeError):
+            pass
+
+    def _update_count_label_text(self) -> None:
         # Bug 5 fix: in Juggernaut Mode read count from hw_model
         if self._hw_model is not None:
             # Per-file tab: show that file's filtered row count, not the global total
@@ -13666,6 +15031,7 @@ class MainWindow(QMainWindow):
         proxy_row = indexes[0].row()
         ev = proxy.get_source_event(proxy_row)
         if ev:
+            self._remember_focus(ev, proxy, proxy_row)
             self._render_event_detail(ev)
             self._update_bookmark_button(ev)
 
@@ -13728,11 +15094,11 @@ class MainWindow(QMainWindow):
         # ── Quick Filter actions (ELE-style) ──────────────────────────────
         if col_key and cell_val:
             col_name = COLUMNS[col] if col < len(COLUMNS) else str(col)
-            act_include = menu.addAction(f"⚡ Quick Filter: {col_name} = {cell_val}")
+            act_include = menu.addAction(_menu_icon("filter"), f"Quick Filter: {col_name} = {cell_val}")
             act_include.triggered.connect(
                 lambda checked=False, k=col_key, v=cell_val: self._apply_quick_filter(k, v, True)
             )
-            act_exclude = menu.addAction(f"⚡ Quick Filter: {col_name} ≠ {cell_val}")
+            act_exclude = menu.addAction(_menu_icon("filter-x"), f"Quick Filter: {col_name} ≠ {cell_val}")
             act_exclude.triggered.connect(
                 lambda checked=False, k=col_key, v=cell_val: self._apply_quick_filter(k, v, False)
             )
@@ -13747,7 +15113,7 @@ class MainWindow(QMainWindow):
             _qf_list = proxy.get_quick_filters() if _has_qf else []
         if _has_qf:
             n = len(_qf_list)
-            act_clear = menu.addAction(f"✕ Clear Quick Filters ({n} active)")
+            act_clear = menu.addAction(_menu_icon("x"), f"Clear Quick Filters ({n} active)")
             act_clear.triggered.connect(lambda: self._clear_quick_filters())
             menu.addSeparator()
 
@@ -13756,15 +15122,21 @@ class MainWindow(QMainWindow):
         if rid is not None:
             bm_key = (ev.get("source_file", ""), int(rid))
             is_bm  = bm_key in self._bookmarked_keys
-            act_bm = menu.addAction("★ Remove Bookmark" if is_bm else "☆ Bookmark Event")
+            act_bm = menu.addAction(_menu_icon("star-filled" if is_bm else "star"),
+                                    "Remove Bookmark" if is_bm else "Bookmark Event")
             act_bm.triggered.connect(lambda checked=False, e=ev: self._bookmark_event(e))
             menu.addSeparator()
 
         self._add_around_menu(menu, ev, _jm_active if _jm_active is not None else proxy)
         menu.addSeparator()
 
-        act_copy = menu.addAction("Copy Row as Text")
+        act_copy = menu.addAction(_menu_icon("copy"), "Copy Row as Text")
+        act_copy.setShortcut(QKeySequence(QKeySequence.StandardKey.Copy))   # shown as a hint
         act_copy.triggered.connect(lambda: self._copy_event_row(ev))
+        menu.addSeparator()
+        act_cc = menu.addAction(_menu_icon("plus"), "Add Custom Column\u2026")
+        act_cc.setToolTip("A column from any field of this event (it lists them)")
+        act_cc.triggered.connect(lambda: self._add_custom_column_dialog())
 
         menu.exec(table.viewport().mapToGlobal(pos))
 
@@ -14130,7 +15502,7 @@ class MainWindow(QMainWindow):
                 anchor["timestamp"] = at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             self._open_around_tab(anchor, td, td, "host")
 
-        dlg = SystemActivityDialog(res, parent=self, around=_around, digits=get_ts_precision())
+        dlg = SystemActivityDialog(res, parent=self, around=_around, digits=get_ts_precision(), events=events)
         self._system_activity_dlg = dlg
         dlg.show()
         dlg.raise_()
@@ -15164,10 +16536,14 @@ class MainWindow(QMainWindow):
             )
 
         def _hr() -> str:
-            return f"<hr style='border:1px solid {C['border']};margin:4px 0'>"
+            # A blank line between sections.  Qt's rich text draws <hr> as a
+            # dark rule whatever its CSS says, and the rules made the pane
+            # read as a stack of boxes; space and the heading do the job.
+            return ""
 
         def _section(title: str) -> str:
-            return f"<span style='color:{C['text_dim']};font-size:8pt'>{title}</span>"
+            return (f"<span style='color:{C['text_dim']};font-size:8pt;"
+                    f"font-weight:bold;letter-spacing:1px'>{title}</span>")
 
         # ── Header (always shown in both Brief and Full modes) ─────────────────
         lines: list[str] = [
@@ -15198,20 +16574,23 @@ class MainWindow(QMainWindow):
             f"{_escape_html(os.path.basename(ev.get('source_file','')))}</span>",
         ]
 
+        # ── Description: what the event means, in both modes ──────────────────
+        # Full mode used to leave it out, so the default view showed raw
+        # fields with no plain-language reading of the event.
+        try:
+            from evtx_tool.analysis.event_descriptions import get_event_description
+            desc = get_event_description(ev)
+        except Exception:
+            desc = None
+        if desc:
+            lines.append(_hr())
+            lines.append(_section("DESCRIPTION"))
+            lines.append(
+                f"<span style='color:{C['text']}'>{_escape_html(desc)}</span>"
+            )
+
         # ── Brief mode stops here ──────────────────────────────────────────────
         if not self._detail_full_mode:
-            # Context-aware event description
-            try:
-                from evtx_tool.analysis.event_descriptions import get_event_description
-                desc = get_event_description(ev)
-            except Exception:
-                desc = None
-            if desc:
-                lines.append(_hr())
-                lines.append(_section("DESCRIPTION"))
-                lines.append(
-                    f"<span style='color:{C['text']}'>{_escape_html(desc)}</span>"
-                )
             html = (
                 f"<div style='font-family:Consolas,monospace;font-size:9pt;"
                 f"padding:8px;color:{C['text']};background:{C['bg_main']};'>"
@@ -15395,7 +16774,9 @@ class MainWindow(QMainWindow):
     def _on_detail_mode_toggled(self, brief: bool) -> None:
         """Called when the Brief/Full toggle button is clicked."""
         self._detail_full_mode = not brief
-        self._btn_detail_mode.setText("Brief" if not brief else "Full")
+        # The label stays "Brief"; the button is highlighted (checked) while
+        # Brief is on.  It used to switch to "Full" while Brief was on, so the
+        # highlighted button named the mode that was NOT shown.
         # Re-render the currently selected event (if any)
         try:
             sel = self._active_table.selectionModel().selectedRows()
@@ -15475,8 +16856,16 @@ class MainWindow(QMainWindow):
                     "ATT&CK mapping is not available in Juggernaut Mode — it tags events "
                     "held in memory, which this mode does not keep. Parse in Normal Mode "
                     "to map ATT&CK.")
+            elif atk is not None:
+                self._lbl_attack_summary.setText("No events matched an ATT&CK technique.")
+            elif self._analysis_running() and self._chk_attack.isChecked():
+                # Mid-parse it said "was not run. Tick ATT&CK Mapping", with
+                # the box ticked: the IOC and Chains tabs already said "appear".
+                self._lbl_attack_summary.setText(
+                    "ATT&CK techniques appear here when parsing and mapping finish.")
             else:
-                self._lbl_attack_summary.setText("No ATT&CK data — run with ATT&CK Mapping enabled.")
+                self._lbl_attack_summary.setText(
+                    "ATT&CK mapping was not run. Tick ATT&CK Mapping in the side panel and parse again.")
             return
 
         total = atk.get("total_tagged", 0)
@@ -15557,9 +16946,16 @@ class MainWindow(QMainWindow):
                     _st.iocs = _mine
                 iocs = _st.iocs
         if not iocs:
-            self._lbl_ioc_summary.setText("No IOC data — run with IOC Extraction enabled.")
+            if getattr(self, "_iocs_ran", False) and self._iocs is not None:
+                _m = "No IOCs found in these events."
+            elif self._analysis_running() and self._chk_ioc.isChecked():
+                _m = "IOCs appear here when parsing and extraction finish."
+            else:
+                _m = "IOC extraction was not run. Tick IOC Extraction in the side panel and parse again."
+            self._lbl_ioc_summary.setText(_m)
             self._btn_export_iocs.setEnabled(False)
             self._btn_threat_intel.setEnabled(False)
+            self._fill_ioc_cat_combo()
             return
 
         # Ordered display list (label, ioc_type_key)
@@ -15593,11 +16989,15 @@ class MainWindow(QMainWindow):
         self._btn_export_iocs.setEnabled(has_data)
         self._btn_threat_intel.setEnabled(has_data)
 
-        # Score-based row background colors
-        _COL_LOW    = QColor("#1a2a1a")   # dark green tint — score 0-30
-        _COL_MED    = QColor("#2a2200")   # dark yellow tint — score 31-60
-        _COL_HIGH   = QColor("#2a1010")   # dark red tint — score 61-100
+        # Score-based row tints.  They were near-black (#2a1010 / #2a2200)
+        # whatever the theme, so on the light theme the highest-scoring IOCs
+        # -- the ones that matter -- were dark text on a dark row.  Pale tints
+        # of the palette now (qc() gives the dark theme its own value).
+        _COL_MED    = qc("#fdf5dc")       # pale amber  — score 31-60
+        _COL_HIGH   = qc("#fde8e0")       # pale red    — score 61-100
         _COL_NORMAL = QColor(0, 0, 0, 0)  # transparent (alternating handled by widget)
+        _FG_HIGH    = QColor(COLORS["level_critical"])
+        _FG_MED     = QColor(COLORS["level_warning"])
 
         _bold = QFont()
         _bold.setBold(True)
@@ -15617,6 +17017,11 @@ class MainWindow(QMainWindow):
             _ioc_hdr.setStretchLastSection(False)
             for _ci, _cw in enumerate([280, 60, 140, 140, 55]):
                 tbl.setColumnWidth(_ci, _cw)
+            # The value is what matters; it takes the width left over, so the
+            # Score column is no longer pushed off a laptop-width pane.
+            _ioc_hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            _ioc_hdr.setMinimumSectionSize(48)
+            _IocColumnFitter.install(tbl)
             tbl.verticalHeader().setVisible(False)
             tbl.setShowGrid(False)
             tbl.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -15633,8 +17038,8 @@ class MainWindow(QMainWindow):
                 if isinstance(entry, dict):
                     value    = entry.get("value", "")
                     count    = entry.get("count", 1)
-                    first    = (entry.get("first_seen") or "")[:19]
-                    last     = (entry.get("last_seen")  or "")[:19]
+                    first    = entry.get("first_seen") or ""
+                    last     = entry.get("last_seen")  or ""
                     score    = entry.get("score", 0)
                     reasons  = entry.get("score_reasons") or []
                     ti       = entry.get("threat_intel")
@@ -15666,7 +17071,7 @@ class MainWindow(QMainWindow):
                 if ti_tooltip:
                     val_item.setToolTip(ti_tooltip)
                 if ti and ti.get("verdict") in ("malicious", "suspicious", "potentially_malicious"):
-                    val_item.setForeground(QColor("#e74c3c"))
+                    val_item.setForeground(_FG_HIGH)
                     val_item.setFont(_bold)
                 tbl.setItem(r, 0, val_item)
 
@@ -15675,9 +17080,13 @@ class MainWindow(QMainWindow):
                 cnt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 tbl.setItem(r, 1, cnt_item)
 
-                # First/Last seen
-                tbl.setItem(r, 2, QTableWidgetItem(first))
-                tbl.setItem(r, 3, QTableWidgetItem(last))
+                # First/Last seen: in the display zone and precision like the
+                # event table (they were raw UTC ISO strings); exact on hover.
+                for _ci, _raw in ((2, first), (3, last)):
+                    _it = QTableWidgetItem(apply_tz(_raw) if _raw else "")
+                    if _raw:
+                        _it.setToolTip(f"UTC {_raw}")
+                    tbl.setItem(r, _ci, _it)
 
                 # Score
                 score_item = QTableWidgetItem(str(score))
@@ -15685,11 +17094,12 @@ class MainWindow(QMainWindow):
                 if reasons:
                     score_item.setToolTip("\n".join(reasons))
                 if score >= 61:
-                    score_item.setForeground(QColor("#e74c3c"))
+                    score_item.setForeground(_FG_HIGH)
                     score_item.setFont(_bold)
                     row_color = _COL_HIGH
                 elif score >= 31:
-                    score_item.setForeground(QColor("#e67e22"))
+                    score_item.setForeground(_FG_MED)
+                    score_item.setFont(_bold)
                     row_color = _COL_MED
                 else:
                     row_color = _COL_NORMAL
@@ -15727,10 +17137,12 @@ class MainWindow(QMainWindow):
                 lambda pos, t=corr_tbl: self._corr_table_context_menu(pos, t)
             )
 
+            # Theme colours that read on every row background (the flat
+            # reds / greys were 2.6-3.6:1, under WCAG's 4.5:1).
             _CONF_COLOR = {
-                "high":   QColor("#e74c3c"),
-                "medium": QColor("#e67e22"),
-                "low":    QColor("#8b949e"),
+                "high":   QColor(COLORS["level_critical"]),
+                "medium": QColor(COLORS["level_warning"]),
+                "low":    QColor(COLORS["text_dim"]),
             }
             for r, pair in enumerate(pairs):
                 corr_tbl.setItem(r, 0, QTableWidgetItem(str(pair.get("value_a", ""))))
@@ -15741,11 +17153,13 @@ class MainWindow(QMainWindow):
                     f"{pair.get('shared_context', 0)}  [{pair.get('confidence', '')}]"
                 )
                 shared_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                conf_col = _CONF_COLOR.get(pair.get("confidence", ""), QColor("#8b949e"))
+                conf_col = _CONF_COLOR.get(pair.get("confidence", ""), QColor(COLORS["text_dim"]))
                 shared_item.setForeground(conf_col)
                 corr_tbl.setItem(r, 4, shared_item)
 
-            self._ioc_tabs.addTab(corr_tbl, f"🔗 Correlation ({len(pairs):,})")
+            from .icons import icon as _icon
+            self._ioc_tabs.addTab(corr_tbl, _icon("link", "text_dim", 14), f"Correlation ({len(pairs):,})")
+        self._fill_ioc_cat_combo()
 
     # ── IOC pivot / threat intel ──────────────────────────────────────────────
 
@@ -15824,9 +17238,9 @@ class MainWindow(QMainWindow):
             if cur_val.startswith(("⚠ ", "✓ ")):
                 cur_val = cur_val[2:]
 
-        act_pivot    = menu.addAction("🔍  Pivot to Events")
+        act_pivot    = menu.addAction(_menu_icon("search"), "Pivot to Events")
         act_pivot.setEnabled(bool(cur_val))
-        act_copy_tv  = menu.addAction("📋  Copy as type:value")
+        act_copy_tv  = menu.addAction(_menu_icon("copy"), "Copy as type:value")
         act_copy_tv.setEnabled(bool(cur_val and ioc_type))
         menu.addSeparator()
         act_copy     = menu.addAction("Copy Selected")
@@ -16193,13 +17607,32 @@ class MainWindow(QMainWindow):
             logger.exception("IOC export failed: %s", path)
             QMessageBox.critical(self, "Export Failed", str(exc))
 
+    def _analysis_running(self) -> bool:
+        """An analysis is running, or will once the parse in progress ends."""
+        r = getattr(self, "_analysis_runner", None)
+        try:
+            if r is not None and r.is_running():
+                return True
+            for wk in (getattr(self, "_worker", None), getattr(self, "_hw_worker", None)):
+                if wk is not None and wk.isRunning():
+                    return True
+        except RuntimeError:
+            pass
+        return False
+
     def _refresh_chains_tab(self) -> None:
         self._tree_chains.clear()
         chains = self._chains
         if not chains:
-            self._lbl_chains_summary.setText(
-                "No chains detected — run with Correlation Engine enabled."
-            )
+            # Say what actually happened: "run with Correlation Engine enabled"
+            # showed after it had run and simply found nothing.
+            if getattr(self, "_chains_ran", False):
+                msg = "No attack chains found in these events."
+            elif self._analysis_running() and self._chk_correlate.isChecked():
+                msg = "Chains appear here when parsing and correlation finish."
+            else:
+                msg = "Correlation was not run. Tick Correlation Engine in the side panel and parse again."
+            self._lbl_chains_summary.setText(msg)
             return
 
         crit = sum(1 for c in chains if c.get("severity") == "critical")
@@ -16227,36 +17660,64 @@ class MainWindow(QMainWindow):
                 chain.get("rule_name", ""),
                 ", ".join(chain.get("computers", [])) or "?",
                 str(len(chain.get("events", []))),
-                (chain.get("first_event_ts") or chain.get("first_ts", ""))[:19],
+                # Display zone and precision, as in the event table (raw ISO before).
+                apply_tz(chain.get("first_event_ts") or chain.get("first_ts", "") or ""),
             ])
+            _raw_first = chain.get("first_event_ts") or chain.get("first_ts", "")
+            if _raw_first:
+                top.setToolTip(4, f"UTC {_raw_first}")
+            top.setTextAlignment(3, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             top.setForeground(0, QColor(color))
             top.setForeground(1, QColor(color))
             top.setData(0, Qt.ItemDataRole.UserRole, _ChainWrapper(chain))
 
             desc = chain.get("description", "")
             if desc:
+                # The description runs across the whole row (it was squeezed
+                # into the narrow Severity column).
                 desc_item = QTreeWidgetItem([desc, "", "", "", ""])
                 desc_item.setForeground(0, QColor(COLORS["text_dim"]))
+                desc_item.setToolTip(0, desc)
                 top.addChild(desc_item)
 
-            for ev in (chain.get("events") or []):   # every event (it showed 10)
-                # events are full event dicts, not plain IDs
-                if isinstance(ev, dict):
-                    eid = ev.get("event_id", "?")
-                    ts  = str(ev.get("timestamp", ""))[:19]
-                    comp = ev.get("computer", "")
-                else:
-                    eid, ts, comp = ev, "", ""
-                ev_item = QTreeWidgetItem([
-                    f"EID {eid}", "", comp, ts, ""
-                ])
-                ev_item.setForeground(0, QColor(COLORS["text_dim"]))
-                top.addChild(ev_item)
+            if chain.get("events"):
+                top.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
+            top.setData(1, Qt.ItemDataRole.UserRole, False)      # event rows not built yet
 
             self._tree_chains.addTopLevelItem(top)
+            if desc:
+                top.child(0).setFirstColumnSpanned(True)   # needs the row in the tree
 
-        self._tree_chains.resizeColumnToContents(0)
-        self._tree_chains.resizeColumnToContents(3)
+        for _c in (0, 2, 3, 4):
+            self._tree_chains.resizeColumnToContents(_c)
+
+    def _fill_chain_events(self, top: QTreeWidgetItem) -> None:
+        """Build a chain's event rows the first time it is expanded."""
+        if top.parent() is not None or top.data(1, Qt.ItemDataRole.UserRole) is not False:
+            return
+        top.setData(1, Qt.ItemDataRole.UserRole, True)
+        wrap = top.data(0, Qt.ItemDataRole.UserRole)
+        chain = getattr(wrap, "data", None) or {}
+        for ev in (chain.get("events") or []):   # every event (it showed 10)
+            # events are full event dicts, not plain IDs
+            if isinstance(ev, dict):
+                eid = ev.get("event_id", "?")
+                raw_ts = str(ev.get("timestamp", "") or "")
+                comp = ev.get("computer", "")
+                rec = ev.get("event_record_id") or ev.get("record_id")
+            else:
+                eid, raw_ts, comp, rec = ev, "", "", None
+            # Each value under its own heading: the time used to sit under
+            # Events and the event ID under Severity.
+            ev_item = QTreeWidgetItem([
+                "", f"Event {eid}" + (f"  ·  record {rec}" if rec not in (None, "") else ""),
+                comp, "", apply_tz(raw_ts) if raw_ts else "",
+            ])
+            for _c in (1, 2, 4):
+                ev_item.setForeground(_c, QColor(COLORS["text_dim"]))
+            if raw_ts:
+                ev_item.setToolTip(4, f"UTC {raw_ts}")
+            top.addChild(ev_item)
 
     def _on_chain_double_click(self, item: QTreeWidgetItem, col: int) -> None:
         """Filter the events table to show only events matching the chain's event IDs."""
@@ -16309,7 +17770,8 @@ class MainWindow(QMainWindow):
             if n == 1
             else f"View Events from {n} Chains in New Tab"
         )
-        act_view = menu.addAction(f"\u26d3  {view_label}")
+        from .icons import icon as _icon
+        act_view = menu.addAction(_icon("link"), view_label)
         act_view.triggered.connect(lambda: self._open_chain_events_tab(selected))
 
         menu.exec(self._tree_chains.viewport().mapToGlobal(pos))
@@ -16393,6 +17855,7 @@ class MainWindow(QMainWindow):
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.selectionModel().selectionChanged.connect(self._on_row_selected)
 
+        self._apply_default_col_widths(table)       # the model swap reset the header
         self._apply_col_visibility(table, self._visible_cols)
 
         proxy.setDynamicSortFilter(True)
@@ -16415,7 +17878,7 @@ class MainWindow(QMainWindow):
         _btn_close = QPushButton("\u00d7")
         _btn_close.setFixedSize(16, 16)
         _btn_close.setStyleSheet(
-            "QPushButton { color: #7a5c1e; font-size: 12pt; font-weight: bold;"
+            "QPushButton { color: #73571c; font-size: 12pt; font-weight: bold;"
             " border: none; background: transparent; padding: 0; margin: 0; }"
             "QPushButton:hover { color: #a01800; background: #f5e0dc; border-radius: 2px; }"
         )
@@ -16474,7 +17937,7 @@ class MainWindow(QMainWindow):
         _tf = tree_item.font(0)
         _tf.setBold(True)
         tree_item.setFont(0, _tf)
-        self._file_tree.addTopLevelItem(tree_item)
+        self._add_tree_entry(tree_item)
 
         # Show the file-tree panel if it is hidden (e.g. merged mode)
         if not self._file_tree_panel.isVisible():
@@ -16518,14 +17981,14 @@ class MainWindow(QMainWindow):
         return names, group.display_name.strip() or "(unknown)", lines
 
     def _add_around_menu(self, menu, ev: dict, source) -> None:
-        """Add "⏱ Around this event" to a table's context menu.
+        """Add "Around this event" to a table's context menu.
 
         *source* is the clicked table's proxy (Normal) or ArrowTableModel (JM):
         what "only events that pass the current filters" snapshots.
         """
         from evtx_tool.core.time_window import PRESETS, parse_event_ts
         menu.setToolTipsVisible(True)
-        sub = menu.addMenu("⏱ Around this event")
+        sub = menu.addMenu(_menu_icon("clock"), "Around this event")
         if parse_event_ts(ev.get("timestamp")) is None:
             sub.menuAction().setEnabled(False)
             sub.menuAction().setToolTip("This event has no readable timestamp.")
@@ -16672,8 +18135,10 @@ class MainWindow(QMainWindow):
             _rid = None
         anchor_key = (str(anchor.get("source_file") or ""), _rid)
         a_disp = apply_tz(anchor.get("timestamp"))
+        # The anchor's date too: a collection spans months, and "17:53:08" alone
+        # named no day (the table's own format, so it reads the same).
         label = (f"⏱ {host_label} {self._around_window_label(before, after)} "
-                 f"{a_disp[11:19]}")
+                 f"{a_disp[:19]}")
         if filtered_from is None:
             source_line = "All loaded events"
         else:
@@ -16696,12 +18161,18 @@ class MainWindow(QMainWindow):
         tab_key = f"__around__{_uuid.uuid4().hex}"
         # A snapshot of a proxy over event dicts (Normal mode, or a chain tab
         # in JM) is built from those dicts; only Arrow sources go the JM way.
+        _status_before = getattr(self, "_status_seq", 0)
         if self._hw_model is not None and not isinstance(filtered_from, EventFilterProxyModel):
             self._open_around_tab_jm(tab_key, label, head, anchor_key, a_dt, start, end,
                                      names, filtered_from)
         else:
             self._open_around_tab_normal(tab_key, label, head, anchor_key, a_dt, start, end,
                                          names, filtered_from)
+        # Unless opening it said something that matters more ("Anchor event
+        # is not in this tab; nearest event selected").
+        if getattr(self, "_status_seq", 0) == _status_before:
+            self._say_after(f"Around this event: {self._around_window_label(before, after)} "
+                            f"of {a_disp[:19]} on {host_label}")
 
     @staticmethod
     def _around_counts_lines(n: int, no_ts: int, snapshot: bool) -> list[str]:
@@ -16714,16 +18185,12 @@ class MainWindow(QMainWindow):
 
     def _add_pivot_tab(self, tab_key: str, label: str, tooltip: str, table, state) -> int:
         """Add a pivot tab (with close button and file-tree entry) and show it."""
+        # Its model was swapped in while loading, which reset the header: the
+        # Around tab showed every column at 100 px (Timestamp cut to "17:4…").
+        self._apply_default_col_widths(table)
         tab_idx = self._events_tab_widget.addTab(table, label)
         self._events_tab_widget.setTabToolTip(tab_idx, tooltip)
-        _btn_close = QPushButton("×")
-        _btn_close.setFixedSize(16, 16)
-        _btn_close.setStyleSheet(
-            "QPushButton { color: #7a5c1e; font-size: 12pt; font-weight: bold;"
-            " border: none; background: transparent; padding: 0; margin: 0; }"
-            "QPushButton:hover { color: #a01800; background: #f5e0dc; border-radius: 2px; }"
-        )
-        _btn_close.clicked.connect(
+        _btn_close = self._make_tab_close_button(
             lambda _=False, t=table: self._on_file_tab_close_requested(
                 self._events_tab_widget.indexOf(t)
             )
@@ -16739,7 +18206,7 @@ class MainWindow(QMainWindow):
         _tf = tree_item.font(0)
         _tf.setBold(True)
         tree_item.setFont(0, _tf)
-        self._file_tree.addTopLevelItem(tree_item)
+        self._add_tree_entry(tree_item)
         if not self._file_tree_panel.isVisible():
             self._file_tree_panel.setVisible(True)
             self._btn_tree_toggle.setEnabled(True)
@@ -17378,67 +18845,112 @@ class MainWindow(QMainWindow):
     # LEFT PANEL COLLAPSE / EXPAND
     # =========================================================================
 
-    def _toggle_left_panel(self) -> None:
+    # Below this window width the side panel folds away once events are
+    # loaded: on a laptop screen the table needs the room more than the
+    # set-up controls, which are done with by then.  The fold is not saved.
+    # Fold after a parse only when the events really need the room: 1500 folded
+    # it on every non-maximised window of a 1536 px laptop screen.
+    _FOLD_PANEL_BELOW_WIDTH = 1240
+    _RAIL_WIDTH = 24                # the toggle strip; all that shows when folded
+    _PANEL_OPEN_MIN_WIDTH = 276 + _RAIL_WIDTH
+
+    def _fold_panel_for_room(self) -> None:
+        if self._panel_open and self.width() < self._FOLD_PANEL_BELOW_WIDTH:
+            self._toggle_left_panel(persist=False)
+            self.statusBar().showMessage(
+                "Side panel folded to give the events more room \u2014 "
+                "the arrow at the left edge brings it back", 8000)
+
+    def _sync_panel_toggle_icon(self) -> None:
+        from .icons import set_icon
+        set_icon(self._btn_panel_toggle,
+                 "chevron-left" if self._panel_open else "chevron-right",
+                 "text_dim" if self._panel_open else "accent", size=12 if self._panel_open else 16)
+        self._btn_panel_toggle.setToolTip(
+            "Hide the side panel" if self._panel_open
+            else "Show the side panel (files, profiles, Parse)")
+
+    def _toggle_left_panel(self, persist: bool = True) -> None:
         """
         Animate the WRAPPER's maximumWidth so the QSplitter redistributes
         freed space to the right panel automatically.
         Collapse target = 16 px (button only). Expand target = stored width.
-        State is persisted via QSettings so it survives app restarts.
+        State is persisted via QSettings so it survives app restarts, unless
+        *persist* is False (the automatic fold, see _fold_panel_for_room).
         """
         wrapper = self._left_panel_wrapper
 
         if self._panel_open:
             # ── Collapsing ────────────────────────────────────────────────
             # Snapshot the full wrapper width so we can restore it later
-            self._panel_stored_width = max(wrapper.width(), 220)
+            self._panel_stored_width = max(wrapper.width(), self._PANEL_OPEN_MIN_WIDTH)
             start_val = self._panel_stored_width
-            end_val   = 16   # collapse to button-only width
-            self._btn_panel_toggle.setText("▶")
+            end_val   = self._RAIL_WIDTH   # collapse to the toggle strip
+            wrapper.setMinimumWidth(self._RAIL_WIDTH)
         else:
             # ── Expanding ─────────────────────────────────────────────────
-            start_val = 16
+            start_val = self._RAIL_WIDTH
             end_val   = self._panel_stored_width
-            self._btn_panel_toggle.setText("◀")
+            self._left_panel_scroll.setVisible(True)    # contents back before it slides open
 
         self._panel_open = not self._panel_open
+        self._sync_panel_toggle_icon()
 
         anim = QPropertyAnimation(wrapper, b"maximumWidth")
-        anim.setDuration(260)
-        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        anim.setDuration(220)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         anim.setStartValue(start_val)
         anim.setEndValue(end_val)
 
         if self._panel_open:
             # After expanding, lift the hard cap so the splitter handle
             # remains freely draggable to resize the panel
-            anim.finished.connect(
-                lambda: wrapper.setMaximumWidth(16_777_215)
-            )
+            def _opened(w=wrapper):
+                w.setMaximumWidth(16_777_215)
+                w.setMinimumWidth(self._PANEL_OPEN_MIN_WIDTH)
+            anim.finished.connect(_opened)
+        else:
+            # Folded, the strip belongs to the arrow alone: the panel's own
+            # controls were squeezed into it, poked through at the edge and
+            # pushed the arrow half out of sight.
+            def _folded():
+                if not self._panel_open:
+                    self._left_panel_scroll.setVisible(False)
+            anim.finished.connect(_folded)
 
         anim.start()
         self._panel_anim = anim  # keep reference alive (prevent GC)
 
-        # Persist preference
-        QSettings("EventHawk", "GUI").setValue(
-            "left_panel_open", self._panel_open
-        )
+        if persist:
+            QSettings("EventHawk", "GUI").setValue(
+                "left_panel_open", self._panel_open
+            )
 
     def _restore_panel_state(self) -> None:
         """
         Called once, ~50 ms after the window is shown, to restore the
         panel's open/collapsed state that was saved in the last session.
         Applies instantly (no animation) so the user doesn't see a flash.
+        Also sizes the detail / analysis strip to the window: 300 px of a
+        short laptop screen left the events table about a dozen rows.
         """
+        rs = getattr(self, "_right_splitter", None)
+        if rs is not None and rs.height() > 0 and not getattr(self, "_right_split_restored", False):
+            total = sum(rs.sizes()) or rs.height()
+            bottom = min(320, max(200, int(total * 0.38)))
+            rs.setSizes([total - bottom, bottom])
         was_open = QSettings("EventHawk", "GUI").value(
             "left_panel_open", True, type=bool
         )
         if not was_open:
             wrapper = self._left_panel_wrapper
             # Snapshot the settled geometry before collapsing
-            self._panel_stored_width = max(wrapper.width(), 240)
-            wrapper.setMaximumWidth(16)   # collapse to button-only width instantly
-            self._btn_panel_toggle.setText("▶")
+            self._panel_stored_width = max(wrapper.width(), self._PANEL_OPEN_MIN_WIDTH)
+            wrapper.setMinimumWidth(self._RAIL_WIDTH)
+            wrapper.setMaximumWidth(self._RAIL_WIDTH)   # collapse to the toggle strip instantly
+            self._left_panel_scroll.setVisible(False)
             self._panel_open = False
+            self._sync_panel_toggle_icon()
 
     # =========================================================================
     # POWERSHELL FORENSIC EXTRACTION
@@ -17600,12 +19112,16 @@ class MainWindow(QMainWindow):
     def _on_clear_files(self) -> None:
         """✕ button — clear the file/directory list AND discard parsed results."""
         self._file_list.clear()
+        self._carry_specs = []        # a deliberate clear: nothing carries over
         self._clear_results()
 
     def _clear_results(self) -> None:
-        # Fix E: cleanup Juggernaut (DuckDB) state and reset table model
-        if self._hw_model is not None:
-            # Reset table back to normal-mode proxy before cleanup
+        # Fix E: cleanup Juggernaut (DuckDB) state and reset table model.
+        # Checked on the table itself, not on _hw_model: the normal parse path
+        # runs _cleanup_juggernaut() first, which drops _hw_model but left the
+        # table showing the released Juggernaut model -- numbered blank rows
+        # under "0 events" for the whole re-parse.
+        if self._table.model() is not self._proxy_model:
             self._table.setModel(self._proxy_model)
             self._table.selectionModel().selectionChanged.connect(self._on_row_selected)
         self._cleanup_juggernaut()
@@ -17622,6 +19138,7 @@ class MainWindow(QMainWindow):
         self._attack_summary     = None
         self._iocs               = None
         self._chains             = []
+        self._chains_ran = self._iocs_ran = False
 
         # ── Per-file state cleanup ────────────────────────────────────────
         # Close and destroy all open file tabs
@@ -17673,12 +19190,13 @@ class MainWindow(QMainWindow):
         # newly loaded dataset would silently re-apply the previous session's
         # advanced filter to it.  Also refresh the badge so it hides cleanly.
         self._adv_filter_cfg = None
+        self._reset_quick_search_box()
         self._applied_profiles = []
         # Clear bookmarks — events no longer exist after a reset
         self._bookmarks.clear()
         self._bookmarked_keys.clear()
         self._refresh_bookmarks_tab()
-        self._btn_bookmark_event.setText("☆ Bookmark")
+        self._btn_bookmark_event.setText("Bookmark")
         self._btn_bookmark_event.setChecked(False)
         self._update_bookmark_highlights()
         self._clear_tactic_filter()
@@ -17686,9 +19204,9 @@ class MainWindow(QMainWindow):
         self._last_detail_key = None  # invalidate render cache on parse reset
         self._lbl_count.setText("0 events")
         self._progress_bar.setValue(0)
-        self._lbl_matched.setText("Events: —")
-        self._lbl_speed.setText("Speed: —")
-        self._lbl_elapsed.setText("Time: —")
+        self._lbl_matched.setText("")
+        self._lbl_speed.setText("")
+        self._lbl_elapsed.setText("")
         self._btn_export.setEnabled(False)
         self._act_export.setEnabled(False)
         if self._file_list.count() == 0:
@@ -17821,6 +19339,8 @@ class MainWindow(QMainWindow):
             self._tz_specific,
             self._tz_custom_offset_min,
         )
+        self._refresh_bookmarks_tab()       # its times follow the display zone too
+        self._refresh_iocs_tab()            # First / Last Seen too
 
         # Drop the cached column-popup values.  "timestamp_date" is the one
         # column whose values depend on the display timezone, and neither cache
@@ -17933,6 +19453,7 @@ class MainWindow(QMainWindow):
             QSettings("EventHawk", "GUI").setValue("ts_precision_digits", int(digits))
         except Exception:
             pass
+        self._refresh_bookmarks_tab()
 
         # Refresh merged model
         try:
@@ -18016,7 +19537,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu { background:#ede8df; color:#1e1a14; border:1px solid #c4bba8; }"
-            "QMenu::item:selected { background:#7a5c1e; color:#ffffff; }"
+            "QMenu::item:selected { background:#73571c; color:#fffdf8; }"
             "QMenu::separator { height:1px; background:#c4bba8; margin:2px 8px; }"
         )
 
@@ -18293,7 +19814,49 @@ class MainWindow(QMainWindow):
     # CLOSE
     # =========================================================================
 
+    def _on_grid_lines(self, on: bool) -> None:
+        set_grid_lines(QApplication.instance(), on)
+        if self._persist_layout_enabled():
+            QSettings("EventHawk", "GUI").setValue("grid_lines", bool(on))
+
+    @staticmethod
+    def _persist_layout_enabled() -> bool:
+        # Not on the headless test platforms: test windows must neither read
+        # nor overwrite the user's saved layout and recent list.
+        return QApplication.platformName() not in ("offscreen", "minimal")
+
+    def _save_layout(self) -> None:
+        if not self._persist_layout_enabled():
+            return
+        st = QSettings("EventHawk", "GUI")
+        st.setValue("main_geometry", self.saveGeometry())
+        rs = getattr(self, "_right_splitter", None)
+        if rs is not None:
+            st.setValue("main_right_split", rs.saveState())
+        bs = getattr(self, "_bottom_split", None)
+        if bs is not None:
+            st.setValue("main_bottom_split", bs.saveState())
+
+    def _restore_layout(self) -> bool:
+        """Window geometry and the table/detail split from the last session.
+        True when a saved geometry was applied."""
+        if not self._persist_layout_enabled():
+            return False
+        st = QSettings("EventHawk", "GUI")
+        geo = st.value("main_geometry")
+        ok = bool(geo) and self.restoreGeometry(geo)
+        split = st.value("main_right_split")
+        rs = getattr(self, "_right_splitter", None)
+        if split and rs is not None:
+            self._right_split_restored = bool(rs.restoreState(split))
+        bsplit = st.value("main_bottom_split")
+        bs = getattr(self, "_bottom_split", None)
+        if bsplit and bs is not None:
+            bs.restoreState(bsplit)
+        return ok
+
     def closeEvent(self, event) -> None:
+        self._save_layout()
         # Stop the export worker FIRST: it writes to a file, so it must be told
         # to stop (and discard its partial output) before anything it reads is
         # torn down.  Without this, closing mid-export destroys a running
@@ -18397,19 +19960,23 @@ class MainWindow(QMainWindow):
         layout.setSpacing(4)
 
         btn_row = QHBoxLayout()
-        self._btn_filter_bookmarks = QPushButton("⚡ Filter to Bookmarks")
+        from .icons import set_icon as _set_icon
+        self._btn_filter_bookmarks = QPushButton("Filter to Bookmarks")
+        _set_icon(self._btn_filter_bookmarks, "filter")
         self._btn_filter_bookmarks.setToolTip(
             "Filter the main event table to show only bookmarked events"
         )
         self._btn_filter_bookmarks.setEnabled(False)
         self._btn_filter_bookmarks.clicked.connect(self._filter_to_bookmarks)
 
-        self._btn_clear_bookmarks = QPushButton("✕ Clear All")
+        self._btn_clear_bookmarks = QPushButton("Clear All")
+        _set_icon(self._btn_clear_bookmarks, "x")
         self._btn_clear_bookmarks.setToolTip("Remove all bookmarks")
         self._btn_clear_bookmarks.setEnabled(False)
         self._btn_clear_bookmarks.clicked.connect(self._clear_all_bookmarks)
 
-        self._btn_export_bookmarks = QPushButton("⬇ Export")
+        self._btn_export_bookmarks = QPushButton("Export")
+        _set_icon(self._btn_export_bookmarks, "download")
         self._btn_export_bookmarks.setToolTip("Export bookmarks to CSV or JSON")
         self._btn_export_bookmarks.setEnabled(False)
         self._btn_export_bookmarks.clicked.connect(self._export_bookmarks)
@@ -18424,15 +19991,20 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self._lbl_bm_count)
         layout.addLayout(btn_row)
 
-        self._tbl_bookmarks = QTableWidget(0, 5)
-        self._tbl_bookmarks.setHorizontalHeaderLabels(
-            ["Record ID", "Event ID", "Timestamp", "Computer", "Source File"]
-        )
+        # In time order, in the display time zone like the event table (it
+        # showed raw UTC ISO strings beside the table's local times), with what
+        # each event is and a short log name (full path as tooltip).
+        self._tbl_bookmarks = QTableWidget(0, len(self._BM_COLS))
+        self._tbl_bookmarks.setHorizontalHeaderLabels(list(self._BM_COLS))
         _bm_hdr = self._tbl_bookmarks.horizontalHeader()
         _bm_hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         _bm_hdr.setStretchLastSection(False)
-        for _ci, _cw in enumerate([80, 70, 140, 120, 260]):
+        for _ci, _cw in enumerate([132, 60, 300, 80, 130, 64]):
             self._tbl_bookmarks.setColumnWidth(_ci, _cw)
+        _bm_hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._tbl_bookmarks.verticalHeader().setVisible(False)
+        self._tbl_bookmarks.verticalHeader().setDefaultSectionSize(24)
+        self._tbl_bookmarks.setWordWrap(False)
         self._tbl_bookmarks.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
@@ -18444,19 +20016,34 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._tbl_bookmarks)
         return w
 
+    _BM_COLS = ("Time", "Event ID", "Event", "Computer", "Log", "Record")
+    _BM_KEY_ROLE = Qt.ItemDataRole.UserRole + 7
+
     def _refresh_bookmarks_tab(self) -> None:
-        """Repopulate the bookmarks table from self._bookmarks."""
+        """Repopulate the bookmarks table from self._bookmarks (time order)."""
         from PySide6.QtWidgets import QTableWidgetItem
         tbl = self._tbl_bookmarks
         tbl.setRowCount(0)
-        for bm in self._bookmarks:
+        info = getattr(self, "_bookmark_info", {})
+        for bm in sorted(self._bookmarks, key=lambda b: str(b.get("timestamp", ""))):
             row = tbl.rowCount()
             tbl.insertRow(row)
-            tbl.setItem(row, 0, QTableWidgetItem(str(bm.get("record_id", ""))))
-            tbl.setItem(row, 1, QTableWidgetItem(str(bm.get("event_id", ""))))
-            tbl.setItem(row, 2, QTableWidgetItem(str(bm.get("timestamp", ""))))
-            tbl.setItem(row, 3, QTableWidgetItem(str(bm.get("computer", ""))))
-            tbl.setItem(row, 4, QTableWidgetItem(str(bm.get("source_file", ""))))
+            sf = str(bm.get("source_file", ""))
+            key = (sf, bm.get("record_id"))
+            extra = info.get(key, {})
+            ts = apply_tz(bm.get("timestamp", "")) if bm.get("timestamp") else ""
+            cells = [ts, str(bm.get("event_id", "")), extra.get("summary", ""),
+                     str(bm.get("computer", "")), _short_log_name(sf) if sf else "",
+                     str(bm.get("record_id", ""))]
+            for c, text in enumerate(cells):
+                it = QTableWidgetItem(text)
+                if c in (1, 5):
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                tbl.setItem(row, c, it)
+            tbl.item(row, 0).setData(self._BM_KEY_ROLE, key)
+            tbl.item(row, 0).setToolTip(str(bm.get("timestamp", "")) + "  (as recorded, UTC)")
+            tbl.item(row, 2).setToolTip(extra.get("summary", ""))
+            tbl.item(row, 4).setToolTip(sf)
         n = len(self._bookmarks)
         self._lbl_bm_count.setText(
             f"{n} bookmark{'s' if n != 1 else ''}" if n else "No bookmarks"
@@ -18483,6 +20070,16 @@ class MainWindow(QMainWindow):
             ]
         else:
             self._bookmarked_keys.add(key)
+            try:
+                from evtx_tool.analysis.event_descriptions import get_event_description
+                _summary = get_event_description(ev) or ""
+            except Exception:
+                _summary = ""
+            if not _summary:
+                _summary = f"{ev.get('provider', '')} {ev.get('channel', '')}".strip()
+            if not hasattr(self, "_bookmark_info"):
+                self._bookmark_info = {}
+            self._bookmark_info[key] = {"summary": _summary.replace("\n", " ")}
             self._bookmarks.append({
                 "record_id":   rid,
                 "event_id":    ev.get("event_id", ""),
@@ -18513,17 +20110,20 @@ class MainWindow(QMainWindow):
         if rid is not None:
             key = (ev.get("source_file", ""), int(rid))
             if key in self._bookmarked_keys:
-                self._btn_bookmark_event.setText("★ Bookmarked")
+                self._btn_bookmark_event.setText("Bookmarked")
                 self._btn_bookmark_event.setChecked(True)
                 return
-        self._btn_bookmark_event.setText("☆ Bookmark")
+        self._btn_bookmark_event.setText("Bookmark")
         self._btn_bookmark_event.setChecked(False)
 
-    def _on_bookmark_toggle(self) -> None:
-        """Clicked handler for _btn_bookmark_event — toggle bookmark on the selected event."""
-        indexes = self._active_table.selectionModel().selectedRows()
+    def _selected_event(self) -> dict | None:
+        """The event selected in the tab in front, or None."""
+        try:
+            indexes = self._active_table.selectionModel().selectedRows()
+        except (AttributeError, RuntimeError):
+            return None
         if not indexes:
-            return
+            return None
         # The row index belongs to the tab in front: its own Arrow model (main,
         # per-file or around tab), or a proxy over event dicts (Normal mode,
         # and chain tabs in either mode).  Reading it from the merged model
@@ -18531,11 +20131,21 @@ class MainWindow(QMainWindow):
         from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
         _am = self._active_table.model()
         if isinstance(_am, _ATM):
-            ev = _am.get_event(indexes[0].row())
-        else:
-            ev = self._active_proxy.get_source_event(indexes[0].row())
+            return _am.get_event(indexes[0].row())
+        return self._active_proxy.get_source_event(indexes[0].row())
+
+    def _on_bookmark_toggle(self) -> None:
+        """Clicked handler for _btn_bookmark_event — toggle bookmark on the selected event."""
+        ev = self._selected_event()
         if ev:
             self._bookmark_event(ev)
+
+    def _copy_selected_event(self) -> None:
+        """Ctrl+C in an event table: the selected event's row as text."""
+        ev = self._selected_event()
+        if ev:
+            self._copy_event_row(ev)
+            self.statusBar().showMessage("Event copied to the clipboard", 3000)
 
     def _filter_to_bookmarks(self) -> None:
         """Filter the main event table to show only bookmarked events."""
@@ -18603,7 +20213,7 @@ class MainWindow(QMainWindow):
         self._bookmarks.clear()
         self._bookmarked_keys.clear()
         self._refresh_bookmarks_tab()
-        self._btn_bookmark_event.setText("☆ Bookmark")
+        self._btn_bookmark_event.setText("Bookmark")
         self._btn_bookmark_event.setChecked(False)
         # Clear any active bookmark filter so the table shows all events again
         if self._hw_model is not None:
@@ -18623,14 +20233,25 @@ class MainWindow(QMainWindow):
         item = self._tbl_bookmarks.item(row, 0)
         if not item:
             return
+        key = item.data(self._BM_KEY_ROLE)
+        if key:
+            sf, rid = key[0], key[1]
+        else:
+            # A row written without the key: record id in column 0, source
+            # file in column 4 (the table's older layout).
+            try:
+                rid = int(item.text())
+            except ValueError:
+                return
+            sf_item = self._tbl_bookmarks.item(row, 4)
+            sf = sf_item.text() if sf_item else ""
         try:
-            rid = int(item.text())
-        except ValueError:
+            rid = int(rid)
+        except (TypeError, ValueError):
             return
         # (source_file, record_id): a bare id also matched the event with the
         # same number in every other log loaded.
-        sf_item = self._tbl_bookmarks.item(row, 4)
-        key_set = frozenset([(sf_item.text() if sf_item else "", rid)])
+        key_set = frozenset([(sf, rid)])
         self._show_main_table()
         if self._hw_model is not None:
             self._hw_model.apply_bookmark_filter(key_set)

@@ -295,6 +295,45 @@ _RDP_LOCAL_DESC: dict[int, str] = {
          "server (idle timeout, administrator disconnect, etc.).",
 }
 
+# The same LocalSessionManager events for a session at the machine itself:
+# Windows runs console sessions through Remote Desktop Services too, and logs
+# them with source Address 'LOCAL'.  Describing them as "Remote Desktop
+# session logon" read as remote access to an analyst who never used RDP.
+_RDP_LOCAL_CONSOLE_DESC: dict[int, str] = {
+    21:  "Session logon at the machine itself (console). Windows logs local "
+         "sessions here too; Address 'LOCAL' means this was NOT a remote "
+         "connection.",
+    22:  "Shell started for a local (console) session — the user profile and "
+         "desktop are being loaded. Not a remote connection.",
+    24:  "Local (console) session disconnected — for example a user switch, a "
+         "lock or sleep. Address 'LOCAL': not a remote connection.",
+    25:  "Local (console) session reconnected — for example after an unlock "
+         "or wake. Address 'LOCAL': not a remote connection.",
+}
+
+# LocalSessionManager events that name no source address: the same events are
+# written for console and Remote Desktop sessions, so on their own they say
+# nothing about remote access.
+_RDP_NO_SOURCE_DESC: dict[int, str] = {
+    23:  "Session logoff. Logged by the Terminal Services session manager for "
+         "console and Remote Desktop sessions alike; this event names no "
+         "source address.",
+    39:  "Session X was disconnected by session Y (for example fast user "
+         "switching, or a new logon taking over). Logged for console and "
+         "Remote Desktop sessions alike.",
+    40:  "Session disconnected or ended, with a reason code. Logged for "
+         "console and Remote Desktop sessions alike; this event names no "
+         "source address.",
+}
+
+
+def _unwrap_userdata(ed: dict) -> dict:
+    """LocalSessionManager keeps its fields under UserData/EventXML; the
+    plain field lookups saw none of them (no user, no Address)."""
+    inner = ed.get("EventXML") if isinstance(ed, dict) else None
+    return inner if isinstance(inner, dict) else ed
+
+
 # RemoteConnectionManager/Operational
 _RDP_REMOTE_DESC: dict[int, str] = {
     65:   "Remote Desktop TCP connection accepted. A client successfully "
@@ -834,11 +873,17 @@ def get_event_description(ev: dict) -> str | None:
 
     # ── RDP / Terminal Services (local session manager) ───────────────────
     if _is_rdp_local(ev):
-        desc = _RDP_LOCAL_DESC.get(eid)
+        fields = _unwrap_userdata(ed)
+        user = _f(fields, "User", "UserName")
+        addr = _f(fields, "Address", "ClientAddress")
+        sid  = _f(fields, "SessionID", "Session")
+        if addr.upper() == "LOCAL" and eid in _RDP_LOCAL_CONSOLE_DESC:
+            desc = _RDP_LOCAL_CONSOLE_DESC[eid]
+        elif not addr and eid in _RDP_NO_SOURCE_DESC:
+            desc = _RDP_NO_SOURCE_DESC[eid]
+        else:
+            desc = _RDP_LOCAL_DESC.get(eid)
         if desc:
-            user = _f(ed, "User", "UserName")
-            addr = _f(ed, "Address", "ClientAddress")
-            sid  = _f(ed, "SessionID", "Session")
             if user:
                 desc = f"User '{user}' — " + desc
             if addr and addr not in ("-", "LOCAL"):

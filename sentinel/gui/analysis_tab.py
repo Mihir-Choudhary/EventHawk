@@ -170,14 +170,17 @@ class AnalysisTab(QWidget):
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
+        self._progress_bar.hide()          # shown once a run starts
         run_layout.addWidget(self._progress_bar)
 
-        self._status_label = QLabel("Ready")
-        self._status_label.setAlignment(Qt.AlignCenter)
+        self._status_label = QLabel('Choose the target .evtx folder or files; the baseline folder fills in from Baseline Setup. Then Run Analysis.')
+        self._status_label.setWordWrap(True)
+        self._status_label.setObjectName("emptyStateText")
         run_layout.addWidget(self._status_label)
 
         self._run_btn = QPushButton("Run Analysis")
         self._run_btn.setFixedHeight(32)
+        self._run_btn.setObjectName("parseBtn")      # the primary action, as Parse in EventHawk
         self._run_btn.clicked.connect(self._start_analysis)
         run_layout.addWidget(self._run_btn)
 
@@ -189,6 +192,7 @@ class AnalysisTab(QWidget):
         self._log_edit = QTextEdit()
         self._log_edit.setReadOnly(True)
         self._log_edit.setMaximumHeight(160)
+        self._log_edit.setPlaceholderText('Progress and warnings from the analysis appear here.')
         self._log_edit.setStyleSheet("font-family: monospace; font-size: 11px;")
         log_layout.addWidget(self._log_edit)
         layout.addWidget(log_group)
@@ -261,6 +265,7 @@ class AnalysisTab(QWidget):
             self._log(f"Starting analysis: scanning folder {self._target_source}")
         self._run_btn.setEnabled(False)
         self._progress_bar.setValue(0)
+        self._progress_bar.show()
 
         self._worker = _AnalysisWorker(self._target_source, self._baseline_dir, sigma_dir)
         self._worker.progress.connect(self._on_progress)

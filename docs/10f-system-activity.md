@@ -4,7 +4,7 @@ Open **Tools > System Activity** after loading events. The tool builds a compute
 
 ## Timeline and Moments
 
-**Timeline** lists Computer, Layer, Activity, Start (UTC), End (UTC), Duration, Started by, Ended by and Notes. **Moments** shows observations with details and evidence. Computer, layer checkboxes and search control visible rows.
+**Timeline** lists Computer, Layer, Activity, Start (UTC), End (UTC), Duration, Started by, Ended by and Notes. **Moments** shows observations with details and evidence. Computer, layer checkboxes and search control visible rows. **Hide periods under 1 s** (on by default; the checkbox shows how many) keeps split-second power transitions out of the timeline; the summary totals still count every period. The summary groups totals per layer in hours and minutes (exact totals on hover); a row's colour follows the legend under the filters. Durations in the table follow the display precision (exact on hover); the strip under the table shows the selected period or moment in full: notes, evidence and exact duration.
 
 | Layer | Recognized evidence |
 |---|---|
@@ -16,12 +16,14 @@ The 566 session-type interpretation (0 screen on, 1 screen off, 3 sleep) is **in
 
 Missing start/end reads **Unavailable**. A period can retain a logged boundary with unavailable duration. Unexpected-shutdown reports do not prove exact crash time. Kernel-Power 107 is not an independent wake boundary.
 
-The model detects supported clock-change and uptime inconsistencies and reports them in Notes rather than inventing duration. Conflicting periods remain visible with disagreement notes. Power-Troubleshooter takes priority over conflicting 566 sleep timing; see [sleep reconstruction](10e-downtime-in-sessions.md).
+The model detects supported clock-change and uptime inconsistencies and reports them in Notes rather than inventing duration. A clock change made while a period runs makes its length **Unavailable** (the clock span is in Notes); event times before a change stay as the computer's clock showed them, never rewritten. The correction Windows writes on waking from Sleep, Hibernate or a low-power sleep (Power-Troubleshooter target state 6), "synchronized with the hardware clock", is the resume itself and leaves the sleep's length in place. **System time changed** moments name Windows' reason (Kernel-General 1: an application or system component changed the time, or synchronized with the hardware clock). Conflicting periods remain visible with disagreement notes. Power-Troubleshooter takes priority over conflicting 566 sleep timing; see [sleep reconstruction](10e-downtime-in-sessions.md).
 
 Copies collapse by content plus occurrence number within each file. Equal-looking records occurring more than once within a file remain distinct occurrences.
 
 ## Evidence pivots and export
 
 Right-click a period for **Events around this start/end**, or a moment for **Events around this moment**, with the offered windows. The center is the displayed boundary, even when the evidence was written later; that record remains an anchor. The Around tab uses the normalized computer scope.
+
+**Export HTML Report…** writes the whole analysis, every computer, period, moment and raw event, as one self-contained file that opens offline in any browser (it makes no network requests). It opens on the span the power records cover (other logs, such as Diagnostics-Performance with about two years of boot and shutdown timings, can reach much earlier; that stretch is marked and gets no totals). It has a time range picker (a strip that zooms to the chosen span, From/To, Power records / Whole log / last day / 7 / 30 days, and a calendar of hours on per day), totals per state with the average per day and the share of the covered time, usual hours by weekday, a day-by-day view (power by default; screen, lock and moments lanes on demand; clock changes marked), an activity filter, and searchable, sortable tables. Clicking anything opens its details: how the period was measured, exact times and duration, and the start and end events with every field, their event record IDs and the meaning of coded fields. Light and dark themes; prints every row.
 
 **Export Timeline CSV** and **Export Moments CSV** write shown rows in shown order. CSV uses [formula-safe escaping](11-exporting.md). Times are UTC at the chosen **Precision**; durations use retained fractional values. Numeric duration is a reconstruction, not a collection-completeness guarantee.

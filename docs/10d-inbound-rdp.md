@@ -3,7 +3,13 @@
 Open **Tools > Remote Assistance Sessions** to inspect destination-side RDP
 evidence alongside the other remote-access artifacts. Inbound rows have type
 **RDP Session**. `LOCAL_CONSOLE` means LSM recorded local console activity;
-that row is not proof of access from another computer.
+that row is not proof of access from another computer. The Type column shows
+what each inbound record can show: **RDP Session** only when its source is a
+remote address, **Console (local)** for Address `LOCAL`, and **Session (no
+source)** when its events name no source at all (for example only a logoff or
+disconnect, which are logged for console sessions too). The summary line counts
+the inbound records in those three groups; the Type filter still selects them
+together as RDP Session.
 
 EventHawk treats each LSM 21 logon or 25 reconnect starts a separate row. A matching 23 logoff
 or 24 disconnect ends that interval; 39/40 can also prove a disconnect. A

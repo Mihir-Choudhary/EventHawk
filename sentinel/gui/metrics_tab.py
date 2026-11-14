@@ -33,7 +33,21 @@ class MetricsTab(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        from PySide6.QtWidgets import QStackedWidget
+        from sentinel.gui.widgets import EmptyState
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.empty = EmptyState(
+            "No metrics yet",
+            "After an analysis, this page shows how many events each tier kept or suppressed, the "
+            "processes suppressed most, and how far each host drifted from its baseline.",
+            "Go to Analysis", icon="refresh")
+        content = QWidget()
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self.empty)
+        self._stack.addWidget(content)
+        outer.addWidget(self._stack)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
 
@@ -52,6 +66,8 @@ class MetricsTab(QWidget):
         self._top_procs_table = QTableWidget(0, 2)
         self._top_procs_table.setHorizontalHeaderLabels(["Process", "Suppressed Count"])
         self._top_procs_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        # Number columns fit their header ("Suppressed Count" was clipped).
+        self._top_procs_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self._top_procs_table.setMaximumHeight(200)
         self._top_procs_table.setEditTriggers(QTableWidget.NoEditTriggers)
         layout.addWidget(self._top_procs_table)
@@ -61,6 +77,8 @@ class MetricsTab(QWidget):
         self._drift_table = QTableWidget(0, 3)
         self._drift_table.setHorizontalHeaderLabels(["Host", "Max JSD", "Drift Level"])
         self._drift_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for _c in (1, 2):
+            self._drift_table.horizontalHeader().setSectionResizeMode(_c, QHeaderView.ResizeToContents)
         self._drift_table.setMaximumHeight(160)
         self._drift_table.setEditTriggers(QTableWidget.NoEditTriggers)
         layout.addWidget(self._drift_table)
@@ -80,6 +98,7 @@ class MetricsTab(QWidget):
         mild = metrics.get("drift_mild_threshold", HostDriftMonitor.MILD_DRIFT)
         significant = metrics.get("drift_significant_threshold", HostDriftMonitor.SIGNIFICANT_DRIFT)
         self._populate_drift(scored_events, mild, significant)
+        self._stack.setCurrentIndex(1)
 
     def _populate_suppression(self, metrics: dict, stability_score: float | None = None) -> None:
         rows = [
@@ -141,3 +160,4 @@ class MetricsTab(QWidget):
         self._suppression_table.setRowCount(0)
         self._top_procs_table.setRowCount(0)
         self._drift_table.setRowCount(0)
+        self._stack.setCurrentIndex(0)

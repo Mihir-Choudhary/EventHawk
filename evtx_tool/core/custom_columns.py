@@ -334,6 +334,37 @@ def field_catalog(ev: dict) -> list:
     return out
 
 
+def peer_fields(sample: dict, peers, limit: int = 2000) -> tuple:
+    """Data fields other events of the sample's kind carry but the sample does not.
+
+    *peers* yields event dicts (any order; only their ``event_data`` is read)
+    that share the sample's provider and event ID.  An event type's fields can
+    differ from one event to the next -- Restart Manager lists File_1..File_n,
+    Defender adds "Scan Trigger" to some scans -- so a picker built from one
+    event misses them.  Returns ``([(token, label, example, count)], scanned)``
+    for at most *limit* peers, in first-seen order; *example* is the first
+    non-empty value seen.
+    """
+    have = {tok for tok, _l, _v in field_catalog(sample)}
+    found: dict = {}
+    scanned = 0
+    for ev in peers:
+        if scanned >= limit:
+            break
+        scanned += 1
+        for i, (nm, v) in enumerate(data_items((ev or {}).get("event_data")), 1):
+            tok = "{Data[" + (nm if nm else str(i)) + "]}"
+            if tok in have:
+                continue
+            rec = found.get(tok)
+            if rec is None:
+                rec = found[tok] = [f"{nm}  (#{i})" if nm else f"Data #{i}", "", 0]
+            rec[2] += 1
+            if not rec[1]:
+                rec[1] = _render(v)
+    return [(tok, lbl, ex, n) for tok, (lbl, ex, n) in found.items()], scanned
+
+
 # ── Juggernaut: the same evaluator over the Parquet shards ─────────────────────
 
 # Event-dict key -> Parquet column, for the keys a template can name.

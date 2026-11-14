@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QTableWidgetItem, QTabWidget, QVBoxLayout)
 
 from evtx_tool.analysis.host_power import fmt_secs
-from evtx_tool.gui.theme import rebuild_on_theme, tc
+from evtx_tool.gui.theme import COLORS, rebuild_on_theme, tc
 from evtx_tool.analysis.system_activity import ACTIVITY_SQL
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,41 @@ COVERAGE = ("Screen on/off comes from Kernel-Power 566 (Windows 10 2004 and late
             "types (0 screen on, 1 screen off, 3 sleep) are inferred from the logs, not documented by Microsoft. "
             "Lock and screen saver need the Security policy \"Audit Other Logon/Logoff Events\", off by default. "
             "A time the events do not prove reads Unavailable.")
+
+
+# Periods shorter than this are hidden by default (a checkbox shows how many):
+# Modern Standby and power transitions leave hundreds of real but
+# split-second rows that buried the periods an analyst reads the timeline for.
+SHORT_PERIOD_SECS = 1.0
+
+# Legend: (label, colour key in _COLOURS)
+_LEGEND = (("On", "On"), ("Sleep / hibernate", "Sleep"), ("Hibernate", "Hibernate"),
+           ("Modern Standby", "Modern Standby"), ("Shut down / off", "Shut down"),
+           ("Unexpected shutdown", "Off (unexpected shutdown)"), ("Locked", "Locked"))
+
+
+def fmt_total(td) -> str:
+    """A summary total in reading units: 479 h 06 m, 3 m 12 s, 0.4 s."""
+    secs = td.total_seconds()
+    if secs < 60:
+        return f"{secs:.1f} s" if secs < 10 else f"{int(secs)} s"
+    mins = int(secs // 60)
+    if mins < 60:
+        return f"{mins} m {int(secs % 60):02d} s"
+    h, m = divmod(mins, 60)
+    return f"{h} h {m:02d} m"
+
+
+def fmt_duration(td, digits: int) -> str:
+    """A period's duration at the display precision, truncated like the
+    timestamps (the exact value is the cell's tooltip and the CSV's)."""
+    if td is None:
+        return "Unavailable"
+    if digits >= 6:
+        return fmt_secs(td)
+    us = int(round(td.total_seconds() * 1_000_000))
+    step = 10 ** (6 - digits)
+    return fmt_secs(timedelta(microseconds=us - us % step))
 
 
 def fmt_time(d, digits: int) -> str:
@@ -62,9 +97,10 @@ class _SortItem(QTableWidgetItem):
 class SystemActivityDialog(QDialog):
     """Two tabs - Timeline (periods) and Moments - filtered by computer, layer and text."""
 
-    def __init__(self, result: dict, parent=None, around=None, digits: int = 0):
+    def __init__(self, result: dict, parent=None, around=None, digits: int = 0, events=None):
         super().__init__(parent)
         self._res = result
+        self._events = events            # the raw events the analysis read (HTML report)
         self._around = around            # callable(ev, timedelta) or None
         self._digits = digits
         self._shown_rows: list = []
@@ -85,7 +121,7 @@ class SystemActivityDialog(QDialog):
         root.addWidget(self._lbl_summary)
         cov = QLabel(COVERAGE)
         cov.setWordWrap(True)
-        cov.setStyleSheet("color:#666; font-size:8pt;")
+        cov.setStyleSheet(f"color:{COLORS['text_dim']}; font-size:8pt;")
         root.addWidget(cov)
 
         bar = QHBoxLayout()
@@ -108,6 +144,14 @@ class SystemActivityDialog(QDialog):
             c.toggled.connect(self._refresh)
             bar.addWidget(c)
             self._chk[name] = c
+        self._chk_short = QCheckBox("Hide periods under 1 s")
+        self._chk_short.setChecked(True)
+        self._chk_short.setToolTip(
+            "Split-second periods (Modern Standby and power transitions) are real "
+            "but bury the periods that matter.  The summary totals always count "
+            "every period; Export writes the rows shown.")
+        self._chk_short.toggled.connect(self._refresh)
+        bar.addWidget(self._chk_short)
         bar.addWidget(QLabel("Search:"))
         self._search = QLineEdit()
         self._search.setPlaceholderText("Filter by activity, evidence or notes…")
@@ -115,14 +159,49 @@ class SystemActivityDialog(QDialog):
         bar.addWidget(self._search, 1)
         root.addLayout(bar)
 
+        legend = QHBoxLayout()
+        legend.setSpacing(6)
+        for label, key in _LEGEND:
+            chip = QLabel(label)
+            chip.setStyleSheet(f"background:{tc(_COLOURS[key])}; color:{COLORS['text']}; "
+                               "border-radius:3px; padding:1px 7px; font-size:8pt;")
+            legend.addWidget(chip)
+        legend.addStretch()
+        root.addLayout(legend)
+
         self._tabs = QTabWidget()
-        self._tbl = self._table(TIMELINE_HEADERS, [150, 60, 190, 165, 165, 120, 220, 220, 420])
-        self._tbl_pts = self._table(MOMENT_HEADERS, [150, 165, 230, 520, 200])
+        one_host = len(self._res.get("hosts", [])) <= 1
+        self._tbl = self._table(TIMELINE_HEADERS, [80 if one_host else 150, 60, 190, 150, 150, 100, 230, 230, 300])
+        self._tbl_pts = self._table(MOMENT_HEADERS, [80 if one_host else 150, 150, 230, 520, 200])
+        # The last column (Notes / Evidence) takes the spare width, and the
+        # selected row is shown in full below: long notes were cut off and
+        # could only be read by dragging the column wider.
+        for t in (self._tbl, self._tbl_pts):
+            t.horizontalHeader().setStretchLastSection(True)
+            t.itemSelectionChanged.connect(lambda tt=t: self._show_details(tt))
         self._tabs.addTab(self._tbl, "Timeline")
         self._tabs.addTab(self._tbl_pts, "Moments")
+        self._tabs.currentChanged.connect(lambda _i: self._show_details(self._tabs.currentWidget()))
         root.addWidget(self._tabs, 1)
 
+        self._lbl_details = QLabel()
+        self._lbl_details.setObjectName("periodDetails")
+        self._lbl_details.setWordWrap(True)
+        self._lbl_details.setTextFormat(Qt.TextFormat.RichText)
+        self._lbl_details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._lbl_details.setMinimumHeight(52)
+        self._lbl_details.setStyleSheet(
+            f"QLabel#periodDetails {{ background:{COLORS['bg_panel']}; color:{COLORS['text']};"
+            f" border-radius:4px; padding:6px 10px; }}")
+        root.addWidget(self._lbl_details)
+
         btns = QHBoxLayout()
+        b = QPushButton("Export HTML Report…")
+        b.setToolTip("One self-contained file: overview, calendar, day-by-day timeline, every period, "
+                     "moment and raw event with all fields, searchable. Opens offline in any browser.")
+        b.clicked.connect(self._export_html)
+        btns.addWidget(b)
+        self._btn_html = b
         b = QPushButton("Export Timeline CSV")
         b.clicked.connect(lambda: self._export(timeline=True))
         btns.addWidget(b)
@@ -163,6 +242,12 @@ class SystemActivityDialog(QDialog):
                 fmt_time(r["end"], self._digits), fmt_secs(r["duration"]) if r["duration"] is not None
                 else "Unavailable", r["started_by"], r["ended_by"], r["notes"]]
 
+    def row_cells_display(self, r):
+        """As row_cells, with the duration at the display precision."""
+        cells = self.row_cells(r)
+        cells[5] = fmt_duration(r["duration"], self._digits)
+        return cells
+
     def point_cells(self, p):
         return [p["host"], fmt_time(p["time"], self._digits), p["what"], p["details"], p["evidence"]]
 
@@ -170,14 +255,22 @@ class SystemActivityDialog(QDialog):
         host, layers, text = self._filters()
         rows = [r for r in self._res.get("rows", []) if (host is None or r["host"] == host)
                 and r["layer"] in layers]
+        short = [r for r in rows if r["duration"] is not None
+                 and r["duration"].total_seconds() < SHORT_PERIOD_SECS]
+        self._chk_short.setText(f"Hide periods under 1 s ({len(short):,})")
+        if self._chk_short.isChecked() and short:
+            hide = {id(r) for r in short}
+            rows = [r for r in rows if id(r) not in hide]
         pts = [p for p in self._res.get("points", []) if host is None or p["host"] == host]
         if text:
             rows = [r for r in rows if any(text in str(c).lower() for c in self.row_cells(r))]
             pts = [p for p in pts if any(text in str(c).lower() for c in self.point_cells(p))]
-        self._fill(self._tbl, rows, self.row_cells, lambda r: (r["start"], r["end"], r["duration"]),
+        self._fill(self._tbl, rows, self.row_cells_display, lambda r: (r["start"], r["end"], r["duration"]),
                    lambda r: _COLOURS.get(r["state"]))
         self._fill(self._tbl_pts, pts, self.point_cells, lambda p: (p["time"], None, None), lambda p: None)
         self._shown_rows, self._shown_points = rows, pts
+        if hasattr(self, "_lbl_details"):
+            self._show_details(self._tabs.currentWidget())
         self._tabs.setTabText(0, f"Timeline ({len(rows):,})")
         self._tabs.setTabText(1, f"Moments ({len(pts):,})")
         self._summary(host)
@@ -198,6 +291,8 @@ class SystemActivityDialog(QDialog):
                     key = k_start
                 if key is not None:
                     cell.setData(Qt.ItemDataRole.UserRole + 1, key.isoformat() if hasattr(key, "isoformat") else key)
+                if tbl is self._tbl and c == 5 and k_dur is not None:
+                    cell.setToolTip(f"Exact: {fmt_secs(k_dur)}")
                 if bg:
                     cell.setBackground(QColor(tc(bg)))
                 tbl.setItem(i, c, cell)
@@ -209,26 +304,73 @@ class SystemActivityDialog(QDialog):
         if not rows and not self._res.get("points"):
             self._lbl_summary.setText("<b>No power, screen or lock events found.</b>")
             return
-        tot: dict = {}
+        tot: dict = {}                       # (layer, label) -> total
         unknown = 0
         for r in rows:
             if r["duration"] is None:
                 unknown += 1
                 continue
             label = r["state"].split(" (session type")[0]
-            tot[label] = tot.get(label, timedelta(0)) + r["duration"]
+            key = (r["layer"], label)
+            tot[key] = tot.get(key, timedelta(0)) + r["duration"]
         order = ["On", "Screen on", "Screen off", "Sleep", "Hibernate", "Sleep or hibernate", "Modern Standby",
                  "Locked", "Screen saver", "Shut down", "Off"]
-        parts = [f"{k}: <b>{fmt_secs(tot[k])}</b>" for k in order if k in tot]
-        parts += [f"{k}: <b>{fmt_secs(v)}</b>" for k, v in tot.items() if k not in order]
+        rank = {k: i for i, k in enumerate(order)}
         who = host if host is not None else f"{len(self._res.get('hosts', []))} computer(s)"
-        txt = f"<b>{who}</b> &nbsp;│&nbsp; " + " &nbsp;│&nbsp; ".join(parts) if parts else f"<b>{who}</b>"
+        lines, exact = [], []
+        for layer in ("Power", "Screen", "Lock"):
+            items = sorted(((lbl, v) for (ly, lbl), v in tot.items() if ly == layer),
+                           key=lambda kv: (rank.get(kv[0], 99), kv[0]))
+            if not items:
+                continue
+            lines.append(f"<b>{layer}</b>&nbsp; " + " &nbsp;·&nbsp; ".join(
+                f"{lbl} <b>{fmt_total(v)}</b>" for lbl, v in items))
+            exact += [f"{layer} / {lbl}: {fmt_secs(v)}" for lbl, v in items]
+        txt = f"<b>{who}</b>" + ("<br>" + "<br>".join(lines) if lines else "")
         if unknown:
-            txt += (f" &nbsp;│&nbsp; <span style='color:{tc('#8a4800')};'>{unknown} period(s) with an unknown start or "
+            txt += (f"<br><span style='color:{tc('#8a4800')};'>{unknown} period(s) with an unknown start or "
                     f"end are not in these totals</span>")
         if host is not None and not any(r["layer"] == "Screen" for r in rows):
-            txt += " &nbsp;│&nbsp; no screen data (no Kernel-Power 566 in these logs)"
+            txt += "<br>No screen data (no Kernel-Power 566 in these logs)"
+        self._lbl_summary.setToolTip("Exact totals:\n" + "\n".join(exact) if exact else "")
         self._lbl_summary.setText(txt)
+
+    # ── selected row, in full ───────────────────────────────────────────────
+    @staticmethod
+    def _esc(v) -> str:
+        return (str(v if v is not None else "").replace("&", "&amp;")
+                .replace("<", "&lt;").replace(">", "&gt;"))
+
+    @rebuild_on_theme
+    def _show_details(self, tbl) -> None:
+        """The selected period / moment with every field unclipped (wraps)."""
+        rows = tbl.selectionModel().selectedRows() if tbl is not None and tbl.selectionModel() else []
+        if not rows:
+            self._lbl_details.setText(
+                f"<span style='color:{COLORS['text_dim']}'>Select a row to see it in full here "
+                "(notes, evidence, exact duration).</span>")
+            return
+        cell = tbl.item(rows[0].row(), 0)
+        i = cell.data(Qt.ItemDataRole.UserRole) if cell else None
+        src = self._shown_rows if tbl is self._tbl else self._shown_points
+        if i is None or not (0 <= i < len(src)):
+            return
+        it, e = src[i], self._esc
+        dim = COLORS["text_dim"]
+        if tbl is self._tbl:
+            dur = fmt_secs(it["duration"]) if it["duration"] is not None else "Unavailable"
+            html = (f"<b>{e(it['state'])}</b> &nbsp;<span style='color:{dim}'>{e(it['layer'])} · {e(it['host'])}"
+                    f"</span><br>{e(fmt_time(it['start'], 6))} &nbsp;→&nbsp; {e(fmt_time(it['end'], 6))} UTC"
+                    f" &nbsp;·&nbsp; <b>{e(dur)}</b><br>"
+                    f"<span style='color:{dim}'>Started by</span> {e(it['started_by'])} &nbsp;·&nbsp; "
+                    f"<span style='color:{dim}'>Ended by</span> {e(it['ended_by'])}")
+            if it.get("notes"):
+                html += f"<br><span style='color:{dim}'>Notes</span> {e(it['notes'])}"
+        else:
+            html = (f"<b>{e(it['what'])}</b> &nbsp;<span style='color:{dim}'>{e(it['host'])}</span>"
+                    f"<br>{e(fmt_time(it['time'], 6))} UTC<br>{e(it['details'])}"
+                    f"<br><span style='color:{dim}'>Evidence</span> {e(it['evidence'])}")
+        self._lbl_details.setText(html)
 
     # ── context menu / Around ───────────────────────────────────────────────
     def _item_at(self, tbl, pos):
@@ -294,6 +436,36 @@ class SystemActivityDialog(QDialog):
             QMessageBox.critical(self, "Export Failed", f"Could not write CSV:\n{exc}")
             return
         QMessageBox.information(self, "Export Complete", f"Saved {tbl.rowCount():,} row(s) to:\n{path}")
+
+    def _export_html(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export System Activity Report", "system_activity_report.html",
+                                              "HTML files (*.html)")
+        if not path:
+            return
+        try:
+            info = self.write_html(path)
+        except Exception as exc:                                   # noqa: BLE001
+            logger.exception("System Activity HTML report failed")
+            QMessageBox.critical(self, "Export Failed", f"Could not write the report:\n{exc}")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Report Saved")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"Saved the System Activity report ({info['periods']:,} periods, {info['moments']:,} moments, "
+                    f"{info['bytes'] / 1_000_000:.1f} MB) to:\n{path}")
+        open_btn = box.addButton("Open", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def write_html(self, path) -> dict:
+        """The whole analysis (every computer, period, moment and raw event),
+        not just the rows shown: the report has its own filters."""
+        from evtx_tool.output.system_activity_report import write_html_report
+        return write_html_report(path, self._res, self._events, digits=self._digits)
 
     def write_csv(self, path, timeline: bool):
         from evtx_tool.output.exporters import safe_csv_writer

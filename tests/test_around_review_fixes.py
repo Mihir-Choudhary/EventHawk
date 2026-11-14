@@ -457,7 +457,7 @@ def attack_panel_text(mw):
                   "not available in Juggernaut Mode" in txt and "enabled" not in txt, txt)
         else:
             check("Normal: ATT&CK panel still says how to get ATT&CK data",
-                  "run with ATT&CK Mapping enabled" in txt, txt)
+                  "Tick ATT&CK Mapping" in txt and "parse again" in txt, txt)
         T.teardown(w, jm, m)
 
 

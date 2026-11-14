@@ -51,28 +51,35 @@ LIGHT_COLORS = {
 
     # Borders / separators
     "border":       "#c4bba8",  # warm taupe
-    "border_focus": "#b8924a",  # amber focus ring
+    "border_focus": "#98783c",
+    # Outline of text boxes, combos and spin boxes: 3:1 against the window
+    # (WCAG 1.4.11); "border" stays the soft colour of decorative lines.
+    "border_input": "#938464",
+    # Text on an amber fill (OK buttons, badges, selected list items): near
+    # white on the light theme's dark amber, near black on the dark theme's
+    # light amber -- white there was 3.3:1 (WCAG 1.4.3).
+    "on_accent":    "#fffdf8",  # amber focus ring
 
     # Text
     "text":       "#1e1a14",   # dark warm brown
     "text_dim":   "#5a4e42",   # medium warm brown
-    "text_muted": "#9a8878",   # light warm brown (muted)
+    "text_muted": "#67594d",   # light warm brown (muted)
 
     # Accents
-    "accent":          "#7a5c1e",  # dark amber
+    "accent":          "#73571c",  # dark amber
     "accent_hover":    "#9b7a2e",  # amber hover
     "selected_bg":     "#ddd4bc",  # warm tan selected
-    "selected_border": "#7a5c1e",  # amber
+    "selected_border": "#73571c",  # amber
 
     # Event levels
     "level_critical": "#a01800",  # dark crimson
     "level_error":    "#a01800",
     "level_warning":  "#7a4c00",  # dark amber-orange
     "level_info":     "#1e1a14",  # dark brown (same as main text)
-    "level_verbose":  "#9a8878",  # muted brown
+    "level_verbose":  "#67594d",  # muted brown
 
     # Analysis
-    "attack_badge":   "#7a5c1e",  # amber
+    "attack_badge":   "#73571c",  # amber
     "ioc_found":      "#2e6820",  # forest green
     "chain_critical": "#a01800",
     "chain_high":     "#7a4c00",
@@ -80,19 +87,19 @@ LIGHT_COLORS = {
     "chain_low":      "#5a4e42",
 
     # ATT&CK tactic colours
-    "ta_recon":      "#6a5a4c",
+    "ta_recon":      "#69594b",
     "ta_resource":   "#5a4e42",
     "ta_initial":    "#a01800",
-    "ta_exec":       "#b03800",
+    "ta_exec":       "#a63500",
     "ta_persist":    "#7a4c00",
     "ta_privesc":    "#6a3e00",
     "ta_defense":    "#6a2a8a",
     "ta_cred":       "#8a3c00",
     "ta_discovery":  "#2a5a8a",
-    "ta_lateral":    "#2a6a2a",
+    "ta_lateral":    "#296929",
     "ta_collect":    "#1e5c1e",
-    "ta_c2":         "#8a4e00",
-    "ta_exfil":      "#b03800",
+    "ta_c2":         "#884d00",
+    "ta_exfil":      "#a63500",
     "ta_impact":     "#a01800",
 
     # Buttons
@@ -106,7 +113,7 @@ LIGHT_COLORS = {
 
     # Progress
     "progress_bg":   "#e4ddd3",
-    "progress_fill": "#7a5c1e",
+    "progress_fill": "#73571c",
     "progress_text": "#1e1a14",
 }
 
@@ -123,6 +130,8 @@ _DARK_MAP = {
     "#f5f0e8": "#1b1814",   # main window
     "#ede8df": "#221e19",   # panels / sidebars
     "#e4ddd3": "#2b2620",   # header bars / buttons
+    "#938464": "#746758",   # input outlines (3:1 on the window, WCAG 1.4.11)
+    "#fffdf8": "#1c1915",   # text on an amber fill
     "#faf7f2": "#15130f",   # inputs
     "#e9e2d8": "#352f27",   # hover
     "#ede8d8": "#201c17",   # alternating row
@@ -160,46 +169,46 @@ _DARK_MAP = {
     "#c4bba8": "#4b4339",
     "#b8b0a0": "#6d6556",
     "#c4b898": "#75694b",
-    "#b8924a": "#d0a45a",   # focus ring
+    "#98783c": "#d0a45a",   # focus ring
     # Text
     "#1e1a14": "#e9e2d6",   # main text
     "#5a4e42": "#b5a995",   # dim text
-    "#9a8878": "#928473",   # muted text
+    "#67594d": "#aea397",   # muted text
     "#666666": "#a1a1a1",
     "#3a2a10": "#eed8b5",
     "#5a3e10": "#f2d099",
     "#5a3e1e": "#e3c29e",   # scrollbar handle
     "#5a4030": "#d1b4a2",
-    "#6a5a4c": "#b9a899",
+    "#69594b": "#b9a899",
     "#6b4e18": "#ebca8d",
     "#8a6c2e": "#d8b978",
-    # Accents — #7a5c1e is both accent text and the fill behind white text,
+    # Accents — #73571c is both accent text and the fill behind white text,
     # so its dark value is a mid amber that reads in both roles.
-    "#7a5c1e": "#a8792a",
+    "#73571c": "#b7842e",
     "#9b7a2e": "#c09040",
     "#c4a535": "#d6b84a",
     # Event levels / severities
-    "#a01800": "#ff6a4d",
+    "#a01800": "#ff7e65",
     "#c02000": "#ff694b",
     "#c04020": "#e96949",
-    "#b03800": "#ff8d57",
+    "#a63500": "#ff8d57",
     "#7a4c00": "#f0a53a",
     "#7a3a00": "#ffbc80",
     "#8a3c00": "#ffb074",
     "#8a4800": "#ffbc74",
-    "#8a4e00": "#ffc274",
+    "#884d00": "#ffc274",
     "#6a3e00": "#ffcf8c",
     "#c07000": "#ffb44b",
     # Greens / blues / purples
     "#2e6820": "#7cc56a",
     "#1e5c1e": "#9ce39c",
-    "#2a6a2a": "#93d993",
-    "#2a5a8a": "#6fa8dd",
+    "#296929": "#93d993",
+    "#2a5a8a": "#71a9dd",
     "#1e4d8c": "#73a5e7",
     "#4a6fa5": "#678bc1",
     "#4a7aaa": "#6292c1",
     "#0f6e6e": "#88f4f4",
-    "#6a2a8a": "#ba78dc",
+    "#6a2a8a": "#c68fe2",
     "#6b1e6b": "#e58fe5",
 }
 
@@ -273,6 +282,40 @@ def _remap_svg_urls(text: str, dark: bool) -> str:
     return _SVG_URL_RE.sub(swap, text)
 
 
+def _ui_image(name: str, svg: str) -> str:
+    """Path of a small stylesheet image (combo arrow, check mark), or "".
+
+    Written once to the temp folder: the stylesheet needs a file path and the
+    frozen build ships no image folder.  Its colours are light-palette values,
+    so the dark stylesheet points at a recoloured copy (see _dark_svg).
+    """
+    folder = os.path.join(tempfile.gettempdir(), "eventhawk_theme_images")
+    path = os.path.join(folder, name)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        current = None
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                current = f.read()
+        if current != svg:
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(svg)
+            os.replace(tmp, path)
+    except OSError:
+        return ""
+    return path.replace("\\", "/")
+
+
+_SVG_CHEVRON = ('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" '
+                'fill="none" stroke="#5a4e42" stroke-width="2.5" stroke-linecap="round" '
+                'stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>')
+_SVG_CHEVRON_UP = _SVG_CHEVRON.replace('d="m6 9 6 6 6-6"', 'd="m18 15-6-6-6 6"')
+_SVG_CHECK = ('<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" '
+              'fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" '
+              'stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>')
+
+
 def remap_colors(text: str, dark: bool) -> str:
     """Translate every light hex in *text* to its dark value (or back).
 
@@ -338,16 +381,41 @@ QLabel#sectionHeader {
     font-size: 8pt;
     font-weight: bold;
     letter-spacing: 1px;
-    padding: 6px 0px 2px 0px;
-    border-bottom: 1px solid #e4ddd3;
+    padding: 2px 0px 2px 0px;
+    border: none;
 }
 QLabel#statsLabel {
     color: #5a4e42;
     font-size: 8pt;
 }
 QLabel#countLabel {
-    color: #7a5c1e;
+    color: #5a4e42;
     font-size: 8pt;
+}
+QLabel#countLabel[filtered="true"] {
+    color: #73571c;
+    font-weight: bold;
+}
+QLabel#modeChip {
+    color: #73571c;
+    background: #ddd4bc;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 8pt;
+    font-weight: bold;
+}
+QPushButton[active="true"] {
+    color: #73571c;
+    border-color: #73571c;
+    background: #ddd4bc;
+}
+QPushButton[active="true"]:hover {
+    background: #d4c8a8;
+}
+
+/* Guidance text on empty pages and idle forms (Sentinel's empty states). */
+QLabel#emptyStateText {
+    color: #5a4e42;
 }
 
 /* ── Radio Buttons ───────────────────────────────────── */
@@ -356,30 +424,29 @@ QRadioButton {
     color: #1e1a14;
     spacing: 6px;
 }
-QRadioButton:checked {
-    color: #9b7a2e;
-    font-weight: bold;
-}
-QRadioButton:disabled { color: #9a8878; }
+QRadioButton:disabled { color: #67594d; }
 
 QRadioButton::indicator {
-    width: 14px;
-    height: 14px;
+    width: 12px;
+    height: 12px;
     border-radius: 7px;
-    border: 2px solid #9a8878;
+    border: 1px solid #67594d;
     background: #faf7f2;
 }
 QRadioButton::indicator:hover {
-    border-color: #7a5c1e;
-    background: #e8e0d0;
+    border-color: #73571c;
+}
+QRadioButton::indicator:focus {
+    border: 2px solid #73571c;
 }
 QRadioButton::indicator:checked {
-    border: 1px solid #9b7a2e;
-    background: #9b7a2e;
+    width: 6px;
+    height: 6px;
+    border: 4px solid #73571c;
+    background: #faf7f2;
 }
 QRadioButton::indicator:checked:hover {
-    border-color: #7a5c1e;
-    background: #7a5c1e;
+    border-color: #9b7a2e;
 }
 QRadioButton::indicator:disabled {
     border-color: #c4bba8;
@@ -410,20 +477,28 @@ QPushButton {
     background: #e4ddd3;
     color: #1e1a14;
     border: 1px solid #c4bba8;
-    border-radius: 2px;
-    padding: 4px 10px;
+    border-radius: 4px;
+    padding: 3px 10px;
     min-height: 22px;
 }
 QPushButton:hover {
     background: #d8d1c5;
-    border-color: #9a8878;
+    border-color: #67594d;
+}
+QPushButton:focus {
+    border-color: #73571c;
 }
 QPushButton:pressed {
     background: #ccc5b5;
-    border-color: #b8924a;
+    border-color: #98783c;
+}
+QPushButton:checked {
+    background: #ddd4bc;
+    border-color: #73571c;
+    color: #73571c;
 }
 QPushButton:disabled {
-    color: #9a8878;
+    color: #67594d;
     border-color: #d0c8b8;
     background: #ede8df;
 }
@@ -431,11 +506,14 @@ QPushButton:disabled {
 QPushButton#parseBtn {
     background: #4a6830;
     color: #ffffff;
-    border: 1px solid #5a8038;
-    border-radius: 2px;
+    border: 1px solid #4a6830;
+    border-radius: 4px;
     font-weight: bold;
     min-height: 28px;
     font-size: 9pt;
+}
+QPushButton#parseBtn:focus {
+    border-color: #3a5824;
 }
 QPushButton#parseBtn:hover {
     background: #5a8038;
@@ -446,7 +524,7 @@ QPushButton#parseBtn:pressed {
 }
 QPushButton#parseBtn:disabled {
     background: #c8d0b8;
-    color: #9a8878;
+    color: #67594d;
     border-color: #d0c8b8;
 }
 
@@ -454,7 +532,7 @@ QPushButton#stopBtn {
     background: #e4ddd3;
     color: #a01800;
     border: 1px solid #c04020;
-    border-radius: 2px;
+    border-radius: 4px;
     min-height: 24px;
 }
 QPushButton#stopBtn:hover {
@@ -462,24 +540,24 @@ QPushButton#stopBtn:hover {
     border-color: #a01800;
 }
 QPushButton#stopBtn:disabled {
-    color: #9a8878;
+    color: #67594d;
     border-color: #d0c8b8;
     background: #ede8df;
 }
 
 QPushButton#exportBtn {
     background: #e4ddd3;
-    color: #2a5a8a;
-    border: 1px solid #4a7aaa;
-    border-radius: 2px;
+    color: #1e1a14;
+    border: 1px solid #c4bba8;
+    border-radius: 4px;
     min-height: 24px;
 }
 QPushButton#exportBtn:hover {
-    background: #dce8f0;
-    border-color: #2a5a8a;
+    background: #d8d1c5;
+    border-color: #67594d;
 }
 QPushButton#exportBtn:disabled {
-    color: #9a8878;
+    color: #67594d;
     border-color: #d0c8b8;
     background: #ede8df;
 }
@@ -488,55 +566,66 @@ QPushButton#exportBtn:disabled {
 QLineEdit, QTextEdit {
     background: #faf7f2;
     color: #1e1a14;
-    border: 1px solid #c4bba8;
-    border-radius: 2px;
+    border: 1px solid #938464;
+    border-radius: 4px;
     padding: 3px 6px;
-    selection-background-color: #7a5c1e;
-    selection-color: #ffffff;
+    /* Tan highlight with normal text, as in the tables: white on the dark
+       theme's amber was 3.3:1 (WCAG 1.4.3 needs 4.5:1). */
+    selection-background-color: #ddd4bc;
+    selection-color: #1e1a14;
 }
 QLineEdit:focus, QTextEdit:focus {
-    border-color: #b8924a;
+    /* 2 px amber ring (the outline itself is 3:1 now, so a colour change
+       alone no longer showed focus); padding shrinks by 1 px to compensate. */
+    border: 2px solid #73571c;
+    padding: 2px 5px;
 }
 QLineEdit:disabled {
-    color: #9a8878;
+    color: #67594d;
     background: #ede8df;
 }
 QLineEdit#filterBar {
     background: #ede8df;
-    border: 1px solid #c4bba8;
+    border: 1px solid #938464;
     border-radius: 2px;
     padding: 4px 8px;
     color: #1e1a14;
     font-size: 9pt;
 }
 QLineEdit#filterBar:focus {
-    border-color: #b8924a;
+    border: 2px solid #73571c;
+    padding: 3px 7px;
     background: #f0ead8;
 }
 
 /* ── ComboBox ────────────────────────────────────────── */
 QComboBox {
-    background: #ede8df;
+    background: #faf7f2;
     color: #1e1a14;
-    border: 1px solid #c4bba8;
-    border-radius: 2px;
-    padding: 3px 6px;
+    border: 1px solid #938464;
+    border-radius: 4px;
+    padding: 3px 8px;
     min-height: 22px;
 }
+QComboBox:hover {
+    border-color: #67594d;
+}
 QComboBox:focus, QComboBox:on {
-    border-color: #b8924a;
+    border: 2px solid #73571c;
+    padding: 2px 7px;
+}
+QComboBox:disabled {
+    color: #67594d;
+    background: #ede8df;
 }
 QComboBox::drop-down {
     border: none;
-    width: 20px;
+    width: 22px;
 }
 QComboBox::down-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #5a4e42;
-    width: 0;
-    height: 0;
+    @CHEVRON@
+    width: 10px;
+    height: 10px;
 }
 QComboBox QAbstractItemView {
     background: #faf7f2;
@@ -548,15 +637,16 @@ QComboBox QAbstractItemView {
 
 /* ── SpinBox / DateTimeEdit ──────────────────────────── */
 QSpinBox, QDateTimeEdit {
-    background: #ede8df;
+    background: #faf7f2;
     color: #1e1a14;
-    border: 1px solid #c4bba8;
-    border-radius: 2px;
+    border: 1px solid #938464;
+    border-radius: 4px;
     padding: 3px 6px;
     min-height: 22px;
 }
 QSpinBox:focus, QDateTimeEdit:focus {
-    border-color: #b8924a;
+    border: 2px solid #73571c;
+    padding: 2px 5px;
 }
 QSpinBox::up-button, QSpinBox::down-button,
 QDateTimeEdit::up-button, QDateTimeEdit::down-button {
@@ -568,20 +658,27 @@ QSpinBox::up-button:hover, QSpinBox::down-button:hover,
 QDateTimeEdit::up-button:hover, QDateTimeEdit::down-button:hover {
     background: #d8d1c5;
 }
+QSpinBox::up-arrow, QDateTimeEdit::up-arrow {
+    @CHEVRON_UP@
+    width: 8px;
+    height: 8px;
+}
+QSpinBox::down-arrow {
+    @CHEVRON@
+    width: 8px;
+    height: 8px;
+}
 QDateTimeEdit::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
     width: 20px;
-    border-left: 1px solid #c4bba8;
-    background: #e4ddd3;
+    border: none;
+    background: transparent;
 }
 QDateTimeEdit::drop-down:hover { background: #d8d1c5; }
 QDateTimeEdit::down-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #5a4e42;
-    width: 0; height: 0;
+    @CHEVRON@
+    width: 10px; height: 10px;
 }
 
 /* Calendar popup */
@@ -589,13 +686,15 @@ QCalendarWidget { background: #ede8df; color: #1e1a14; }
 QCalendarWidget QAbstractItemView {
     background: #faf7f2;
     color: #1e1a14;
-    selection-background-color: #7a5c1e;
-    selection-color: #ffffff;
+    /* Tan highlight with normal text, as in the tables: white on the dark
+       theme's amber was 3.3:1 (WCAG 1.4.3 needs 4.5:1). */
+    selection-background-color: #ddd4bc;
+    selection-color: #1e1a14;
     alternate-background-color: #ede8d8;
     outline: none;
 }
 QCalendarWidget QAbstractItemView:enabled  { color: #1e1a14; }
-QCalendarWidget QAbstractItemView:disabled { color: #9a8878; }
+QCalendarWidget QAbstractItemView:disabled { color: #67594d; }
 QCalendarWidget QWidget#qt_calendar_navigationbar {
     background: #e4ddd3;
     min-height: 28px;
@@ -609,14 +708,14 @@ QCalendarWidget QToolButton {
 }
 QCalendarWidget QToolButton:hover {
     background: #d8d1c5;
-    color: #7a5c1e;
+    color: #73571c;
 }
 QCalendarWidget QToolButton::menu-indicator { image: none; }
 QCalendarWidget QSpinBox {
     background: #ede8df;
     color: #1e1a14;
     border: 1px solid #c4bba8;
-    selection-background-color: #7a5c1e;
+    selection-background-color: #73571c;
 }
 
 /* ── CheckBox ────────────────────────────────────────── */
@@ -626,33 +725,48 @@ QCheckBox {
     color: #1e1a14;
 }
 QCheckBox::indicator {
-    width: 13px;
-    height: 13px;
-    border: 1px solid #c4bba8;
-    border-radius: 2px;
+    width: 14px;
+    height: 14px;
+    border: 1px solid #67594d;
+    border-radius: 3px;
     background: #faf7f2;
 }
+QCheckBox::indicator:hover {
+    border-color: #73571c;
+}
+QCheckBox::indicator:focus {
+    /* Keyboard focus is a 2 px amber ring, not a tint of the outline
+       (WCAG 2.4.7: the focused box must be visible). */
+    border: 2px solid #73571c;
+}
+QCheckBox:focus, QRadioButton:focus {
+    background: #e9e2d8;
+    border-radius: 3px;
+}
 QCheckBox::indicator:checked {
-    background: #7a5c1e;
-    border-color: #9b7a2e;
+    background: #73571c;
+    border-color: #73571c;
+    @CHECK@
 }
 QCheckBox::indicator:checked:hover {
     background: #9b7a2e;
+    border-color: #9b7a2e;
 }
-QCheckBox::indicator:hover {
-    border-color: #9a8878;
+QCheckBox::indicator:disabled {
+    border-color: #c4bba8;
+    background: #ede8df;
 }
-QCheckBox:disabled { color: #9a8878; }
+QCheckBox:disabled { color: #67594d; }
 
 /* ── List Widget ─────────────────────────────────────── */
 QListWidget {
     background: #faf7f2;
     border: 1px solid #c4bba8;
-    border-radius: 2px;
+    border-radius: 4px;
     outline: none;
 }
 QListWidget::item {
-    padding: 3px 6px;
+    padding: 4px 6px;
     border: none;
 }
 QListWidget::item:selected {
@@ -673,32 +787,33 @@ QTableView {
     selection-color: #1e1a14;
     outline: none;
 }
-QTableView::item {
-    padding: 2px 6px;
-    border: none;
-}
+/* No padding / border rule on table items (QTableView ::item): any such rule makes the
+   stylesheet paint every cell itself and drop the cell's own background, so
+   bookmarked rows, logon/WiFi/System Activity state fills and IOC score tints
+   were never drawn. */
 QTableView::item:selected {
     background: #ddd4bc;
     color: #1e1a14;
-    border-left: 2px solid #7a5c1e;
 }
 QHeaderView {
-    background: #e4ddd3;
+    background: #ede8df;
     border: none;
 }
 QHeaderView::section {
-    background: #e4ddd3;
+    background: #ede8df;
     color: #5a4e42;
     border: none;
-    border-right: 1px solid #c4bba8;
     border-bottom: 1px solid #c4bba8;
-    padding: 4px 6px;
+    /* A faint edge between header sections: where to drag a column wider,
+       or double-click to fit it (the cells themselves stay unruled unless
+       View > Grid Lines is on). */
+    border-right: 1px solid #d8d1c5;
+    padding: 5px 4px;
     font-size: 8pt;
     font-weight: bold;
-    letter-spacing: 0.5px;
 }
 QHeaderView::section:hover {
-    background: #d8d1c5;
+    background: #e4ddd3;
     color: #1e1a14;
 }
 QHeaderView::section:checked {
@@ -746,7 +861,7 @@ QTabBar::tab {
 }
 QTabBar::tab:selected {
     color: #1e1a14;
-    border-bottom: 2px solid #7a5c1e;
+    border-bottom: 2px solid #73571c;
     background: #f5f0e8;
 }
 QTabBar::tab:hover {
@@ -769,37 +884,41 @@ QTabBar::close-button {
 QSplitter::handle {
     background: #e4ddd3;
 }
-QSplitter::handle:horizontal { width: 1px; }
-QSplitter::handle:vertical   { height: 1px; }
+QSplitter::handle:horizontal { width: 4px; }
+QSplitter::handle:vertical   { height: 4px; }
 QSplitter::handle:hover {
-    background: #7a5c1e;
+    background: #73571c;
 }
 
 /* ── Scroll Bars ─────────────────────────────────────── */
 QScrollBar:vertical {
-    background: #f5f0e8;
-    width: 8px;
+    background: transparent;
+    width: 10px;
     margin: 0;
 }
 QScrollBar::handle:vertical {
-    background: #5a3e1e;
-    border-radius: 4px;
-    min-height: 20px;
+    background: #c4bba8;
+    border-radius: 3px;
+    min-height: 28px;
+    margin: 2px;
 }
-QScrollBar::handle:vertical:hover { background: #7a5c1e; }
+QScrollBar::handle:vertical:hover { background: #67594d; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 QScrollBar:horizontal {
-    background: #f5f0e8;
-    height: 8px;
+    background: transparent;
+    height: 10px;
     margin: 0;
 }
 QScrollBar::handle:horizontal {
-    background: #5a3e1e;
-    border-radius: 4px;
-    min-width: 20px;
+    background: #c4bba8;
+    border-radius: 3px;
+    min-width: 28px;
+    margin: 2px;
 }
-QScrollBar::handle:horizontal:hover { background: #7a5c1e; }
+QScrollBar::handle:horizontal:hover { background: #67594d; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
 
 /* ── Progress Bar ────────────────────────────────────── */
 QProgressBar {
@@ -812,7 +931,7 @@ QProgressBar {
     max-height: 14px;
 }
 QProgressBar::chunk {
-    background: #7a5c1e;
+    background: #73571c;
     border-radius: 2px;
 }
 
@@ -852,6 +971,9 @@ QMenu::item:selected {
     background: #ddd4bc;
     color: #1e1a14;
 }
+QMenu::item:disabled {
+    color: #67594d;
+}
 QMenu::separator {
     height: 1px;
     background: #c4bba8;
@@ -865,7 +987,7 @@ QTextBrowser {
     border: none;
     font-family: "Consolas", "Courier New", monospace;
     font-size: 9pt;
-    selection-background-color: #7a5c1e;
+    selection-background-color: #73571c;
 }
 
 /* ── Tool Tips ───────────────────────────────────────── */
@@ -893,7 +1015,7 @@ QFrame[frameShape="4"], QFrame[frameShape="5"] {
 /* ── Search term chip tags ───────────────────────────── */
 QWidget#searchTagWidget {
     background: #ddd4bc;
-    border: 1px solid #7a5c1e;
+    border: 1px solid #73571c;
     border-radius: 2px;
 }
 QLabel#searchTag {
@@ -904,7 +1026,7 @@ QLabel#searchTag {
 }
 QPushButton#searchTagRemove {
     background: transparent;
-    color: #9a8878;
+    color: #67594d;
     border: none;
     padding: 0px;
     font-size: 11pt;
@@ -920,6 +1042,16 @@ QPushButton#searchTagRemove:hover {
 }
 """
 
+def _with_images(qss: str) -> str:
+    chevron = _ui_image("ui_chevron_down.svg", _SVG_CHEVRON)
+    check = _ui_image("ui_check.svg", _SVG_CHECK)
+    chevron_up = _ui_image("ui_chevron_up.svg", _SVG_CHEVRON_UP)
+    qss = qss.replace("@CHEVRON@", f'image: url("{chevron}");' if chevron else "image: none;")
+    qss = qss.replace("@CHEVRON_UP@", f'image: url("{chevron_up}");' if chevron_up else "image: none;")
+    return qss.replace("@CHECK@", f'image: url("{check}");' if check else "image: none;")
+
+
+LIGHT_QSS = _with_images(LIGHT_QSS)
 DARK_QSS = remap_colors(LIGHT_QSS, True)
 
 
@@ -1179,8 +1311,8 @@ def _build_palette():
     palette.setColor(QPalette.ColorRole.Text,            QColor(C["text"]))
     palette.setColor(QPalette.ColorRole.Button,          QColor(C["btn_bg"]))
     palette.setColor(QPalette.ColorRole.ButtonText,      QColor(C["text"]))
-    palette.setColor(QPalette.ColorRole.Highlight,       QColor(C["accent"]))
-    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorRole.Highlight,       QColor(C["selected_bg"]))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(C["text"]))
     palette.setColor(QPalette.ColorRole.Link,            QColor(C["accent"]))
     palette.setColor(QPalette.ColorRole.ToolTipBase,     QColor(C["bg_header"]))
     palette.setColor(QPalette.ColorRole.ToolTipText,     QColor(C["text"]))

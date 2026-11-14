@@ -187,6 +187,9 @@ class ParseWorker(QThread):
         search_cache: list[str] = []
         if events and not self._stop_event.is_set():
             from evtx_tool.gui.models import EventTableModel
+            # Interned here, in this thread: set_events then skips its own
+            # pass (~2 s of frozen window on 460k events).
+            EventTableModel.intern_events(events)
             search_cache = [EventTableModel._build_search_str(ev) for ev in events]
 
         # Emit immediately — events are ready for display!

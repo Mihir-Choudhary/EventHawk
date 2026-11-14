@@ -1,8 +1,8 @@
 # Time zone and precision
 
-The top-level **Time zone** action opens display settings: local time, UTC, a specific IANA time zone, or a custom UTC offset. The initial model setting is local time. Specific zones need an available time-zone database; `tzdata` is included in the source requirements for Windows.
+**View > Time Zone** opens display settings: local time, UTC, a specific IANA time zone, or a custom UTC offset. The initial model setting is local time. Specific zones need an available time-zone database; `tzdata` is included in the source requirements for Windows.
 
-**Precision** offers **Seconds**, **Milliseconds**, and **Microseconds**. Seconds is the initial setting; the GUI can restore a saved precision. Fractional digits are truncated for display, not rounded. Changing display precision does not remove precision from the underlying timestamp.
+**View > Timestamp Precision** offers **Seconds**, **Milliseconds**, and **Microseconds**. Seconds is the initial setting; the GUI can restore a saved precision. Fractional digits are truncated for display, not rounded. Changing display precision does not remove precision from the underlying timestamp.
 
 GUI date/hour column filters and Advanced Filter time boundaries follow the selected display zone. Internally, event times are treated as UTC. For CLI date bounds, convert times to UTC yourself and use the documented UTC forms. CLI date comparisons are whole-second; numeric offsets are not converted, and timeline anchors reject numeric offsets. This differs from the GUI display-zone conversion and the retained-precision Around window.
 

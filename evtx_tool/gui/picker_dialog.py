@@ -152,7 +152,8 @@ class PickerDialog(QDialog):
             QHeaderView::section {{
                 background: {COLORS['bg_header']};
                 color: {COLORS['text_dim']};
-                border: 1px solid {COLORS['border']};
+                border: none;
+                border-bottom: 1px solid {COLORS['border']};
                 padding: 3px 6px;
                 font-size: 8pt;
                 font-weight: bold;
@@ -160,7 +161,7 @@ class PickerDialog(QDialog):
             QLineEdit {{
                 background: {COLORS['bg_main']};
                 color: {COLORS['text']};
-                border: 1px solid {COLORS['border']};
+                border: 1px solid {COLORS['border_input']};
                 border-radius: 3px;
                 padding: 3px 6px;
             }}
@@ -173,7 +174,7 @@ class PickerDialog(QDialog):
                 font-size: 9pt;
             }}
             QPushButton:hover {{
-                background: {COLORS.get('accent', '#7a5c1e')};
+                background: {COLORS.get('accent', '#73571c')};
                 color: white;
             }}
             QLabel {{
