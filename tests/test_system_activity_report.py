@@ -121,6 +121,12 @@ def main() -> int:
     check("system fields are listed by label once (meta) and value per event",
           d["meta"]["sys"][0] == "Provider" and kp42[8][0] == "Microsoft-Windows-Kernel-Power")
     check("no event gets an invented description", all(isinstance(e[4], str) for e in E))
+    res3, ev3 = sample()
+    for e in ev3:
+        e["source_file"] = "case-logs/Logs\\System.evtx"
+    files3 = data_of(rep.render_html(res3, ev3))["files"]
+    check("log files are shown as one clean, full path (no relative / mixed separators)",
+          all(os.path.isabs(f) and "/" not in f for f in files3 if f) if os.sep == "\\" else True, str(files3))
 
     print("\n=== D. export from the System Activity window ===")
     from PySide6.QtWidgets import QApplication

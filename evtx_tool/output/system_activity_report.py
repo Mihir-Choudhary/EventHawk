@@ -136,6 +136,18 @@ def _base_state(state: str) -> str:
     return str(state).split(" (")[0]
 
 
+def _display_path(f: str) -> str:
+    """A log file as one clean, full path.  A relative path with mixed
+    separators (as given on the command line) read as a typo in an evidence
+    report."""
+    if not f:
+        return ""
+    try:
+        return os.path.normpath(os.path.abspath(f))
+    except (OSError, ValueError):
+        return f
+
+
 def _describe(ev) -> str:
     try:
         from evtx_tool.analysis.event_descriptions import get_event_description
@@ -187,7 +199,7 @@ def build_payload(result: dict, events=None, digits: int = 0, generated: datetim
         f = str(e.get("source_file") or "")
         if f not in file_i:
             file_i[f] = len(files)
-            files.append(f)
+            files.append(_display_path(f))
         # Copies of the same log count once (the analysis's own rule).
         try:
             c = _key(e)
