@@ -8870,7 +8870,12 @@ def _make_wrap_name_delegate(tree):
             width = tree.header().sectionSize(0) - self._PAD_W - tree.indentation() * levels
             if width <= 20 or not text:
                 return base
-            fm = option.fontMetrics
+            # The item's own font: an open file's name is bold, and bold is
+            # wider, so a name that fits one line in the regular weight can
+            # need two (measured in the regular font, the second line was cut).
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            fm = opt.fontMetrics
             shown, flags = _layout(text, width, fm)
             r = fm.boundingRect(QRect(0, 0, width, 10_000), flags, shown)
             return QSize(base.width(), max(base.height(), r.height() + self._PAD_H))

@@ -23,6 +23,7 @@ def check(name, cond, detail=""):
 
 
 def main() -> int:
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication, QTreeWidgetItem
     app = QApplication.instance() or QApplication([])
     import evtx_tool.gui.main_window as mw
@@ -52,6 +53,36 @@ def main() -> int:
     pump()
     h2 = t.visualItemRect(t.topLevelItem(1)).height()
     check("a wider panel re-measures: fewer lines", h2 < h[1], f"{h[1]} -> {h2}")
+
+    # An open file's name is bold, and bold is wider: a name that fits one
+    # line in the regular weight can need two.  The row must be measured in
+    # the font it is drawn in, or the second line is cut off (user report:
+    # "Biometrics / Operational" selected and clipped).
+    from PySide6.QtGui import QFontMetrics
+    t.clear()
+    name = "Biometrics / Operational"
+    item = QTreeWidgetItem([name, "1,297"])
+    t.addTopLevelItem(item)
+    pump()
+    fm = QFontMetrics(t.font())
+    bf = t.font(); bf.setBold(True)
+    fmb = QFontMetrics(bf)
+    # Width where the regular name fits on one line but the bold one does not.
+    col = (fm.horizontalAdvance(name) + fmb.horizontalAdvance(name)) // 2 + 16
+    gap = fmb.horizontalAdvance(name) - fm.horizontalAdvance(name)
+    w._file_tree_panel.setFixedWidth(col + (t.width() - t.header().sectionSize(0)))
+    pump()
+    t.header().resizeSection(0, col)
+    pump()
+    reg_h = t.visualItemRect(item).height()
+    f = item.font(0); f.setBold(True); item.setFont(0, f)
+    pump()
+    bold_h = t.visualItemRect(item).height()
+    check("bold (open) name gets the taller row it wraps to", gap < 4 or bold_h >= reg_h * 1.6,
+          f"regular {reg_h} px, bold {bold_h} px, bold is {gap} px wider")
+    t.setCurrentItem(item); pump()
+    check("selecting it keeps the taller row", t.visualItemRect(item).height() == bold_h,
+          str(t.visualItemRect(item).height()))
     w.close()
 
     ok = sum(1 for _n, c, _d in CHECKS if c)
