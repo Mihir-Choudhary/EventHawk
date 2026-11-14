@@ -10295,9 +10295,12 @@ class MainWindow(QMainWindow):
         self._tree_chains.setRootIsDecorated(True)
         _ch_hdr = self._tree_chains.header()
         _ch_hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        _ch_hdr.setStretchLastSection(True)
-        for _ci, _cw in enumerate([80, 260, 110, 65, 140]):
+        # The rule name takes the spare width (it was cut off while First Seen
+        # had room to spare); the other columns fit their content.
+        _ch_hdr.setStretchLastSection(False)
+        for _ci, _cw in enumerate([80, 260, 90, 60, 150]):
             self._tree_chains.setColumnWidth(_ci, _cw)
+        _ch_hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         # Allow the user to Ctrl/Shift-click multiple chains, then right-click → new tab
         self._tree_chains.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._tree_chains.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -10367,9 +10370,19 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             parsing = False
         if parsing:
+            # Progress where the analyst is looking (it was only a thin bar in
+            # the side panel and a line in the status bar).
+            st = getattr(self, "_parse_state", None)
+            if st:
+                done, total, events, rate, elapsed = st
+                pct = int(done / total * 100) if total else 0
+                return ("clock", f"Parsing {done:,} of {total:,} files ({pct}%)",
+                        f"{events:,} events so far  \u00b7  {rate:,.0f} events/s  \u00b7  {elapsed:,.0f} s\n\n"
+                        "Events appear here when parsing finishes. "
+                        "Stop (beside Parse) cancels.")
             return ("clock", "Parsing\u2026",
                     "Events appear here when parsing finishes. "
-                    "Progress is shown in the side panel and the status bar.")
+                    "Stop (beside Parse) cancels.")
         queued = self._file_list.count()
         if queued:
             paths = [self._file_list.item(i).data(Qt.ItemDataRole.UserRole) or ""
@@ -11833,6 +11846,7 @@ class MainWindow(QMainWindow):
 
         self._clear_results()
         self._parse_start_ts = time.monotonic()
+        self._parse_state = None
         self._progress_bar.setValue(0)
         self._btn_parse.setEnabled(False)
         self._btn_stop.setEnabled(True)
@@ -11873,8 +11887,12 @@ class MainWindow(QMainWindow):
         if total_files > 0:
             pct = int(done_files / total_files * 100)
             self._progress_bar.setValue(pct)
+        _t0 = getattr(self, "_parse_start_ts", None)
+        self._parse_state = (done_files, total_files, done_events, eps,
+                             (time.monotonic() - _t0) if _t0 else 0)
+        self._table.viewport().update()
         self._set_status(
-            f"\u26a1 Juggernaut: {done_files}/{total_files} files",
+            f"Juggernaut: {done_files}/{total_files} files",
             stats=f"{done_events:,} events  |  {eps:,.0f} rec/s",
         )
         # Keep the loading dialog's detail line in sync with parse progress
@@ -13743,6 +13761,7 @@ class MainWindow(QMainWindow):
 
         self._clear_results()
         self._parse_start_ts = time.monotonic()
+        self._parse_state = None
         self._progress_bar.setValue(0)
         self._btn_parse.setEnabled(False)
         self._btn_stop.setEnabled(True)
@@ -13789,6 +13808,8 @@ class MainWindow(QMainWindow):
 
         pct = int(done / total * 100)
         self._progress_bar.setValue(pct)
+        self._parse_state = (done, total, matched, rps, elapsed)
+        self._table.viewport().update()          # the empty table shows this progress
         self._lbl_matched.setText(f"{matched:,} events")
         self._lbl_speed.setText(f"{rps:,.0f}/s")
         self._lbl_elapsed.setText(f"{elapsed:.1f} s")
@@ -14093,6 +14114,7 @@ class MainWindow(QMainWindow):
         self._iocs     = iocs
         self._chains   = chains or []
         self._chains_ran = chains is not None   # 0 chains found vs correlation not run
+        self._iocs_ran = iocs is not None       # likewise for IOC extraction
         for _st in self._file_tabs.values():    # per-file IOC views come from these results
             _st.iocs = None
         # In Juggernaut Mode the analysis subprocess runs with events=[] so
@@ -16620,8 +16642,11 @@ class MainWindow(QMainWindow):
                     "ATT&CK mapping is not available in Juggernaut Mode — it tags events "
                     "held in memory, which this mode does not keep. Parse in Normal Mode "
                     "to map ATT&CK.")
+            elif atk is not None:
+                self._lbl_attack_summary.setText("No events matched an ATT&CK technique.")
             else:
-                self._lbl_attack_summary.setText("No ATT&CK data — run with ATT&CK Mapping enabled.")
+                self._lbl_attack_summary.setText(
+                    "ATT&CK mapping was not run. Tick ATT&CK Mapping in the side panel and parse again.")
             return
 
         total = atk.get("total_tagged", 0)
@@ -16702,7 +16727,13 @@ class MainWindow(QMainWindow):
                     _st.iocs = _mine
                 iocs = _st.iocs
         if not iocs:
-            self._lbl_ioc_summary.setText("No IOC data — run with IOC Extraction enabled.")
+            if getattr(self, "_iocs_ran", False) and self._iocs is not None:
+                _m = "No IOCs found in these events."
+            elif self._analysis_running() and self._chk_ioc.isChecked():
+                _m = "IOCs appear here when parsing and extraction finish."
+            else:
+                _m = "IOC extraction was not run. Tick IOC Extraction in the side panel and parse again."
+            self._lbl_ioc_summary.setText(_m)
             self._btn_export_iocs.setEnabled(False)
             self._btn_threat_intel.setEnabled(False)
             self._fill_ioc_cat_combo()
@@ -17356,13 +17387,32 @@ class MainWindow(QMainWindow):
             logger.exception("IOC export failed: %s", path)
             QMessageBox.critical(self, "Export Failed", str(exc))
 
+    def _analysis_running(self) -> bool:
+        """An analysis is running, or will once the parse in progress ends."""
+        r = getattr(self, "_analysis_runner", None)
+        try:
+            if r is not None and r.is_running():
+                return True
+            for wk in (getattr(self, "_worker", None), getattr(self, "_hw_worker", None)):
+                if wk is not None and wk.isRunning():
+                    return True
+        except RuntimeError:
+            pass
+        return False
+
     def _refresh_chains_tab(self) -> None:
         self._tree_chains.clear()
         chains = self._chains
         if not chains:
-            self._lbl_chains_summary.setText(
-                "No chains detected — run with Correlation Engine enabled."
-            )
+            # Say what actually happened: "run with Correlation Engine enabled"
+            # showed after it had run and simply found nothing.
+            if getattr(self, "_chains_ran", False):
+                msg = "No attack chains found in these events."
+            elif self._analysis_running() and self._chk_correlate.isChecked():
+                msg = "Chains appear here when parsing and correlation finish."
+            else:
+                msg = "Correlation was not run. Tick Correlation Engine in the side panel and parse again."
+            self._lbl_chains_summary.setText(msg)
             return
 
         crit = sum(1 for c in chains if c.get("severity") == "critical")
@@ -17435,8 +17485,8 @@ class MainWindow(QMainWindow):
             if desc:
                 top.child(0).setFirstColumnSpanned(True)   # needs the row in the tree
 
-        self._tree_chains.resizeColumnToContents(0)
-        self._tree_chains.resizeColumnToContents(3)
+        for _c in (0, 2, 3, 4):
+            self._tree_chains.resizeColumnToContents(_c)
 
     def _on_chain_double_click(self, item: QTreeWidgetItem, col: int) -> None:
         """Filter the events table to show only events matching the chain's event IDs."""
@@ -18847,6 +18897,7 @@ class MainWindow(QMainWindow):
         self._attack_summary     = None
         self._iocs               = None
         self._chains             = []
+        self._chains_ran = self._iocs_ran = False
 
         # ── Per-file state cleanup ────────────────────────────────────────
         # Close and destroy all open file tabs

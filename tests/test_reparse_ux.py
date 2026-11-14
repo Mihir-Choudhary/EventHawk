@@ -88,6 +88,26 @@ def main() -> int:
           evrow.text(2) == "WS1" and evrow.text(3) == "" and evrow.text(4) == apply_tz(ts),
           f"{evrow.text(2)!r} {evrow.text(3)!r} {evrow.text(4)!r}")
 
+    print("\n=== C2. empty tabs say what happened ===")
+    w._chains, w._chains_ran = [], True
+    w._refresh_chains_tab()
+    check("correlation ran and found nothing: says so",
+          w._lbl_chains_summary.text() == "No attack chains found in these events.", w._lbl_chains_summary.text())
+    w._chains_ran = False
+    w._refresh_chains_tab()
+    check("correlation not run: says how to run it",
+          "not run" in w._lbl_chains_summary.text() and "Correlation Engine" in w._lbl_chains_summary.text(),
+          w._lbl_chains_summary.text())
+
+    class _Busy:
+        def isRunning(self):
+            return True
+    w._worker, w._parse_state = _Busy(), (8, 417, 1762, 191.0, 12.0)
+    icon_, title, body = w._main_table_empty_hint()
+    check("while parsing the events area shows the progress",
+          title == "Parsing 8 of 417 files (1%)" and "1,762 events so far" in body, f"{title} | {body[:60]}")
+    w._worker = None
+
     print("\n=== D. analysis scope selector ===")
     check("it sits in the analysis tab bar's corner",
           w._analysis_tabs.cornerWidget(Qt.Corner.TopRightCorner) is w._scope_row_widget)
