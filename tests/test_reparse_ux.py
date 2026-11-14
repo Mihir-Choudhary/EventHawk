@@ -79,6 +79,9 @@ def main() -> int:
     top = w._tree_chains.topLevelItem(0)
     check("First Seen in the display zone, exact UTC on hover",
           top.text(4) == apply_tz(ts) and top.toolTip(4) == f"UTC {ts}", top.text(4))
+    check("event rows are not built until the chain is expanded", top.childCount() == 1, str(top.childCount()))
+    w._tree_chains.expandItem(top)
+    T.pump(50)
     desc, evrow = top.child(0), top.child(1)
     check("the description spans the whole row", desc.isFirstColumnSpanned())
     check("an event row: event and record under Rule, nothing under Severity",

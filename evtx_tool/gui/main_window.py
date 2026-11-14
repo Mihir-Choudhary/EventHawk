@@ -10306,6 +10306,9 @@ class MainWindow(QMainWindow):
         self._tree_chains.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree_chains.customContextMenuRequested.connect(self._on_chains_context_menu)
         self._tree_chains.itemDoubleClicked.connect(self._on_chain_double_click)
+        # A chain's event rows are built when it is expanded (all 739 chains'
+        # rows up front was half a second of frozen window as the analysis ended).
+        self._tree_chains.itemExpanded.connect(self._fill_chain_events)
         layout.addWidget(self._tree_chains)
         return w
 
@@ -17460,26 +17463,9 @@ class MainWindow(QMainWindow):
                 desc_item.setToolTip(0, desc)
                 top.addChild(desc_item)
 
-            for ev in (chain.get("events") or []):   # every event (it showed 10)
-                # events are full event dicts, not plain IDs
-                if isinstance(ev, dict):
-                    eid = ev.get("event_id", "?")
-                    raw_ts = str(ev.get("timestamp", "") or "")
-                    comp = ev.get("computer", "")
-                    rec = ev.get("event_record_id") or ev.get("record_id")
-                else:
-                    eid, raw_ts, comp, rec = ev, "", "", None
-                # Each value under its own heading: the time used to sit under
-                # Events and the event ID under Severity.
-                ev_item = QTreeWidgetItem([
-                    "", f"Event {eid}" + (f"  ·  record {rec}" if rec not in (None, "") else ""),
-                    comp, "", apply_tz(raw_ts) if raw_ts else "",
-                ])
-                for _c in (1, 2, 4):
-                    ev_item.setForeground(_c, QColor(COLORS["text_dim"]))
-                if raw_ts:
-                    ev_item.setToolTip(4, f"UTC {raw_ts}")
-                top.addChild(ev_item)
+            if chain.get("events"):
+                top.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
+            top.setData(1, Qt.ItemDataRole.UserRole, False)      # event rows not built yet
 
             self._tree_chains.addTopLevelItem(top)
             if desc:
@@ -17487,6 +17473,34 @@ class MainWindow(QMainWindow):
 
         for _c in (0, 2, 3, 4):
             self._tree_chains.resizeColumnToContents(_c)
+
+    def _fill_chain_events(self, top: QTreeWidgetItem) -> None:
+        """Build a chain's event rows the first time it is expanded."""
+        if top.parent() is not None or top.data(1, Qt.ItemDataRole.UserRole) is not False:
+            return
+        top.setData(1, Qt.ItemDataRole.UserRole, True)
+        wrap = top.data(0, Qt.ItemDataRole.UserRole)
+        chain = getattr(wrap, "data", None) or {}
+        for ev in (chain.get("events") or []):   # every event (it showed 10)
+            # events are full event dicts, not plain IDs
+            if isinstance(ev, dict):
+                eid = ev.get("event_id", "?")
+                raw_ts = str(ev.get("timestamp", "") or "")
+                comp = ev.get("computer", "")
+                rec = ev.get("event_record_id") or ev.get("record_id")
+            else:
+                eid, raw_ts, comp, rec = ev, "", "", None
+            # Each value under its own heading: the time used to sit under
+            # Events and the event ID under Severity.
+            ev_item = QTreeWidgetItem([
+                "", f"Event {eid}" + (f"  ·  record {rec}" if rec not in (None, "") else ""),
+                comp, "", apply_tz(raw_ts) if raw_ts else "",
+            ])
+            for _c in (1, 2, 4):
+                ev_item.setForeground(_c, QColor(COLORS["text_dim"]))
+            if raw_ts:
+                ev_item.setToolTip(4, f"UTC {raw_ts}")
+            top.addChild(ev_item)
 
     def _on_chain_double_click(self, item: QTreeWidgetItem, col: int) -> None:
         """Filter the events table to show only events matching the chain's event IDs."""

@@ -422,6 +422,25 @@ def compute_custom_values(compiled, events) -> dict:
     return out
 
 
+# A large collection is millions of Python objects (one dict per event plus its
+# event data).  The cyclic garbage collector walks every tracked object on a
+# full collection: 250 ms with 460k events on an idle machine, several seconds
+# on a busy one, at a random moment -- a "Not responding" stall while scrolling.
+# Event dicts hold no reference cycles (refcounting frees them when a new load
+# replaces them), so once a big load is in, collect once and freeze what is
+# there: later collections skip it.
+_GC_FREEZE_MIN_EVENTS = 50_000
+
+
+def _freeze_after_big_load(n_events: int) -> None:
+    if n_events < _GC_FREEZE_MIN_EVENTS:
+        return
+    import gc
+    gc.unfreeze()        # the previous load's objects go back to the collector
+    gc.collect()         # nothing that is already garbage gets frozen
+    gc.freeze()
+
+
 class EventTableModel(QAbstractTableModel):
     """
     Virtual model — stores list[dict] events, never copies data into Qt items.
@@ -804,6 +823,7 @@ class EventTableModel(QAbstractTableModel):
         self._adv_cache_gen = getattr(self, "_adv_cache_gen", 0) + 1
         self._stop_adv_build()
         self.endResetModel()
+        _freeze_after_big_load(len(events))
 
     def get_event(self, row: int) -> dict | None:
         if 0 <= row < len(self._events):
@@ -853,9 +873,13 @@ class EventTableModel(QAbstractTableModel):
         _CUSTOM_VALUES.pop(col_id, None)
         self.endRemoveColumns()
 
-    # Chunk size for background haystack building.  Small enough that a chunk
-    # is a few milliseconds, large enough that per-chunk overhead is noise.
-    _ADV_CHUNK = 20_000
+    # Background haystack building runs in time slices: each slice stops after
+    # _ADV_SLICE_SEC and yields to the event loop.  It used a fixed 20,000-event
+    # chunk, assumed to be "a few milliseconds" -- at ~50 us an event that was
+    # ~1 s of frozen window per chunk, about 23 freezes in a row after loading
+    # 460k events (measured on the user's logs, 2026-11-14).
+    _ADV_CHUNK = 20_000          # upper bound per slice (kept for callers / tests)
+    _ADV_SLICE_SEC = 0.008
 
     def start_adv_cache_build(self) -> None:
         """Build the advanced-search haystack incrementally, off the hot path.
@@ -886,11 +910,18 @@ class EventTableModel(QAbstractTableModel):
         if self._adv_build_gen != getattr(self, "_adv_cache_gen", 0):
             self._stop_adv_build()
             return
+        import time as _time
         start = len(self._adv_partial)
         end = min(start + self._ADV_CHUNK, len(self._events))
-        for ev in self._events[start:end]:
-            self._adv_partial.append(self.build_adv_search_str(ev).lower())
-        if end >= len(self._events):
+        deadline = _time.perf_counter() + self._ADV_SLICE_SEC
+        events, out, build = self._events, self._adv_partial, self.build_adv_search_str
+        i = start
+        while i < end:
+            out.append(build(events[i]).lower())
+            i += 1
+            if not (i & 31) and _time.perf_counter() >= deadline:
+                break                 # time is up: let the window paint and take input
+        if i >= len(self._events):
             self._adv_search_cache = self._adv_partial
             self._stop_adv_build()
 
@@ -1237,7 +1268,10 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         self._quick_includes = incl
 
     def set_filter_text(self, text: str) -> None:
-        self._filter_text = text.strip().lower()
+        new = text.strip().lower()
+        if new == self._filter_text:
+            return        # no change: a full pass is ~13 s of frozen window on 460k rows
+        self._filter_text = new
         self._update_filter_active()
         self.invalidateFilter()
 
@@ -1247,8 +1281,15 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         Pass tactic=None to clear.  technique should be a TID string (e.g. "T1059").
         Both comparisons are case-insensitive.
         """
-        self._tactic_filter = tactic.lower() if tactic else None
-        self._technique_filter = technique.lower() if technique else None
+        new_tac = tactic.lower() if tactic else None
+        new_tech = technique.lower() if technique else None
+        if new_tac == self._tactic_filter and new_tech == self._technique_filter:
+            # No change.  Clearing an unset tactic filter re-ran filterAcceptsRow
+            # on every row: 7 s of "Not responding" on 460k events, and the
+            # parse-reset path did it on its way to loading the new events.
+            return
+        self._tactic_filter = new_tac
+        self._technique_filter = new_tech
         self._update_filter_active()
         self.invalidateFilter()
 
@@ -1262,6 +1303,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         pure comparison logic — no string lowering, no regex compilation,
         no timestamp parsing happens inside the per-row hot loop.
         """
+        if not cfg and not self._adv:
+            return        # already no advanced filter: nothing to re-filter
         self._adv = cfg
         if not cfg:
             # Reset all pre-compiled state
@@ -1584,16 +1627,21 @@ class EventFilterProxyModel(QSortFilterProxyModel):
 
         ``filters`` is a list of dicts with keys 'key', 'value', 'include'.
         """
-        self._quick_filters = [
+        new = [
             {"key": f["key"], "value": str(f["value"]).lower(), "include": bool(f["include"])}
             for f in filters
         ]
+        if new == self._quick_filters:
+            return        # the same quick filters again: nothing to re-filter
+        self._quick_filters = new
         self._rebuild_quick_sets()
         self._update_filter_active()
         self.invalidateFilter()
 
     def clear_quick_filters(self) -> None:
         """Remove all quick filters."""
+        if not self._quick_filters:
+            return        # nothing to remove: skip the full re-filter
         self._quick_filters.clear()
         self._rebuild_quick_sets()
         self._update_filter_active()
@@ -1638,6 +1686,9 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         All fields are set atomically before the single invalidateFilter() call
         so the proxy is never re-scanned with a partially-updated state.
         """
+        if logon_id is None and self._session_logon_id is None:
+            self._session_linked_lid = None
+            return        # already no session filter: skip the full re-filter
         self._session_logon_id = logon_id
         self._session_computer = computer if logon_id else None
         self._session_linked_lid = (linked_lid or None) if logon_id else None
