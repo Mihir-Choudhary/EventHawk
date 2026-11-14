@@ -36,7 +36,8 @@ def check(name, cond, detail=""):
 def around_menu(w, ev, source):
     menu = QMenu()
     w._add_around_menu(menu, ev, source)
-    act = next((a for a in menu.actions() if a.text().startswith("⏱ Around this event")), None)
+    # The entry's glyph prefix became an icon; match the label itself.
+    act = next((a for a in menu.actions() if "Around this event" in a.text()), None)
     return menu, act
 
 

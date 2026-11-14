@@ -84,6 +84,13 @@ def _sep(parent=None) -> QFrame:
     return f
 
 
+def _menu_icon(name: str):
+    """Line icon for a context-menu entry (the entries used emoji / glyph
+    prefixes, which drew in the emoji font's colours and sizes)."""
+    from .icons import icon
+    return icon(name, "text_dim", 16)
+
+
 def _short_log_name(path: str) -> str:
     """A log's file name as people read it in the file list:
     "Microsoft-Windows-PowerShell%4Operational.evtx" -> "PowerShell / Operational".
@@ -7503,9 +7510,9 @@ class _ComputerNormalisationDialog(QDialog):
             menu.addSeparator()
             for ln in r["suggestions"]:
                 what = self._link_label(ln)
-                act_c = menu.addAction(f"✔  Confirm suggested link  ({what})")
+                act_c = menu.addAction(_menu_icon("check"), f"Confirm suggested link  ({what})")
                 act_c.triggered.connect(lambda _=False, l=ln: self._confirm_link(l))
-                act_r = menu.addAction(f"✖  Reject suggested link  ({what})")
+                act_r = menu.addAction(_menu_icon("x"), f"Reject suggested link  ({what})")
                 act_r.triggered.connect(lambda _=False, l=ln: self._reject_link(l))
 
         menu.exec(self._tbl.viewport().mapToGlobal(pos))
@@ -14278,11 +14285,11 @@ class MainWindow(QMainWindow):
         # ── Quick Filter actions (ELE-style) ──────────────────────────────
         if col_key and cell_val:
             col_name = COLUMNS[col] if col < len(COLUMNS) else str(col)
-            act_include = menu.addAction(f"⚡ Quick Filter: {col_name} = {cell_val}")
+            act_include = menu.addAction(_menu_icon("filter"), f"Quick Filter: {col_name} = {cell_val}")
             act_include.triggered.connect(
                 lambda checked=False, k=col_key, v=cell_val: self._apply_quick_filter(k, v, True)
             )
-            act_exclude = menu.addAction(f"⚡ Quick Filter: {col_name} ≠ {cell_val}")
+            act_exclude = menu.addAction(_menu_icon("filter-x"), f"Quick Filter: {col_name} ≠ {cell_val}")
             act_exclude.triggered.connect(
                 lambda checked=False, k=col_key, v=cell_val: self._apply_quick_filter(k, v, False)
             )
@@ -14297,7 +14304,7 @@ class MainWindow(QMainWindow):
             _qf_list = proxy.get_quick_filters() if _has_qf else []
         if _has_qf:
             n = len(_qf_list)
-            act_clear = menu.addAction(f"✕ Clear Quick Filters ({n} active)")
+            act_clear = menu.addAction(_menu_icon("x"), f"Clear Quick Filters ({n} active)")
             act_clear.triggered.connect(lambda: self._clear_quick_filters())
             menu.addSeparator()
 
@@ -14306,14 +14313,16 @@ class MainWindow(QMainWindow):
         if rid is not None:
             bm_key = (ev.get("source_file", ""), int(rid))
             is_bm  = bm_key in self._bookmarked_keys
-            act_bm = menu.addAction("★ Remove Bookmark" if is_bm else "☆ Bookmark Event")
+            act_bm = menu.addAction(_menu_icon("star-filled" if is_bm else "star"),
+                                    "Remove Bookmark" if is_bm else "Bookmark Event")
             act_bm.triggered.connect(lambda checked=False, e=ev: self._bookmark_event(e))
             menu.addSeparator()
 
         self._add_around_menu(menu, ev, _jm_active if _jm_active is not None else proxy)
         menu.addSeparator()
 
-        act_copy = menu.addAction("Copy Row as Text")
+        act_copy = menu.addAction(_menu_icon("copy"), "Copy Row as Text")
+        act_copy.setShortcut(QKeySequence(QKeySequence.StandardKey.Copy))   # shown as a hint
         act_copy.triggered.connect(lambda: self._copy_event_row(ev))
 
         menu.exec(table.viewport().mapToGlobal(pos))
@@ -16392,9 +16401,9 @@ class MainWindow(QMainWindow):
             if cur_val.startswith(("⚠ ", "✓ ")):
                 cur_val = cur_val[2:]
 
-        act_pivot    = menu.addAction("🔍  Pivot to Events")
+        act_pivot    = menu.addAction(_menu_icon("search"), "Pivot to Events")
         act_pivot.setEnabled(bool(cur_val))
-        act_copy_tv  = menu.addAction("📋  Copy as type:value")
+        act_copy_tv  = menu.addAction(_menu_icon("copy"), "Copy as type:value")
         act_copy_tv.setEnabled(bool(cur_val and ioc_type))
         menu.addSeparator()
         act_copy     = menu.addAction("Copy Selected")
@@ -17086,14 +17095,14 @@ class MainWindow(QMainWindow):
         return names, group.display_name.strip() or "(unknown)", lines
 
     def _add_around_menu(self, menu, ev: dict, source) -> None:
-        """Add "⏱ Around this event" to a table's context menu.
+        """Add "Around this event" to a table's context menu.
 
         *source* is the clicked table's proxy (Normal) or ArrowTableModel (JM):
         what "only events that pass the current filters" snapshots.
         """
         from evtx_tool.core.time_window import PRESETS, parse_event_ts
         menu.setToolTipsVisible(True)
-        sub = menu.addMenu("⏱ Around this event")
+        sub = menu.addMenu(_menu_icon("clock"), "Around this event")
         if parse_event_ts(ev.get("timestamp")) is None:
             sub.menuAction().setEnabled(False)
             sub.menuAction().setToolTip("This event has no readable timestamp.")
