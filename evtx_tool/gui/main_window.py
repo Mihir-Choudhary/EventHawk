@@ -15085,7 +15085,7 @@ class MainWindow(QMainWindow):
                 anchor["timestamp"] = at.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             self._open_around_tab(anchor, td, td, "host")
 
-        dlg = SystemActivityDialog(res, parent=self, around=_around, digits=get_ts_precision())
+        dlg = SystemActivityDialog(res, parent=self, around=_around, digits=get_ts_precision(), events=events)
         self._system_activity_dlg = dlg
         dlg.show()
         dlg.raise_()

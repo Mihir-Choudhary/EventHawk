@@ -97,9 +97,10 @@ class _SortItem(QTableWidgetItem):
 class SystemActivityDialog(QDialog):
     """Two tabs - Timeline (periods) and Moments - filtered by computer, layer and text."""
 
-    def __init__(self, result: dict, parent=None, around=None, digits: int = 0):
+    def __init__(self, result: dict, parent=None, around=None, digits: int = 0, events=None):
         super().__init__(parent)
         self._res = result
+        self._events = events            # the raw events the analysis read (HTML report)
         self._around = around            # callable(ev, timedelta) or None
         self._digits = digits
         self._shown_rows: list = []
@@ -195,6 +196,12 @@ class SystemActivityDialog(QDialog):
         root.addWidget(self._lbl_details)
 
         btns = QHBoxLayout()
+        b = QPushButton("Export HTML Report…")
+        b.setToolTip("One self-contained file: overview, calendar, day-by-day timeline, every period, "
+                     "moment and raw event with all fields, searchable. Opens offline in any browser.")
+        b.clicked.connect(self._export_html)
+        btns.addWidget(b)
+        self._btn_html = b
         b = QPushButton("Export Timeline CSV")
         b.clicked.connect(lambda: self._export(timeline=True))
         btns.addWidget(b)
@@ -428,6 +435,36 @@ class SystemActivityDialog(QDialog):
             QMessageBox.critical(self, "Export Failed", f"Could not write CSV:\n{exc}")
             return
         QMessageBox.information(self, "Export Complete", f"Saved {tbl.rowCount():,} row(s) to:\n{path}")
+
+    def _export_html(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export System Activity Report", "system_activity_report.html",
+                                              "HTML files (*.html)")
+        if not path:
+            return
+        try:
+            info = self.write_html(path)
+        except Exception as exc:                                   # noqa: BLE001
+            logger.exception("System Activity HTML report failed")
+            QMessageBox.critical(self, "Export Failed", f"Could not write the report:\n{exc}")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Report Saved")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"Saved the System Activity report ({info['periods']:,} periods, {info['moments']:,} moments, "
+                    f"{info['bytes'] / 1_000_000:.1f} MB) to:\n{path}")
+        open_btn = box.addButton("Open", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def write_html(self, path) -> dict:
+        """The whole analysis (every computer, period, moment and raw event),
+        not just the rows shown: the report has its own filters."""
+        from evtx_tool.output.system_activity_report import write_html_report
+        return write_html_report(path, self._res, self._events, digits=self._digits)
 
     def write_csv(self, path, timeline: bool):
         from evtx_tool.output.exporters import safe_csv_writer

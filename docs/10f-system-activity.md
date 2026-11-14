@@ -16,12 +16,14 @@ The 566 session-type interpretation (0 screen on, 1 screen off, 3 sleep) is **in
 
 Missing start/end reads **Unavailable**. A period can retain a logged boundary with unavailable duration. Unexpected-shutdown reports do not prove exact crash time. Kernel-Power 107 is not an independent wake boundary.
 
-The model detects supported clock-change and uptime inconsistencies and reports them in Notes rather than inventing duration. Conflicting periods remain visible with disagreement notes. Power-Troubleshooter takes priority over conflicting 566 sleep timing; see [sleep reconstruction](10e-downtime-in-sessions.md).
+The model detects supported clock-change and uptime inconsistencies and reports them in Notes rather than inventing duration. A clock change made while a period runs makes its length **Unavailable** (the clock span is in Notes); event times before a change stay as the computer's clock showed them, never rewritten. The correction Windows writes on waking from Sleep, Hibernate or a low-power sleep (Power-Troubleshooter target state 6), "synchronized with the hardware clock", is the resume itself and leaves the sleep's length in place. **System time changed** moments name Windows' reason (Kernel-General 1: an application or system component changed the time, or synchronized with the hardware clock). Conflicting periods remain visible with disagreement notes. Power-Troubleshooter takes priority over conflicting 566 sleep timing; see [sleep reconstruction](10e-downtime-in-sessions.md).
 
 Copies collapse by content plus occurrence number within each file. Equal-looking records occurring more than once within a file remain distinct occurrences.
 
 ## Evidence pivots and export
 
 Right-click a period for **Events around this start/end**, or a moment for **Events around this moment**, with the offered windows. The center is the displayed boundary, even when the evidence was written later; that record remains an anchor. The Around tab uses the normalized computer scope.
+
+**Export HTML Report…** writes the whole analysis, every computer, period, moment and raw event, as one self-contained file that opens offline in any browser (it makes no network requests). It has a time range picker (a strip of the whole log to drag across, From/To, quick ranges and a calendar of hours on per day), per-layer totals for the range, usual hours by weekday, a day-by-day view (power by default; screen, lock and moments lanes on demand; clock changes marked), an activity filter, and searchable, sortable tables. Clicking anything opens its details: how the period was measured, exact times and duration, and the start and end events with every field, their event record IDs and the meaning of coded fields. Light and dark themes; prints every row.
 
 **Export Timeline CSV** and **Export Moments CSV** write shown rows in shown order. CSV uses [formula-safe escaping](11-exporting.md). Times are UTC at the chosen **Precision**; durations use retained fractional values. Numeric duration is a reconstruction, not a collection-completeness guarantee.
