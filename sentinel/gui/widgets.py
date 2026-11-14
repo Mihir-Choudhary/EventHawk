@@ -8,11 +8,62 @@ import threading
 from contextlib import contextmanager
 from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QLabel, QMessageBox, QStyledItemDelegate, QStyleOptionViewItem, QWidget,
+    QHBoxLayout, QLabel, QMessageBox, QPushButton, QStyledItemDelegate, QStyleOptionViewItem, QVBoxLayout,
+    QWidget,
 )
+
+
+class EmptyState(QWidget):
+    """A calm placeholder for a page that has nothing to show yet: what will
+    appear here, what to do first, and a button that goes there."""
+
+    action = Signal()
+
+    def __init__(self, title: str, text: str, button: str = "", icon: str = "inbox",
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.addStretch(2)
+        try:                                   # EventHawk's line icons, when hosted by it
+            from evtx_tool.gui.icons import pixmap
+            from evtx_tool.gui.theme import COLORS
+            pic = QLabel()
+            pic.setPixmap(pixmap(icon, COLORS["text_dim"], 36))
+            pic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lay.addWidget(pic)
+        except Exception:                      # noqa: BLE001  (standalone Sentinel)
+            pass
+        head = QLabel(title)
+        f = head.font()
+        f.setPointSize(f.pointSize() + 2)
+        f.setBold(True)
+        head.setFont(f)
+        head.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(head)
+        body = QLabel(text)
+        body.setWordWrap(True)
+        body.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        body.setMaximumWidth(520)
+        body.setObjectName("emptyStateText")
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(body)
+        row.addStretch()
+        lay.addLayout(row)
+        self.button = None
+        if button:
+            self.button = QPushButton(button)
+            self.button.clicked.connect(self.action.emit)
+            brow = QHBoxLayout()
+            brow.addStretch()
+            brow.addWidget(self.button)
+            brow.addStretch()
+            lay.addSpacing(6)
+            lay.addLayout(brow)
+        lay.addStretch(3)
 
 
 def show_blocking(parent: QWidget, icon: QMessageBox.Icon, title: str, text: str) -> None:

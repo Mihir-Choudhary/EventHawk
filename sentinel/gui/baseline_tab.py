@@ -160,16 +160,19 @@ class BaselineTab(QWidget):
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
+        self._progress_bar.hide()          # shown once a run starts
         self._progress_bar.setTextVisible(True)
         stab_layout.addWidget(self._progress_bar)
 
-        self._status_label = QLabel("Ready")
-        self._status_label.setAlignment(Qt.AlignCenter)
+        self._status_label = QLabel('Choose the folder of baseline .evtx files and an output folder, then Build Baseline — or Load Existing for a baseline built before.')
+        self._status_label.setWordWrap(True)
+        self._status_label.setObjectName("emptyStateText")
         stab_layout.addWidget(self._status_label)
 
         btn_row = QHBoxLayout()
         self._build_btn = QPushButton("Build Baseline")
         self._build_btn.setFixedHeight(32)
+        self._build_btn.setObjectName("parseBtn")      # the primary action, as Parse in EventHawk
         self._build_btn.clicked.connect(self._start_build)
         btn_row.addWidget(self._build_btn)
 
@@ -187,6 +190,7 @@ class BaselineTab(QWidget):
         self._log_edit = QTextEdit()
         self._log_edit.setReadOnly(True)
         self._log_edit.setMaximumHeight(160)
+        self._log_edit.setPlaceholderText('Progress and warnings from the build appear here.')
         self._log_edit.setStyleSheet("font-family: monospace; font-size: 11px;")
         log_layout.addWidget(self._log_edit)
         layout.addWidget(log_group)
@@ -235,6 +239,7 @@ class BaselineTab(QWidget):
         self._build_btn.setEnabled(False)
         self._load_btn.setEnabled(False)
         self._progress_bar.setValue(0)
+        self._progress_bar.show()
 
         self._worker = _BuildWorker(evtx_dir, output_dir, sigma_dir)
         self._worker.progress.connect(self._on_progress)

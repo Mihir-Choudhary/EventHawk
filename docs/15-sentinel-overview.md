@@ -2,7 +2,7 @@
 
 Sentinel compares process activity with a baseline built from representative logs. It normalizes process/command information, models frequency and ancestry, and scores deviations. A high score is a review priority, not proof of malware; suppression is not proof of safety.
 
-Open **Tools > Baseline Analysis (Sentinel)**. The separate window has **Baseline Setup**, **Analysis**, **Results**, and **Metrics** tabs. Build/load a baseline, choose target inputs, run analysis, then inspect results and export a report. It does not merely analyze the rows currently visible in the main EventHawk grid.
+Open **Tools > Baseline Analysis (Sentinel)**. The separate window has **Baseline Setup**, **Analysis**, **Results**, and **Metrics** tabs. Build/load a baseline, choose target inputs, run analysis, then inspect results and export a report. Until an analysis has run, **Results** and **Metrics** say what they will show and offer **Go to Analysis**; the window fits a 1280 × 720 screen. It does not merely analyze the rows currently visible in the main EventHawk grid.
 
 The parser recognizes Security process creation/termination (4688/4689) and supported Sysmon process/relationship records (1/5/8/10). Scoring focuses on process creation. Application/System logs alone do not provide a useful process baseline. Sentinel uses its own parsing/scoring path rather than the main grid's Juggernaut store.
 

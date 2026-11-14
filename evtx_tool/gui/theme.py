@@ -413,6 +413,11 @@ QPushButton[active="true"]:hover {
     background: #d4c8a8;
 }
 
+/* Guidance text on empty pages and idle forms (Sentinel's empty states). */
+QLabel#emptyStateText {
+    color: #5a4e42;
+}
+
 /* ── Radio Buttons ───────────────────────────────────── */
 QRadioButton {
     background: transparent;

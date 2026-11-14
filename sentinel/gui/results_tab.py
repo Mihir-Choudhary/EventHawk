@@ -86,7 +86,21 @@ class ResultsTab(QWidget):
         splitter.addWidget(t3_widget)
         splitter.setSizes([400, 300])
 
-        layout.addWidget(splitter)
+        # Until an analysis has run there is nothing to show: say what will
+        # appear and how to get there (the tab used to be disabled, with no
+        # reason given).
+        from PySide6.QtWidgets import QStackedWidget
+        from sentinel.gui.widgets import EmptyState
+        self.empty = EmptyState(
+            "No results yet",
+            "Run an analysis on the Analysis tab. Critical alerts (Tier 4), grouped by ATT&CK "
+            "technique, and edge cases to review (Tier 3) appear here. An analysis needs a baseline "
+            "first: build or load one on Baseline Setup.",
+            "Go to Analysis", icon="shield-search")
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self.empty)
+        self._stack.addWidget(splitter)
+        layout.addWidget(self._stack)
 
     def populate(self, scored_events: list) -> None:
         """Fill the results tab from a list of ScoredEvent objects."""
@@ -103,6 +117,7 @@ class ResultsTab(QWidget):
 
         self._populate_tier4(tier4)
         self._populate_tier3(tier3)
+        self._stack.setCurrentIndex(1)
 
     def _populate_tier4(self, events: list) -> None:
         from collections import defaultdict
@@ -179,3 +194,4 @@ class ResultsTab(QWidget):
     def clear(self) -> None:
         self._t4_tree.clear()
         self._t3_table.setRowCount(0)
+        self._stack.setCurrentIndex(0)
