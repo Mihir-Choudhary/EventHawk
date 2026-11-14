@@ -8785,19 +8785,23 @@ def install_fit_windows_to_screen(app) -> None:
 
 
 class _OnEnabled(QObject):
-    """Call *callback* whenever *widget* becomes enabled."""
+    """Call *callback* whenever *widget* becomes enabled (and *on_disabled*,
+    if given, whenever it becomes disabled)."""
 
-    def __init__(self, widget: QWidget, callback):
+    def __init__(self, widget: QWidget, callback, on_disabled=None):
         super().__init__(widget)
         self._cb = callback
+        self._off = on_disabled
         widget.installEventFilter(self)
 
     def eventFilter(self, obj, event):  # noqa: N802
-        if event.type() == QEvent.Type.EnabledChange and obj.isEnabled():
-            try:
-                self._cb()
-            except RuntimeError:
-                pass
+        if event.type() == QEvent.Type.EnabledChange:
+            cb = self._cb if obj.isEnabled() else self._off
+            if cb is not None:
+                try:
+                    cb()
+                except RuntimeError:
+                    pass
         return False
 
 
@@ -9652,7 +9656,18 @@ class MainWindow(QMainWindow):
         self._run_stats_box.setVisible(False)
         # Every parse path (Normal, Juggernaut, analysis) enables Stop when it
         # starts, so that one signal reveals the progress for all of them.
-        self._stop_enable_watch = _OnEnabled(self._btn_stop, lambda: self._run_stats_box.setVisible(True))
+        # The bar itself shows only while something runs: left full after a
+        # parse it was a heavy block saying what the stats row and the status
+        # bar already say.  Its space is kept, so nothing below jumps.
+        _keep = self._progress_bar.sizePolicy()
+        _keep.setRetainSizeWhenHidden(True)
+        self._progress_bar.setSizePolicy(_keep)
+
+        def _running():
+            self._run_stats_box.setVisible(True)
+            self._progress_bar.setVisible(True)
+        self._stop_enable_watch = _OnEnabled(
+            self._btn_stop, _running, on_disabled=lambda: self._progress_bar.setVisible(False))
 
         layout.addSpacing(6)
         self._btn_export = QPushButton("Export report…")
@@ -11983,6 +11998,7 @@ class MainWindow(QMainWindow):
         # threads each walking the event list in Python, contending on the GIL
         # and stuttering the UI this prewarm exists to keep smooth.
         _w = NormalColValuePrewarmWorker(by_col, parent=self)
+
         _w.column_ready.connect(
             lambda ck, vals, sz=_sizes, px=id(self._active_proxy): (
                 self._col_cache().__setitem__(("normal", ck, sz.get(ck, 0), px), vals)
@@ -16834,6 +16850,11 @@ class MainWindow(QMainWindow):
                     "to map ATT&CK.")
             elif atk is not None:
                 self._lbl_attack_summary.setText("No events matched an ATT&CK technique.")
+            elif self._analysis_running() and self._chk_attack.isChecked():
+                # Mid-parse it said "was not run. Tick ATT&CK Mapping", with
+                # the box ticked: the IOC and Chains tabs already said "appear".
+                self._lbl_attack_summary.setText(
+                    "ATT&CK techniques appear here when parsing and mapping finish.")
             else:
                 self._lbl_attack_summary.setText(
                     "ATT&CK mapping was not run. Tick ATT&CK Mapping in the side panel and parse again.")

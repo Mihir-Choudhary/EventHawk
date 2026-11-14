@@ -87,7 +87,6 @@ _LEVEL_FG: dict = {}
 _refresh_theme_colors()
 __import__("evtx_tool.gui.theme", fromlist=["add_theme_listener"]).add_theme_listener(
     _refresh_theme_colors)
-_MONO_FONT   = QFont("Consolas", 9)
 
 class _PreparedValues:
     """A custom column's values and sort keys, already Arrow arrays."""
@@ -832,9 +831,6 @@ class ArrowTableModel(QAbstractTableModel):
             if col in (COL_NUM, COL_EID, COL_RECORD_ID, COL_EVENT_RECORD_ID):
                 return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        if role == Qt.ItemDataRole.FontRole:
-            if col == COL_SOURCE:
-                return _MONO_FONT
         if role == Qt.ItemDataRole.UserRole:
             # Wrapped, NOT the bare dict — see EventRef in gui/models.py.
             # get_event() returns None for an out-of-range row, and this must

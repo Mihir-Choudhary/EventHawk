@@ -122,8 +122,8 @@ _refresh_theme_colors()
 __import__("evtx_tool.gui.theme", fromlist=["add_theme_listener"]).add_theme_listener(
     _refresh_theme_colors)
 
-# Mono font for source file column
-_MONO_FONT = QFont("Consolas", 9)
+# The Source File column uses the table's own font: it was Consolas 9, which
+# fitted fewer letters of a log name and looked out of place beside the rest.
 
 import os as _os
 import sys as _sys
@@ -545,10 +545,6 @@ class EventTableModel(QAbstractTableModel):
             if col in (COL_NUM, COL_EID, COL_RECORD_ID, COL_EVENT_RECORD_ID):
                 return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
             return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-
-        if role == Qt.ItemDataRole.FontRole:
-            if col == COL_SOURCE:
-                return _MONO_FONT
 
         if role == Qt.ItemDataRole.UserRole:
             # Wrapped, NOT the bare dict — a dict is coerced to QVariantMap on
