@@ -11999,12 +11999,20 @@ class MainWindow(QMainWindow):
         # and stuttering the UI this prewarm exists to keep smooth.
         _w = NormalColValuePrewarmWorker(by_col, parent=self)
 
-        _w.column_ready.connect(
-            lambda ck, vals, sz=_sizes, px=id(self._active_proxy): (
-                self._col_cache().__setitem__(("normal", ck, sz.get(ck, 0), px), vals)
-                if vals else None
-            )
-        )
+        def _ready(ck, vals, w=_w, sz=_sizes, px=id(self._active_proxy), cache=self._col_cache()):
+            # Every change of the visible slice replaces the cache dict.  A
+            # sweep started for the old slice could still deliver (its signals
+            # were already queued, or nothing cancelled it) and filed the old
+            # slice's values in the new cache, keyed by the old slice's SIZE:
+            # a later filter selecting the same number of events was then
+            # offered the old values (wrong counts, dates matching no rows).
+            # So a sweep files only into the cache it started with, and only
+            # while it is the current, uncancelled sweep.
+            if (not vals or w._cancel or w is not getattr(self, "_norm_prewarm_worker", None)
+                    or self.__dict__.get("_col_value_cache") is not cache):
+                return
+            cache[("normal", ck, sz.get(ck, 0), px)] = vals
+        _w.column_ready.connect(_ready)
         self._norm_prewarm_worker = _w
         _w.start()
         self._track_col_worker(_w)
