@@ -1,6 +1,6 @@
 # Logon Sessions
 
-Open **Tools > View Logon Sessions** after loading events. The browser reconstructs logons with identity, logon type, start/end information, activity and notes. **Hide service sessions (Type 5)** changes visible browser rows.
+Open **Tools > View Logon Sessions** after loading events. The browser reconstructs logons with identity, logon type, start/end information, activity and notes. **Hide service sessions (Type 5)** changes visible browser rows. **Hide system accounts** (on by default, with a count) leaves out Windows' own accounts: SYSTEM, LOCAL SERVICE, NETWORK SERVICE, the font driver (UMFD-n), the window manager (DWM-n) and the computer account (NAME$); untick it to see them. Pale red rows hold dangerous privileges, pale yellow rows have no logoff recorded; hover a logon type for what it means.
 
 Selecting a row alone does not filter the grid. Use **Filter to Selected Session**, the corresponding row action or session activation. **Clear Session Filter** removes that restriction; other grid filters can still apply.
 

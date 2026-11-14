@@ -2568,9 +2568,24 @@ class _LogonSessionDialog(QDialog):
 
     _HEADERS = [
         "User", "Computer", "Logon Type", "Initiation", "Session ID",
-        "Start", "End", "Duration", "Procs", "Priv Events", "⚠ Dangerous",
+        "Start", "End", "Duration", "Procs", "Priv Events", "Dangerous privs",
         "Last Activity",
     ]
+
+    # Windows' own accounts: the font driver (UMFD-n) and window manager
+    # (DWM-n) get a session at every logon, SYSTEM / LOCAL SERVICE / NETWORK
+    # SERVICE run services, NAME$ is the computer itself.  On a real log they
+    # were most of the list and buried the people's sessions.
+    _SYSTEM_USERS = frozenset({"system", "local service", "network service", "localservice",
+                               "networkservice"})
+
+    @classmethod
+    def _is_system_account(cls, user: str) -> bool:
+        u = str(user or "").strip().lower()
+        if "\\" in u:
+            u = u.rsplit("\\", 1)[1]
+        return (u in cls._SYSTEM_USERS or u.endswith("$")
+                or u.startswith(("dwm-", "umfd-", "font driver host", "window manager")))
 
     def __init__(self, events: list[dict], on_filter_fn, parent=None):
         super().__init__(parent)
@@ -3049,7 +3064,27 @@ class _LogonSessionDialog(QDialog):
         )
         self._chk_hide_service.toggled.connect(self._apply_display_filters)
         search_row.addWidget(self._chk_hide_service)
+        self._chk_hide_system = QCheckBox("Hide system accounts")
+        self._chk_hide_system.setChecked(True)
+        self._chk_hide_system.setToolTip(
+            "Windows' own accounts: SYSTEM, LOCAL SERVICE, NETWORK SERVICE, the font driver (UMFD-n), "
+            "the window manager (DWM-n) and the computer account (NAME$).\n"
+            "Untick to include them.")
+        self._chk_hide_system.toggled.connect(self._apply_display_filters)
+        search_row.addWidget(self._chk_hide_system)
         root.addLayout(search_row)
+
+        # What the row tints mean (they had no legend).
+        legend = QHBoxLayout()
+        legend.setSpacing(6)
+        for text, colour in (("Dangerous privileges assigned", "#fde8e0"),
+                             ("No logoff recorded", "#fdf5dc")):
+            chip = QLabel(text)
+            chip.setStyleSheet(f"background:{colour}; color:#1e1a14; border-radius:3px; "
+                               "padding:1px 7px; font-size:8pt;")
+            legend.addWidget(chip)
+        legend.addStretch()
+        root.addLayout(legend)
 
         # ── Table ─────────────────────────────────────────────────────────
         self._tbl = QTableWidget(0, len(self._HEADERS))
@@ -3065,9 +3100,13 @@ class _LogonSessionDialog(QDialog):
         hdr = self._tbl.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         hdr.setStretchLastSection(False)
-        # Col order: User, Computer, Logon Type, Initiation, Session ID, Start, End, Duration, Procs, Priv Events, ⚠ Dangerous
-        for i, w in enumerate([120, 120, 155, 280, 90, 140, 140, 80, 50, 70, 80]):
+        # Col order: User, Computer, Logon Type, Initiation, Session ID, Start, End, Duration, Procs, Priv Events,
+        # Dangerous privs, Last Activity.  Every column fits a 1280 px screen without scrolling sideways:
+        # the Initiation text (what the logon type means) is the Logon Type cell's tooltip instead.
+        for i, w in enumerate([150, 80, 150, 0, 90, 130, 130, 150, 46, 70, 96, 120]):
             self._tbl.setColumnWidth(i, w)
+        self._tbl.setColumnHidden(3, True)
+        hdr.setStretchLastSection(True)
 
         self._tbl.doubleClicked.connect(self._on_filter_clicked)
         self._tbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -3150,7 +3189,7 @@ class _LogonSessionDialog(QDialog):
                 s["duration"],
                 str(s["proc_count"]),
                 str(s["priv_count"]),
-                "⚠ Yes" if s["has_dangerous"] else "No",
+                "Yes" if s["has_dangerous"] else "No",
                 last_disp,
             ]
             right_align_cols = {8, 9}   # Procs, Priv Events (shifted +1 by new column)
@@ -3178,8 +3217,13 @@ class _LogonSessionDialog(QDialog):
                     )
                 if row_bg:
                     item.setBackground(row_bg)
-                if col == 10 and s["has_dangerous"]:   # ⚠ Dangerous column (shifted +1)
+                if col == 10 and s["has_dangerous"]:   # Dangerous privs column
                     item.setForeground(danger_fg)
+                    _f = item.font()
+                    _f.setBold(True)
+                    item.setFont(_f)
+                if col == 2 and s.get("initiation"):    # what the logon type means
+                    item.setToolTip(s["initiation"])
                 self._tbl.setItem(row, col, item)
 
         self._tbl.setSortingEnabled(True)
@@ -3195,6 +3239,10 @@ class _LogonSessionDialog(QDialog):
         sessions = self._all_sessions
         if hide_service:
             sessions = [s for s in sessions if s["logon_type"] != "5"]
+        n_sys = sum(1 for s in sessions if self._is_system_account(s["user"]))
+        self._chk_hide_system.setText(f"Hide system accounts ({n_sys:,})")
+        if self._chk_hide_system.isChecked():
+            sessions = [s for s in sessions if not self._is_system_account(s["user"])]
         if t:
             sessions = [
                 s for s in sessions
