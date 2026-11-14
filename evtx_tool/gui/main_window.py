@@ -2037,23 +2037,23 @@ class EventTimeZoneDialog(QDialog):
         QRadioButton:disabled { color: #9a8878; }
 
         QRadioButton::indicator {
-            width: 14px;
-            height: 14px;
+            width: 12px;
+            height: 12px;
             border-radius: 7px;
-            border: 2px solid #9a8878;
+            border: 1px solid #9a8878;
             background: #faf7f2;
         }
         QRadioButton::indicator:hover {
             border-color: #7a5c1e;
-            background: #e8e0d0;
         }
         QRadioButton::indicator:checked {
-            border: 1px solid #9b7a2e;
-            background: #9b7a2e;
+            width: 6px;
+            height: 6px;
+            border: 4px solid #7a5c1e;
+            background: #faf7f2;
         }
         QRadioButton::indicator:checked:hover {
-            border-color: #7a5c1e;
-            background: #7a5c1e;
+            border-color: #9b7a2e;
         }
         QRadioButton::indicator:disabled {
             border-color: #c4bba8;
@@ -8281,7 +8281,6 @@ class _ExportScopeDialog(QDialog):
             QDialog {{ background: {COLORS['bg_panel']}; color: {COLORS['text']}; }}
             QLabel  {{ color: {COLORS['text']}; font-size: 9pt; }}
             QRadioButton {{ color: {COLORS['text']}; font-size: 9pt; spacing: 6px; }}
-            QRadioButton::indicator {{ width: 14px; height: 14px; }}
             QCheckBox {{ color: {COLORS['text']}; font-size: 9pt; spacing: 4px; }}
             QCheckBox::indicator {{ width: 13px; height: 13px; }}
             QGroupBox {{
@@ -9653,6 +9652,63 @@ class MainWindow(QMainWindow):
         if getattr(self, "_proxy_busy_shown", False):
             self._close_hw_loading_dialog()
             self._proxy_busy_shown = False
+        QTimer.singleShot(0, self._restore_focus_after_filter)
+
+    # ── Keep the event being read in view across filter changes ─────────────
+
+    def _remember_focus(self, ev: dict, proxy, proxy_row) -> None:
+        """The event the analyst has selected: its identity, and (Normal mode)
+        where it sits in its source model, so a filter pass can find it again."""
+        rid = ev.get("record_id")
+        try:
+            rid = int(rid) if rid is not None else None
+        except (TypeError, ValueError):
+            rid = None
+        src_row = None
+        if proxy is not None and proxy_row is not None:
+            try:
+                src_row = proxy.mapToSource(proxy.index(proxy_row, 0)).row()
+            except Exception:
+                src_row = None
+        self._focus_event = (ev.get("source_file", ""), rid, src_row)
+
+    def _restore_focus_after_filter(self) -> None:
+        """After a filter change, re-select the event that was being read and
+        scroll it to the middle when it is still in the view.  The table used to
+        stay wherever the pass left it, so after applying a profile the detail
+        pane described an event scrolled far out of sight."""
+        fe = getattr(self, "_focus_event", None)
+        if not fe or fe[1] is None:
+            return
+        sf, rid, src_row = fe
+        try:
+            table = self._active_table
+            model = table.model()
+            if model is None or model.rowCount() == 0:
+                return
+            row = None
+            if hasattr(model, "find_row"):                       # Juggernaut tab
+                row = model.find_row(sf, rid)
+            elif hasattr(model, "mapFromSource"):                # Normal: proxy
+                src = model.sourceModel()
+                events = getattr(src, "_events", None) or []
+                if src_row is None or not (0 <= src_row < len(events)) or not (
+                        events[src_row].get("source_file", "") == sf
+                        and events[src_row].get("record_id") == rid):
+                    src_row = next((i for i, e in enumerate(events)
+                                    if e.get("record_id") == rid and e.get("source_file", "") == sf), None)
+                if src_row is not None:
+                    pidx = model.mapFromSource(src.index(src_row, 0))
+                    row = pidx.row() if pidx.isValid() else None
+            if row is None or row < 0:
+                return
+            sel = table.selectionModel().selectedRows() if table.selectionModel() else []
+            if sel and sel[0].row() == row:
+                table.scrollTo(model.index(row, 0), QAbstractItemView.ScrollHint.PositionAtCenter)
+            else:
+                self._select_and_centre(table, row)
+        except RuntimeError:
+            pass
 
     _DEFAULT_COL_WIDTHS = {
         0: 58,   # #  (six-digit row numbers)
@@ -9993,11 +10049,28 @@ class MainWindow(QMainWindow):
         self.setStatusBar(sb)
 
     def _set_status(self, text: str, files: str = "", stats: str = "") -> None:
+        self._last_say = None
         self._lbl_status.setText(text)
         self._lbl_status_files.setText(files)
         self._lbl_status_stats.setText(stats)
         # The empty table's guidance follows the state (queued, parsing ...).
         self._refresh_empty_table_hint()
+
+    def _say_after(self, message: str) -> None:
+        """Status line message once the current action has finished, with the
+        resulting count.  Only the message changes (the run statistics on the
+        right stay); it used to keep saying whatever the last long operation
+        said ("Column 'Path' ready") through searches, filters and profiles."""
+        self._last_say = message
+
+        def _go():
+            if getattr(self, "_last_say", None) != message:
+                return
+            try:
+                self._lbl_status.setText(f"{message}  —  {self._lbl_count.text()}")
+            except RuntimeError:
+                pass
+        QTimer.singleShot(0, _go)
 
     def _refresh_empty_table_hint(self, *_args) -> None:
         try:
@@ -10441,6 +10514,7 @@ class MainWindow(QMainWindow):
                 self._active_file_tab = None
 
         self._update_count_label()
+        self._update_adv_filter_badge()
         # Bug 6 fix: refresh header ▼ indicators to match the newly active tab.
         # Guard with _table (plain attribute) — _active_table is a property that
         # always exists, so hasattr on it would never be False.
@@ -11279,6 +11353,7 @@ class MainWindow(QMainWindow):
         # A per-file or around tab starts empty and fills here; the count was
         # last set on the tab switch, so without this it kept saying 0 events.
         self._update_count_label()
+        QTimer.singleShot(0, self._restore_focus_after_filter)
         # The view has settled — get the column popups ready NOW rather than
         # when the analyst clicks a header.
         self._schedule_col_prewarm()
@@ -11978,6 +12053,8 @@ class MainWindow(QMainWindow):
         model = active_model if isinstance(active_model, _ATM) else self._hw_model
         ev = model.get_event(indexes[0].row())
         if ev:
+            self._remember_focus(ev, None, None)
+        if ev:
             self._render_event_detail(ev)
             self._update_bookmark_button(ev)
 
@@ -12214,6 +12291,9 @@ class MainWindow(QMainWindow):
         ON TOP of any active Advanced Filter cfg (same slot), so applying a
         profile never wipes the advanced filter and vice-versa.
         """
+        _names = self._get_checked_profiles() if hasattr(self, "_get_checked_profiles") else []
+        self._say_after(("Profile applied: " if len(_names) == 1 else "Profiles applied: ")
+                        + ", ".join(map(str, _names)) if _names else "Profiles cleared")
         self._applied_profiles = self._get_checked_profiles()
         logger.info("Apply Profiles: %s", self._applied_profiles or "(none)")
         fc = self._build_filter_config(base=getattr(self, "_adv_filter_cfg", None))
@@ -13909,6 +13989,7 @@ class MainWindow(QMainWindow):
         cfg = dlg.get_filter_config()
         self._quick_search_owned_cfg = False   # the dialog owns the cfg now
         logger.info("Advanced Filter applied")
+        self._say_after("Advanced filter applied")
 
         # ── Stack the dialog cfg ON TOP of any active profile selection ──
         # Both the profile filter and the dialog filter are applied via the same
@@ -14037,6 +14118,7 @@ class MainWindow(QMainWindow):
         keeps the applied profiles.
         """
         logger.info("Clear All Filters")
+        self._say_after("All filters cleared")
         self._reset_quick_search_box()
         self._profile_combo.uncheckAll()
         self._applied_profiles = []
@@ -14191,6 +14273,7 @@ class MainWindow(QMainWindow):
             if not had_cfg:
                 self._quick_search_owned_cfg = True
         logger.info("Quick search %s", "applied" if text else "removed")
+        self._say_after(f"Search “{text}”" if text else "Search removed")
         self._apply_adv_cfg_to_all_views(cfg, busy_text="Searching\u2026")
         self._quick_search_applied = text
 
@@ -14253,8 +14336,12 @@ class MainWindow(QMainWindow):
         # A filter that is only the quick search is already shown (and cleared)
         # by the search box itself; the badge would say the same thing twice.
         only_search = active and getattr(self, "_quick_search_owned_cfg", False)
-        self._lbl_adv_filter_badge.setVisible(active and not only_search)
-        self._btn_clear_adv.setVisible(active and not only_search)
+        # An Around / chain tab keeps its fixed window: the Advanced Filter
+        # does not narrow it, so the badge would wrongly say events are hidden.
+        _tab = getattr(self, "_active_file_tab", None)
+        in_pivot = bool(_tab) and _is_pivot_tab_key(_tab)
+        self._lbl_adv_filter_badge.setVisible(active and not only_search and not in_pivot)
+        self._btn_clear_adv.setVisible(active and not only_search and not in_pivot)
         self._sync_quick_search_box()
 
         if not active:
@@ -14349,6 +14436,8 @@ class MainWindow(QMainWindow):
                 "Reset everything: text search, advanced filter, quick filters, "
                 "session filter, tactic filter, bookmark/IOC pivot")
             self._lbl_mode_chip.setVisible(self._hw_model is not None)
+            if getattr(self, "_last_say", None):      # count arrived after the message
+                self._lbl_status.setText(f"{self._last_say}  —  {self._lbl_count.text()}")
         except (AttributeError, RuntimeError):
             pass
 
@@ -14410,6 +14499,7 @@ class MainWindow(QMainWindow):
         proxy_row = indexes[0].row()
         ev = proxy.get_source_event(proxy_row)
         if ev:
+            self._remember_focus(ev, proxy, proxy_row)
             self._render_event_detail(ev)
             self._update_bookmark_button(ev)
 
@@ -17161,6 +17251,7 @@ class MainWindow(QMainWindow):
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.selectionModel().selectionChanged.connect(self._on_row_selected)
 
+        self._apply_default_col_widths(table)       # the model swap reset the header
         self._apply_col_visibility(table, self._visible_cols)
 
         proxy.setDynamicSortFilter(True)
@@ -17482,6 +17573,9 @@ class MainWindow(QMainWindow):
 
     def _add_pivot_tab(self, tab_key: str, label: str, tooltip: str, table, state) -> int:
         """Add a pivot tab (with close button and file-tree entry) and show it."""
+        # Its model was swapped in while loading, which reset the header: the
+        # Around tab showed every column at 100 px (Timestamp cut to "17:4…").
+        self._apply_default_col_widths(table)
         tab_idx = self._events_tab_widget.addTab(table, label)
         self._events_tab_widget.setTabToolTip(tab_idx, tooltip)
         _btn_close = self._make_tab_close_button(
@@ -18615,6 +18709,7 @@ class MainWindow(QMainWindow):
             self._tz_specific,
             self._tz_custom_offset_min,
         )
+        self._refresh_bookmarks_tab()       # its times follow the display zone too
 
         # Drop the cached column-popup values.  "timestamp_date" is the one
         # column whose values depend on the display timezone, and neither cache
@@ -18727,6 +18822,7 @@ class MainWindow(QMainWindow):
             QSettings("EventHawk", "GUI").setValue("ts_precision_digits", int(digits))
         except Exception:
             pass
+        self._refresh_bookmarks_tab()
 
         # Refresh merged model
         try:
@@ -19221,19 +19317,23 @@ class MainWindow(QMainWindow):
         layout.setSpacing(4)
 
         btn_row = QHBoxLayout()
-        self._btn_filter_bookmarks = QPushButton("⚡ Filter to Bookmarks")
+        from .icons import set_icon as _set_icon
+        self._btn_filter_bookmarks = QPushButton("Filter to Bookmarks")
+        _set_icon(self._btn_filter_bookmarks, "filter")
         self._btn_filter_bookmarks.setToolTip(
             "Filter the main event table to show only bookmarked events"
         )
         self._btn_filter_bookmarks.setEnabled(False)
         self._btn_filter_bookmarks.clicked.connect(self._filter_to_bookmarks)
 
-        self._btn_clear_bookmarks = QPushButton("✕ Clear All")
+        self._btn_clear_bookmarks = QPushButton("Clear All")
+        _set_icon(self._btn_clear_bookmarks, "x")
         self._btn_clear_bookmarks.setToolTip("Remove all bookmarks")
         self._btn_clear_bookmarks.setEnabled(False)
         self._btn_clear_bookmarks.clicked.connect(self._clear_all_bookmarks)
 
-        self._btn_export_bookmarks = QPushButton("⬇ Export")
+        self._btn_export_bookmarks = QPushButton("Export")
+        _set_icon(self._btn_export_bookmarks, "download")
         self._btn_export_bookmarks.setToolTip("Export bookmarks to CSV or JSON")
         self._btn_export_bookmarks.setEnabled(False)
         self._btn_export_bookmarks.clicked.connect(self._export_bookmarks)
@@ -19248,15 +19348,20 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self._lbl_bm_count)
         layout.addLayout(btn_row)
 
-        self._tbl_bookmarks = QTableWidget(0, 5)
-        self._tbl_bookmarks.setHorizontalHeaderLabels(
-            ["Record ID", "Event ID", "Timestamp", "Computer", "Source File"]
-        )
+        # In time order, in the display time zone like the event table (it
+        # showed raw UTC ISO strings beside the table's local times), with what
+        # each event is and a short log name (full path as tooltip).
+        self._tbl_bookmarks = QTableWidget(0, len(self._BM_COLS))
+        self._tbl_bookmarks.setHorizontalHeaderLabels(list(self._BM_COLS))
         _bm_hdr = self._tbl_bookmarks.horizontalHeader()
         _bm_hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         _bm_hdr.setStretchLastSection(False)
-        for _ci, _cw in enumerate([80, 70, 140, 120, 260]):
+        for _ci, _cw in enumerate([132, 60, 300, 80, 130, 64]):
             self._tbl_bookmarks.setColumnWidth(_ci, _cw)
+        _bm_hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._tbl_bookmarks.verticalHeader().setVisible(False)
+        self._tbl_bookmarks.verticalHeader().setDefaultSectionSize(24)
+        self._tbl_bookmarks.setWordWrap(False)
         self._tbl_bookmarks.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
@@ -19268,19 +19373,34 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._tbl_bookmarks)
         return w
 
+    _BM_COLS = ("Time", "Event ID", "Event", "Computer", "Log", "Record")
+    _BM_KEY_ROLE = Qt.ItemDataRole.UserRole + 7
+
     def _refresh_bookmarks_tab(self) -> None:
-        """Repopulate the bookmarks table from self._bookmarks."""
+        """Repopulate the bookmarks table from self._bookmarks (time order)."""
         from PySide6.QtWidgets import QTableWidgetItem
         tbl = self._tbl_bookmarks
         tbl.setRowCount(0)
-        for bm in self._bookmarks:
+        info = getattr(self, "_bookmark_info", {})
+        for bm in sorted(self._bookmarks, key=lambda b: str(b.get("timestamp", ""))):
             row = tbl.rowCount()
             tbl.insertRow(row)
-            tbl.setItem(row, 0, QTableWidgetItem(str(bm.get("record_id", ""))))
-            tbl.setItem(row, 1, QTableWidgetItem(str(bm.get("event_id", ""))))
-            tbl.setItem(row, 2, QTableWidgetItem(str(bm.get("timestamp", ""))))
-            tbl.setItem(row, 3, QTableWidgetItem(str(bm.get("computer", ""))))
-            tbl.setItem(row, 4, QTableWidgetItem(str(bm.get("source_file", ""))))
+            sf = str(bm.get("source_file", ""))
+            key = (sf, bm.get("record_id"))
+            extra = info.get(key, {})
+            ts = apply_tz(bm.get("timestamp", "")) if bm.get("timestamp") else ""
+            cells = [ts, str(bm.get("event_id", "")), extra.get("summary", ""),
+                     str(bm.get("computer", "")), _short_log_name(sf) if sf else "",
+                     str(bm.get("record_id", ""))]
+            for c, text in enumerate(cells):
+                it = QTableWidgetItem(text)
+                if c in (1, 5):
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                tbl.setItem(row, c, it)
+            tbl.item(row, 0).setData(self._BM_KEY_ROLE, key)
+            tbl.item(row, 0).setToolTip(str(bm.get("timestamp", "")) + "  (as recorded, UTC)")
+            tbl.item(row, 2).setToolTip(extra.get("summary", ""))
+            tbl.item(row, 4).setToolTip(sf)
         n = len(self._bookmarks)
         self._lbl_bm_count.setText(
             f"{n} bookmark{'s' if n != 1 else ''}" if n else "No bookmarks"
@@ -19307,6 +19427,16 @@ class MainWindow(QMainWindow):
             ]
         else:
             self._bookmarked_keys.add(key)
+            try:
+                from evtx_tool.analysis.event_descriptions import get_event_description
+                _summary = get_event_description(ev) or ""
+            except Exception:
+                _summary = ""
+            if not _summary:
+                _summary = f"{ev.get('provider', '')} {ev.get('channel', '')}".strip()
+            if not hasattr(self, "_bookmark_info"):
+                self._bookmark_info = {}
+            self._bookmark_info[key] = {"summary": _summary.replace("\n", " ")}
             self._bookmarks.append({
                 "record_id":   rid,
                 "event_id":    ev.get("event_id", ""),
@@ -19460,14 +19590,25 @@ class MainWindow(QMainWindow):
         item = self._tbl_bookmarks.item(row, 0)
         if not item:
             return
+        key = item.data(self._BM_KEY_ROLE)
+        if key:
+            sf, rid = key[0], key[1]
+        else:
+            # A row written without the key: record id in column 0, source
+            # file in column 4 (the table's older layout).
+            try:
+                rid = int(item.text())
+            except ValueError:
+                return
+            sf_item = self._tbl_bookmarks.item(row, 4)
+            sf = sf_item.text() if sf_item else ""
         try:
-            rid = int(item.text())
-        except ValueError:
+            rid = int(rid)
+        except (TypeError, ValueError):
             return
         # (source_file, record_id): a bare id also matched the event with the
         # same number in every other log loaded.
-        sf_item = self._tbl_bookmarks.item(row, 4)
-        key_set = frozenset([(sf_item.text() if sf_item else "", rid)])
+        key_set = frozenset([(sf, rid)])
         self._show_main_table()
         if self._hw_model is not None:
             self._hw_model.apply_bookmark_filter(key_set)
