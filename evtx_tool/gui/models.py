@@ -437,7 +437,9 @@ def _freeze_after_big_load(n_events: int) -> None:
         return
     import gc
     gc.unfreeze()        # the previous load's objects go back to the collector
-    gc.collect()         # nothing that is already garbage gets frozen
+    # Only the young generation: the fresh garbage of the parse lives there.
+    # A full collection here added 0.57 s to every big load.
+    gc.collect(0)
     gc.freeze()
 
 
@@ -801,13 +803,10 @@ class EventTableModel(QAbstractTableModel):
         """
         # Point 1 (list[dict] memory): intern repeated string values so all
         # events with the same channel/computer/level share one Python object.
-        _intern = _sys.intern
-        _intern_keys = self._INTERN_KEYS
-        for ev in events:
-            for k in _intern_keys:
-                v = ev.get(k)
-                if isinstance(v, str):
-                    ev[k] = _intern(v)
+        # The parse worker does this in its own thread; a second model over
+        # the same events (a file tab) finds them interned and skips the loop
+        # (it was ~2 s of the GUI thread per call on 460k events).
+        self.intern_events(events)
 
         self.beginResetModel()
         # Custom columns belong to the data they were computed over.
@@ -824,6 +823,28 @@ class EventTableModel(QAbstractTableModel):
         self._stop_adv_build()
         self.endResetModel()
         _freeze_after_big_load(len(events))
+
+    @classmethod
+    def intern_events(cls, events: list) -> None:
+        """Intern the repeated string fields of *events* (idempotent, cheap when done)."""
+        if not events:
+            return
+        _intern = _sys.intern
+        keys = cls._INTERN_KEYS
+
+        def done(ev):
+            for k in keys:
+                v = ev.get(k)
+                if isinstance(v, str) and _intern(v) is not v:
+                    return False
+            return True
+        if done(events[0]) and done(events[-1]) and done(events[len(events) // 2]):
+            return
+        for ev in events:
+            for k in keys:
+                v = ev.get(k)
+                if isinstance(v, str):
+                    ev[k] = _intern(v)
 
     def get_event(self, row: int) -> dict | None:
         if 0 <= row < len(self._events):
