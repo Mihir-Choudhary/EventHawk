@@ -9935,16 +9935,44 @@ class MainWindow(QMainWindow):
         lbl = QLabel("EVENT DETAIL")
         lbl.setObjectName("sectionHeader")
         lbl.setStyleSheet(f"color:{COLORS['text_dim']};font-size:8pt;font-weight:bold;letter-spacing:1px;border:none;")
-        # Brief / Full toggle
+        # Full | Brief: a two-part switch that always shows both modes and
+        # highlights the one in use.  A single "Brief" button read as the
+        # opposite state (backlog item 4).  _btn_detail_mode stays the Brief
+        # half (checked = Brief) so the rest of the window is unchanged.
+        from PySide6.QtWidgets import QButtonGroup
+        self._btn_detail_full = QPushButton("Full")
+        self._btn_detail_full.setCheckable(True)
+        self._btn_detail_full.setChecked(True)    # Full is the default
+        self._btn_detail_full.setToolTip("Full: every field of the event, its description and the XML")
         self._btn_detail_mode = QPushButton("Brief")
         self._btn_detail_mode.setCheckable(True)
-        self._btn_detail_mode.setChecked(False)   # Full mode is default (not "Brief")
-        self._btn_detail_mode.setToolTip(
-            "Brief: only the header and the event's description.\n"
-            "Click again to show every field."
-        )
-        self._btn_detail_mode.setMinimumHeight(24)
+        self._btn_detail_mode.setChecked(False)
+        self._btn_detail_mode.setToolTip("Brief: only the header and the event's description")
+        self._detail_mode_group = QButtonGroup(self)
+        self._detail_mode_group.setExclusive(True)
+        seg_css = (f"QPushButton{{border:1px solid {COLORS['border']};background:{COLORS['bg_input']};"
+                   f"color:{COLORS['text_dim']};padding:2px 10px;min-height:20px;}}"
+                   f"QPushButton:hover{{color:{COLORS['text']};}}"
+                   f"QPushButton:checked{{background:{COLORS['border']};color:{COLORS['text']};"
+                   f"font-weight:bold;}}")
+        # Corner and seam rules go after the base rule's "border" shorthand
+        # (which would reset them) and zero the app-wide radius first, so the
+        # two halves read as one control.
+        for b, radius in ((self._btn_detail_full, "border-radius:0;border-top-left-radius:4px;"
+                                                  "border-bottom-left-radius:4px;border-right:none;"),
+                          (self._btn_detail_mode, "border-radius:0;border-top-right-radius:4px;"
+                                                  "border-bottom-right-radius:4px;")):
+            self._detail_mode_group.addButton(b)
+            b.setStyleSheet(seg_css.replace("}", radius + "}", 1))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_detail_mode.toggled.connect(self._on_detail_mode_toggled)
+        detail_mode = QWidget()
+        detail_mode.setAccessibleName("Event detail: Full or Brief")
+        dm_lay = QHBoxLayout(detail_mode)
+        dm_lay.setContentsMargins(0, 0, 0, 0)
+        dm_lay.setSpacing(0)
+        dm_lay.addWidget(self._btn_detail_full)
+        dm_lay.addWidget(self._btn_detail_mode)
 
         # Bookmark toggle button — disabled until an event is selected
         self._btn_bookmark_event = QPushButton("Bookmark")
@@ -9959,7 +9987,7 @@ class MainWindow(QMainWindow):
         hdr_layout.addWidget(lbl)
         hdr_layout.addStretch()
         hdr_layout.addWidget(self._btn_bookmark_event)
-        hdr_layout.addWidget(self._btn_detail_mode)
+        hdr_layout.addWidget(detail_mode)
         layout.addWidget(header)
 
         self._detail_browser = QTextBrowser()
