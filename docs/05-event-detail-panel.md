@@ -1,6 +1,6 @@
 # Event detail and record identities
 
-Select an event row to view its detail. Both views start with the header and, where available, a plain-language description of the event. The **Full | Brief** switch in the panel header shows which view is on: **Brief** stops there; **Full** (the initial view) adds the retained System and event-specific fields.
+Select an event row to view its detail. The detail takes the larger share of the bottom area; **Analysis** in its header (also **View > Analysis Panel**, Ctrl+Shift+A) hides the ATT&CK / IOCs / Chains / Bookmarks tabs so the detail takes the whole width, and brings them back. Both choices are remembered. Both views start with the header and, where available, a plain-language description of the event. The **Full | Brief** switch in the panel header shows which view is on: **Brief** stops there; **Full** (the initial view) adds the retained System and event-specific fields.
 
 Descriptions are generated for supported event/provider combinations. They are explanatory text, not the original Windows message-DLL rendering, and a description is not evidence that a rule matched.
 

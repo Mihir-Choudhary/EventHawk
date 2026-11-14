@@ -9125,6 +9125,21 @@ class MainWindow(QMainWindow):
             _sc = QShortcut(QKeySequence(_keys), self)
             _sc.activated.connect(_slot)
 
+        # The analysis tabs beside the event detail: on by default, remembered.
+        view_menu.addSeparator()
+        self._act_analysis_panel = view_menu.addAction("Analysis Panel")
+        self._act_analysis_panel.setCheckable(True)
+        self._act_analysis_panel.setChecked(True)
+        self._act_analysis_panel.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self._act_analysis_panel.setToolTip("ATT&CK, IOCs, Chains and Bookmarks beside the event detail")
+        self._act_analysis_panel.toggled.connect(self._set_analysis_panel_visible)
+        if self._persist_layout_enabled():
+            try:
+                if not QSettings("EventHawk", "GUI").value("analysis_panel_visible", True, type=bool):
+                    QTimer.singleShot(0, lambda: self._set_analysis_panel_visible(False))
+            except Exception:
+                pass
+
         # Grid lines between cells: off by default (calm), one switch for all.
         view_menu.addSeparator()
         self._act_grid = view_menu.addAction("Grid Lines")
@@ -10003,7 +10018,14 @@ class MainWindow(QMainWindow):
 
         bottom_split.addWidget(detail_widget)
         bottom_split.addWidget(analysis_widget)
-        bottom_split.setSizes([550, 550])
+        # The event detail is what an analyst reads most: it gets the larger
+        # share (it was 50/50, which left the viewer cramped), and the
+        # analysis tabs can be hidden to give it the whole width.
+        bottom_split.setSizes([640, 460])
+        bottom_split.setStretchFactor(0, 3)
+        bottom_split.setStretchFactor(1, 2)
+        self._bottom_split = bottom_split
+        self._analysis_widget = analysis_widget
         return bottom_split
 
     def _build_detail_widget(self) -> QWidget:
@@ -10073,8 +10095,19 @@ class MainWindow(QMainWindow):
         self._btn_bookmark_event.setMinimumHeight(24)
         self._btn_bookmark_event.clicked.connect(self._on_bookmark_toggle)
 
+        self._btn_analysis_panel = QPushButton("Analysis")
+        self._btn_analysis_panel.setCheckable(True)
+        self._btn_analysis_panel.setChecked(True)
+        self._btn_analysis_panel.setMinimumHeight(24)
+        self._btn_analysis_panel.setToolTip(
+            "Show or hide the ATT&CK, IOCs, Chains and Bookmarks panel (Ctrl+Shift+A).\n"
+            "Hidden, the event detail takes the whole width.")
+        set_icon(self._btn_analysis_panel, "sidebar")
+        self._btn_analysis_panel.toggled.connect(self._set_analysis_panel_visible)
+
         hdr_layout.addWidget(lbl)
         hdr_layout.addStretch()
+        hdr_layout.addWidget(self._btn_analysis_panel)
         hdr_layout.addWidget(self._btn_bookmark_event)
         hdr_layout.addWidget(detail_mode)
         layout.addWidget(header)
@@ -11067,10 +11100,26 @@ class MainWindow(QMainWindow):
         ("Ctrl+B", "Bookmark / unbookmark the selected event"),
         ("Ctrl+C", "Copy the selected event (in the event table)"),
         ("Ctrl+\\", "Show / hide the side panel"),
+        ("Ctrl+Shift+A", "Show / hide the analysis panel (ATT&CK, IOCs, Chains, Bookmarks)"),
         ("Ctrl+S", "Export events"),
         ("Ctrl+/", "This list"),
         ("Ctrl+Q", "Exit"),
     )
+
+    def _set_analysis_panel_visible(self, on: bool) -> None:
+        """Show or hide the analysis tabs beside the event detail (remembered)."""
+        w = getattr(self, "_analysis_widget", None)
+        if w is None:
+            return
+        on = bool(on)
+        w.setVisible(on)
+        for ctl in (getattr(self, "_btn_analysis_panel", None), getattr(self, "_act_analysis_panel", None)):
+            if ctl is not None and ctl.isChecked() != on:
+                ctl.blockSignals(True)
+                ctl.setChecked(on)
+                ctl.blockSignals(False)
+        if self._persist_layout_enabled():
+            QSettings("EventHawk", "GUI").setValue("analysis_panel_visible", on)
 
     def _shortcut_bookmark(self) -> None:
         if self._btn_bookmark_event.isEnabled():
@@ -19606,6 +19655,9 @@ class MainWindow(QMainWindow):
         rs = getattr(self, "_right_splitter", None)
         if rs is not None:
             st.setValue("main_right_split", rs.saveState())
+        bs = getattr(self, "_bottom_split", None)
+        if bs is not None:
+            st.setValue("main_bottom_split", bs.saveState())
 
     def _restore_layout(self) -> bool:
         """Window geometry and the table/detail split from the last session.
@@ -19619,6 +19671,10 @@ class MainWindow(QMainWindow):
         rs = getattr(self, "_right_splitter", None)
         if split and rs is not None:
             self._right_split_restored = bool(rs.restoreState(split))
+        bsplit = st.value("main_bottom_split")
+        bs = getattr(self, "_bottom_split", None)
+        if bsplit and bs is not None:
+            bs.restoreState(bsplit)
         return ok
 
     def closeEvent(self, event) -> None:
