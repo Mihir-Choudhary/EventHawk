@@ -8801,6 +8801,51 @@ class _OnEnabled(QObject):
         return False
 
 
+class _IocColumnFitter(QObject):
+    """IOC tables: the value keeps room to be read.  The other columns had
+    fixed widths (395 px together), so on a laptop-width pane the stretching
+    Value column was left ~45 px ("255.2...").  Now First/Last Seen give way
+    first, down to the date (the time of day elides, the tooltip and the
+    events still have it), and only then does the value narrow."""
+
+    VALUE_MIN, TIME_MAX, TIME_MIN = 160, 140, 84
+
+    @classmethod
+    def install(cls, tbl) -> None:
+        f = cls(tbl)
+        tbl.viewport().installEventFilter(f)
+        tbl._ioc_col_fitter = f          # keep it alive with the table
+        f.fit()
+
+    def fit(self) -> None:
+        tbl = self.parent()
+        try:
+            fixed = tbl.columnWidth(1) + tbl.columnWidth(4)
+            spare = tbl.viewport().width() - fixed - self.VALUE_MIN
+        except RuntimeError:
+            return
+        t = max(self.TIME_MIN, min(self.TIME_MAX, spare // 2))
+        for c in (2, 3):
+            if tbl.columnWidth(c) != t:
+                tbl.setColumnWidth(c, t)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() == QEvent.Type.Resize:
+            self.fit()
+        return False
+
+
+def _wrap_summary(label) -> None:
+    """A summary line above an analysis table wraps instead of setting the
+    pane's minimum width.  Unwrapped, the IOC summary (a sentence plus two
+    buttons) made its tab 660 px wide the first time it was shown: the
+    splitter pushed Event Detail left and never gave the width back."""
+    from PySide6.QtWidgets import QSizePolicy
+    label.setWordWrap(True)
+    label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    label.setMinimumWidth(120)
+
+
 def _make_wrap_name_delegate(tree):
     """Item delegate for the file list's name column: the row is as tall as
     its wrapped name.  Qt's own size hint ignores wrapping when the tree has
@@ -10274,6 +10319,7 @@ class MainWindow(QMainWindow):
 
         self._lbl_attack_summary = QLabel("No ATT&CK data — run with ATT&CK Mapping enabled.")
         self._lbl_attack_summary.setObjectName("statsLabel")
+        _wrap_summary(self._lbl_attack_summary)
         layout.addWidget(self._lbl_attack_summary)
 
         self._tbl_attack = QTableWidget(0, 4)
@@ -10313,8 +10359,8 @@ class MainWindow(QMainWindow):
         hdr = QHBoxLayout()
         self._lbl_ioc_summary = QLabel("No IOC data — run with IOC Extraction enabled.")
         self._lbl_ioc_summary.setObjectName("statsLabel")
-        hdr.addWidget(self._lbl_ioc_summary)
-        hdr.addStretch()
+        _wrap_summary(self._lbl_ioc_summary)
+        hdr.addWidget(self._lbl_ioc_summary, 1)
 
         self._btn_threat_intel = QPushButton("Threat Intel")
         from .icons import set_icon as _set_icon
@@ -10410,6 +10456,7 @@ class MainWindow(QMainWindow):
 
         self._lbl_chains_summary = QLabel("No correlation data — run with Correlation Engine enabled.")
         self._lbl_chains_summary.setObjectName("statsLabel")
+        _wrap_summary(self._lbl_chains_summary)
         layout.addWidget(self._lbl_chains_summary)
 
         self._tree_chains = QTreeWidget()
@@ -16945,6 +16992,7 @@ class MainWindow(QMainWindow):
             # Score column is no longer pushed off a laptop-width pane.
             _ioc_hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
             _ioc_hdr.setMinimumSectionSize(48)
+            _IocColumnFitter.install(tbl)
             tbl.verticalHeader().setVisible(False)
             tbl.setShowGrid(False)
             tbl.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
