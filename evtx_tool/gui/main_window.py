@@ -8608,21 +8608,75 @@ class _FitWindowsToScreen(QObject):
         return False
 
 
-class _CalmTables(QObject):
-    """App-wide: tables draw no grid lines.
+class _ElidedCellTooltip(QObject):
+    """A cell whose text is cut off shows its full text on hover.
 
-    The tool windows each turned the grid on, which drew a line at every
-    row AND column boundary -- the "divider lines" that made dense tables
-    hard to read.  Alternating row shading carries the eye along a row.
+    Long values (notes, paths, command lines) were clipped with "…" and could
+    be read only by dragging the column wider.  A cell with a tooltip of its
+    own keeps it.
     """
 
     def eventFilter(self, obj, event):  # noqa: N802
-        if event.type() == QEvent.Type.Polish and isinstance(obj, QTableView) \
-                and obj.showGrid():
-            obj.setShowGrid(False)
-            if not obj.alternatingRowColors():
-                obj.setAlternatingRowColors(True)
+        if event.type() != QEvent.Type.ToolTip:
+            return False
+        view = obj.parent()
+        if not isinstance(view, QAbstractItemView):
+            return False
+        try:
+            idx = view.indexAt(event.pos())
+            if not idx.isValid() or idx.data(Qt.ItemDataRole.ToolTipRole):
+                return False
+            text = idx.data(Qt.ItemDataRole.DisplayRole)
+            if text is None:
+                return False
+            text = str(text)
+            rect = view.visualRect(idx)
+            if view.fontMetrics().horizontalAdvance(text) + 14 <= rect.width():
+                return False
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.showText(event.globalPos(), text if len(text) <= 3000 else text[:3000] + "\u2026",
+                              view, rect)
+            return True
+        except RuntimeError:
+            return False
+
+
+class _CalmTables(QObject):
+    """App-wide: tables draw no grid lines unless View > Grid Lines is on,
+    and every item view shows the full text of a clipped cell on hover.
+
+    The tool windows each turned the grid on, which drew a line at every
+    row AND column boundary -- the "divider lines" that made dense tables
+    hard to read.  Alternating row shading carries the eye along a row;
+    an analyst who prefers the grid turns it on for every table at once.
+    """
+
+    grid_on = False
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._tips = _ElidedCellTooltip(self)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() == QEvent.Type.Polish and isinstance(obj, QAbstractItemView):
+            vp = obj.viewport()
+            if vp is not None and not vp.property("_eh_tips"):
+                vp.setProperty("_eh_tips", True)
+                vp.installEventFilter(self._tips)
+            if isinstance(obj, QTableView):
+                if obj.showGrid() != _CalmTables.grid_on:
+                    obj.setShowGrid(_CalmTables.grid_on)
+                if not obj.alternatingRowColors():
+                    obj.setAlternatingRowColors(True)
         return False
+
+
+def set_grid_lines(app, on: bool) -> None:
+    """View > Grid Lines: every table, open now or later."""
+    _CalmTables.grid_on = bool(on)
+    for w in app.allWidgets():
+        if isinstance(w, QTableView):
+            w.setShowGrid(_CalmTables.grid_on)
 
 
 def install_calm_tables(app) -> None:
@@ -8985,6 +9039,22 @@ class MainWindow(QMainWindow):
                              ("Ctrl+\\", lambda: self._toggle_left_panel())):
             _sc = QShortcut(QKeySequence(_keys), self)
             _sc.activated.connect(_slot)
+
+        # Grid lines between cells: off by default (calm), one switch for all.
+        view_menu.addSeparator()
+        self._act_grid = view_menu.addAction("Grid Lines")
+        self._act_grid.setCheckable(True)
+        self._act_grid.setToolTip("Lines between the cells of every table")
+        _grid = False
+        if self._persist_layout_enabled():
+            try:
+                _grid = QSettings("EventHawk", "GUI").value("grid_lines", False, type=bool)
+            except Exception:
+                _grid = False
+        self._act_grid.setChecked(bool(_grid))
+        self._act_grid.toggled.connect(self._on_grid_lines)
+        if _grid:
+            QTimer.singleShot(0, lambda: self._on_grid_lines(True))
 
         # ── Help ──────────────────────────────────────────────────────────
         hm = mb.addMenu("Help")
@@ -19235,6 +19305,11 @@ class MainWindow(QMainWindow):
     # =========================================================================
     # CLOSE
     # =========================================================================
+
+    def _on_grid_lines(self, on: bool) -> None:
+        set_grid_lines(QApplication.instance(), on)
+        if self._persist_layout_enabled():
+            QSettings("EventHawk", "GUI").setValue("grid_lines", bool(on))
 
     @staticmethod
     def _persist_layout_enabled() -> bool:

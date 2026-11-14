@@ -774,6 +774,10 @@ QHeaderView::section {
     color: #5a4e42;
     border: none;
     border-bottom: 1px solid #c4bba8;
+    /* A faint edge between header sections: where to drag a column wider,
+       or double-click to fit it (the cells themselves stay unruled unless
+       View > Grid Lines is on). */
+    border-right: 1px solid #d8d1c5;
     padding: 5px 4px;
     font-size: 8pt;
     font-weight: bold;

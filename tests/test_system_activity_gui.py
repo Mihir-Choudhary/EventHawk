@@ -95,6 +95,8 @@ def main() -> int:
             check(f"{tag}: an unlock logon (type 7) is a moment; a network logon and Sysmon are not read",
                   any(w_ == "Unlocked (logon type 7)" and "alice" in d for w_, d in whats)
                   and not any("bob" in d for _, d in whats))
+            # Every period, including the split-second ones hidden by default.
+            dlg._chk_short.setChecked(False)
             n_all = dlg._tbl.rowCount()
             dlg._chk["Screen"].setChecked(False)
             n_noscreen = dlg._tbl.rowCount()

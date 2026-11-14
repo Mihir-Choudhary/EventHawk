@@ -4,7 +4,7 @@ Open **Tools > System Activity** after loading events. The tool builds a compute
 
 ## Timeline and Moments
 
-**Timeline** lists Computer, Layer, Activity, Start (UTC), End (UTC), Duration, Started by, Ended by and Notes. **Moments** shows observations with details and evidence. Computer, layer checkboxes and search control visible rows.
+**Timeline** lists Computer, Layer, Activity, Start (UTC), End (UTC), Duration, Started by, Ended by and Notes. **Moments** shows observations with details and evidence. Computer, layer checkboxes and search control visible rows. **Hide periods under 1 s** (on by default; the checkbox shows how many) keeps split-second power transitions out of the timeline; the summary totals still count every period. The summary groups totals per layer in hours and minutes (exact totals on hover); a row's colour follows the legend under the filters. Durations in the table follow the display precision (exact on hover); the strip under the table shows the selected period or moment in full: notes, evidence and exact duration.
 
 | Layer | Recognized evidence |
 |---|---|
