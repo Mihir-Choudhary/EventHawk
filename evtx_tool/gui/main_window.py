@@ -9224,7 +9224,11 @@ class MainWindow(QMainWindow):
 
         # ── Collapse / expand toggle button (right edge of left panel) ────
         self._btn_panel_toggle = QPushButton()
-        self._btn_panel_toggle.setFixedWidth(16)
+        # 24 px with a 16 px amber arrow when folded: the 16 px strip with a
+        # faint 12 px arrow was easy to miss, and the panel looked stuck.
+        self._btn_panel_toggle.setFixedWidth(self._RAIL_WIDTH)
+        self._btn_panel_toggle.setAccessibleName("Show or hide the side panel")
+        self._btn_panel_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_panel_toggle.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
         )
@@ -10090,15 +10094,12 @@ class MainWindow(QMainWindow):
         wrapper_layout.setSpacing(0)
 
         # ── Analysis scope row (hidden until separate mode) ───────────────
+        # Sits in the tab bar's top-right corner (it was a 28 px row of its own
+        # above the tabs, with a 20 px combo that clipped "This File").
         self._scope_row_widget = QWidget()
-        self._scope_row_widget.setFixedHeight(28)
-        self._scope_row_widget.setStyleSheet(
-            f"background:{COLORS['bg_header']};"
-            f"border-bottom:1px solid {COLORS['border']};"
-        )
         scope_row = QHBoxLayout(self._scope_row_widget)
-        scope_row.setContentsMargins(8, 0, 8, 0)
-        scope_row.setSpacing(8)
+        scope_row.setContentsMargins(8, 2, 6, 2)
+        scope_row.setSpacing(6)
 
         lbl_scope = QLabel("Analysis:")
         lbl_scope.setStyleSheet(
@@ -10108,21 +10109,20 @@ class MainWindow(QMainWindow):
 
         self._cmb_analysis_scope = QComboBox()
         self._cmb_analysis_scope.addItems(["This File", "All Files"])
-        self._cmb_analysis_scope.setMaximumWidth(110)
-        self._cmb_analysis_scope.setFixedHeight(20)
+        self._cmb_analysis_scope.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._cmb_analysis_scope.setAccessibleName("Analysis scope")
         self._cmb_analysis_scope.setToolTip(
             "This File — show analysis for the currently active file tab\n"
             "All Files — show analysis for all parsed events combined"
         )
         self._cmb_analysis_scope.currentTextChanged.connect(self._on_analysis_scope_changed)
         scope_row.addWidget(self._cmb_analysis_scope)
-        scope_row.addStretch()
 
         self._scope_row_widget.setVisible(False)  # shown only in separate mode
-        wrapper_layout.addWidget(self._scope_row_widget)
 
         # ── Main analysis tab widget ──────────────────────────────────────
         self._analysis_tabs = QTabWidget()
+        self._analysis_tabs.setCornerWidget(self._scope_row_widget, Qt.Corner.TopRightCorner)
 
         # ATT&CK tab
         self._tab_attack = self._build_attack_tab()
@@ -14050,10 +14050,14 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_analysis_progress(self, step_name: str) -> None:
+        if self._stale_analysis():
+            return
         self._set_status(f"Analysing…  {step_name}")
 
     @Slot(str, int)
     def _on_component_progress(self, component: str, pct: int) -> None:
+        if self._stale_analysis():
+            return
         """Update per-component progress in the status bar."""
         self._component_pcts[component] = pct
         parts = []
@@ -14075,7 +14079,17 @@ class MainWindow(QMainWindow):
         self._component_pcts.clear()
 
     @Slot(object, object, object)
+    def _stale_analysis(self) -> bool:
+        """True when the signal comes from an analysis run that is no longer
+        the current one.  A run stopped by a new parse could still deliver its
+        IOCs / chains, so the previous logs' findings sat in the tabs while a
+        different collection loaded."""
+        src = self.sender()
+        return src is not None and src is not self._analysis_runner and type(src).__name__ == "AnalysisRunner"
+
     def _on_analysis_finished(self, iocs, chains, metadata) -> None:
+        if self._stale_analysis():
+            return
         self._iocs     = iocs
         self._chains   = chains or []
         self._chains_ran = chains is not None   # 0 chains found vs correlation not run
@@ -14159,6 +14173,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_analysis_error(self, msg: str) -> None:
+        if self._stale_analysis():
+            return
         self._btn_stop.setEnabled(False)
         self._analysis_runner = None
         self._set_status("Done (analysis failed)")
@@ -17374,33 +17390,50 @@ class MainWindow(QMainWindow):
                 chain.get("rule_name", ""),
                 ", ".join(chain.get("computers", [])) or "?",
                 str(len(chain.get("events", []))),
-                (chain.get("first_event_ts") or chain.get("first_ts", ""))[:19],
+                # Display zone and precision, as in the event table (raw ISO before).
+                apply_tz(chain.get("first_event_ts") or chain.get("first_ts", "") or ""),
             ])
+            _raw_first = chain.get("first_event_ts") or chain.get("first_ts", "")
+            if _raw_first:
+                top.setToolTip(4, f"UTC {_raw_first}")
+            top.setTextAlignment(3, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             top.setForeground(0, QColor(color))
             top.setForeground(1, QColor(color))
             top.setData(0, Qt.ItemDataRole.UserRole, _ChainWrapper(chain))
 
             desc = chain.get("description", "")
             if desc:
+                # The description runs across the whole row (it was squeezed
+                # into the narrow Severity column).
                 desc_item = QTreeWidgetItem([desc, "", "", "", ""])
                 desc_item.setForeground(0, QColor(COLORS["text_dim"]))
+                desc_item.setToolTip(0, desc)
                 top.addChild(desc_item)
 
             for ev in (chain.get("events") or []):   # every event (it showed 10)
                 # events are full event dicts, not plain IDs
                 if isinstance(ev, dict):
                     eid = ev.get("event_id", "?")
-                    ts  = str(ev.get("timestamp", ""))[:19]
+                    raw_ts = str(ev.get("timestamp", "") or "")
                     comp = ev.get("computer", "")
+                    rec = ev.get("event_record_id") or ev.get("record_id")
                 else:
-                    eid, ts, comp = ev, "", ""
+                    eid, raw_ts, comp, rec = ev, "", "", None
+                # Each value under its own heading: the time used to sit under
+                # Events and the event ID under Severity.
                 ev_item = QTreeWidgetItem([
-                    f"EID {eid}", "", comp, ts, ""
+                    "", f"Event {eid}" + (f"  ·  record {rec}" if rec not in (None, "") else ""),
+                    comp, "", apply_tz(raw_ts) if raw_ts else "",
                 ])
-                ev_item.setForeground(0, QColor(COLORS["text_dim"]))
+                for _c in (1, 2, 4):
+                    ev_item.setForeground(_c, QColor(COLORS["text_dim"]))
+                if raw_ts:
+                    ev_item.setToolTip(4, f"UTC {raw_ts}")
                 top.addChild(ev_item)
 
             self._tree_chains.addTopLevelItem(top)
+            if desc:
+                top.child(0).setFirstColumnSpanned(True)   # needs the row in the tree
 
         self._tree_chains.resizeColumnToContents(0)
         self._tree_chains.resizeColumnToContents(3)
@@ -17456,7 +17489,8 @@ class MainWindow(QMainWindow):
             if n == 1
             else f"View Events from {n} Chains in New Tab"
         )
-        act_view = menu.addAction(f"\u26d3  {view_label}")
+        from .icons import icon as _icon
+        act_view = menu.addAction(_icon("link"), view_label)
         act_view.triggered.connect(lambda: self._open_chain_events_tab(selected))
 
         menu.exec(self._tree_chains.viewport().mapToGlobal(pos))
@@ -18533,8 +18567,11 @@ class MainWindow(QMainWindow):
     # Below this window width the side panel folds away once events are
     # loaded: on a laptop screen the table needs the room more than the
     # set-up controls, which are done with by then.  The fold is not saved.
-    _FOLD_PANEL_BELOW_WIDTH = 1500
-    _PANEL_OPEN_MIN_WIDTH = 292     # 276 of controls + the 16 px toggle strip
+    # Fold after a parse only when the events really need the room: 1500 folded
+    # it on every non-maximised window of a 1536 px laptop screen.
+    _FOLD_PANEL_BELOW_WIDTH = 1240
+    _RAIL_WIDTH = 24                # the toggle strip; all that shows when folded
+    _PANEL_OPEN_MIN_WIDTH = 276 + _RAIL_WIDTH
 
     def _fold_panel_for_room(self) -> None:
         if self._panel_open and self.width() < self._FOLD_PANEL_BELOW_WIDTH:
@@ -18546,7 +18583,8 @@ class MainWindow(QMainWindow):
     def _sync_panel_toggle_icon(self) -> None:
         from .icons import set_icon
         set_icon(self._btn_panel_toggle,
-                 "chevron-left" if self._panel_open else "chevron-right", size=12)
+                 "chevron-left" if self._panel_open else "chevron-right",
+                 "text_dim" if self._panel_open else "accent", size=12 if self._panel_open else 16)
         self._btn_panel_toggle.setToolTip(
             "Hide the side panel" if self._panel_open
             else "Show the side panel (files, profiles, Parse)")
@@ -18566,11 +18604,11 @@ class MainWindow(QMainWindow):
             # Snapshot the full wrapper width so we can restore it later
             self._panel_stored_width = max(wrapper.width(), self._PANEL_OPEN_MIN_WIDTH)
             start_val = self._panel_stored_width
-            end_val   = 16   # collapse to button-only width
-            wrapper.setMinimumWidth(16)
+            end_val   = self._RAIL_WIDTH   # collapse to the toggle strip
+            wrapper.setMinimumWidth(self._RAIL_WIDTH)
         else:
             # ── Expanding ─────────────────────────────────────────────────
-            start_val = 16
+            start_val = self._RAIL_WIDTH
             end_val   = self._panel_stored_width
 
         self._panel_open = not self._panel_open
@@ -18618,8 +18656,8 @@ class MainWindow(QMainWindow):
             wrapper = self._left_panel_wrapper
             # Snapshot the settled geometry before collapsing
             self._panel_stored_width = max(wrapper.width(), self._PANEL_OPEN_MIN_WIDTH)
-            wrapper.setMinimumWidth(16)
-            wrapper.setMaximumWidth(16)   # collapse to button-only width instantly
+            wrapper.setMinimumWidth(self._RAIL_WIDTH)
+            wrapper.setMaximumWidth(self._RAIL_WIDTH)   # collapse to the toggle strip instantly
             self._panel_open = False
             self._sync_panel_toggle_icon()
 
@@ -18787,9 +18825,12 @@ class MainWindow(QMainWindow):
         self._clear_results()
 
     def _clear_results(self) -> None:
-        # Fix E: cleanup Juggernaut (DuckDB) state and reset table model
-        if self._hw_model is not None:
-            # Reset table back to normal-mode proxy before cleanup
+        # Fix E: cleanup Juggernaut (DuckDB) state and reset table model.
+        # Checked on the table itself, not on _hw_model: the normal parse path
+        # runs _cleanup_juggernaut() first, which drops _hw_model but left the
+        # table showing the released Juggernaut model -- numbered blank rows
+        # under "0 events" for the whole re-parse.
+        if self._table.model() is not self._proxy_model:
             self._table.setModel(self._proxy_model)
             self._table.selectionModel().selectionChanged.connect(self._on_row_selected)
         self._cleanup_juggernaut()
