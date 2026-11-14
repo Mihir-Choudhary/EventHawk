@@ -9523,7 +9523,9 @@ class MainWindow(QMainWindow):
         self._file_tree = QTreeWidget()
         self._file_tree.setObjectName("fileTree")
         self._file_tree.setHeaderHidden(True)
-        self._file_tree.setColumnCount(1)
+        # Name | event count (right-aligned, so counts line up and a long
+        # name never pushes its count out of sight).
+        self._file_tree.setColumnCount(2)
         self._file_tree.setRootIsDecorated(False)
         self._file_tree.setIndentation(8)
         # Entries show a short log name (see _short_log_name); the full path
@@ -9532,6 +9534,10 @@ class MainWindow(QMainWindow):
         self._file_tree.header().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
         )
+        self._file_tree.header().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self._file_tree.header().setStretchLastSection(False)
         self._file_tree.itemClicked.connect(self._on_tree_item_clicked)
         self._file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._file_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
@@ -10145,6 +10151,9 @@ class MainWindow(QMainWindow):
         if filepath == "__all_events__":
             self._open_all_events_tab()
             return
+        if filepath == self._EMPTY_GROUP_KEY:
+            self._toggle_empty_group(item)
+            return
         if filepath in self._file_tabs:
             # Tab exists — switch to it
             state = self._file_tabs[filepath]
@@ -10463,24 +10472,43 @@ class MainWindow(QMainWindow):
         """Remove a file completely — close tab + free memory."""
         self._close_file_tab(filepath)
         self._per_file_data.pop(filepath, None)
-        # Remove from tree
-        root = self._file_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            if item and item.data(0, Qt.ItemDataRole.UserRole) == filepath:
-                root.removeChild(item)
+        # Remove from tree (an empty log sits inside the Empty logs group)
+        from PySide6.QtWidgets import QTreeWidgetItemIterator
+        it = QTreeWidgetItemIterator(self._file_tree)
+        while it.value():
+            item = it.value()
+            if item.data(0, Qt.ItemDataRole.UserRole) == filepath:
+                parent = item.parent() or self._file_tree.invisibleRootItem()
+                parent.removeChild(item)
+                if parent is not self._file_tree.invisibleRootItem():
+                    if parent.childCount():
+                        parent.setText(1, f"{parent.childCount():,}")
+                    else:
+                        self._file_tree.invisibleRootItem().removeChild(parent)
                 break
+            it += 1
 
     def _update_tree_item_style(self, filepath: str, is_open: bool) -> None:
-        """Bold tree items that have an open tab."""
-        root = self._file_tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            if item and item.data(0, Qt.ItemDataRole.UserRole) == filepath:
+        """Bold tree items that have an open tab (also inside the empty group)."""
+        from PySide6.QtWidgets import QTreeWidgetItemIterator
+        it = QTreeWidgetItemIterator(self._file_tree)
+        while it.value():
+            item = it.value()
+            if item.data(0, Qt.ItemDataRole.UserRole) == filepath:
                 f = item.font(0)
                 f.setBold(is_open)
                 item.setFont(0, f)
                 break
+            it += 1
+
+    def _add_tree_entry(self, item) -> None:
+        """Add a top-level entry (a pivot tab) above the Empty logs group."""
+        root = self._file_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            if root.child(i).data(0, Qt.ItemDataRole.UserRole) == self._EMPTY_GROUP_KEY:
+                self._file_tree.insertTopLevelItem(i, item)
+                return
+        self._file_tree.addTopLevelItem(item)
 
     def _make_tab_close_button(self, on_click) -> QPushButton:
         """The close button on an event tab: a small line icon that shows a
@@ -10519,20 +10547,70 @@ class MainWindow(QMainWindow):
 
     def _populate_file_tree(self) -> None:
         """Fill the file tree with loaded file names."""
+        counts = {fp: len(d.get("events") or []) for fp, d in self._per_file_data.items()}
+        self._fill_file_tree(counts, empty_openable=True)
+
+    _EMPTY_GROUP_KEY = "__empty_logs__"
+
+    def _fill_file_tree(self, counts: dict, empty_openable: bool) -> None:
+        """The Tab-per-file list: "All Events (total)", then each log with its
+        event count, then a collapsed "Empty logs (N)" group.
+
+        Empty logs are grouped, not dropped: an empty Security log can be the
+        finding (cleared), and a collection often holds dozens of empty logs
+        that only push the ones with events out of sight.  *empty_openable*:
+        whether an empty log's entry opens a tab (Normal mode keeps one per
+        file; Juggernaut Mode has no rows to show for it).
+        """
+        from .icons import icon as _icon
         self._file_tree.clear()
+        total = sum(counts.values())
         # "All Events" entry at top so user can reopen the merged tab
-        all_item = QTreeWidgetItem(["All Events"])
+        all_item = QTreeWidgetItem(["All Events", f"{total:,}"])
         all_item.setData(0, Qt.ItemDataRole.UserRole, "__all_events__")
         all_item.setToolTip(0, "View all events from all files combined")
         f = all_item.font(0)
         f.setBold(True)
         all_item.setFont(0, f)
         self._file_tree.addTopLevelItem(all_item)
-        for filepath in sorted(self._per_file_data.keys()):
-            item = QTreeWidgetItem([_short_log_name(filepath)])
+        self._style_count_column(all_item)
+        names = {fp: _short_log_name(fp) for fp in counts}
+        order = sorted(counts, key=lambda fp: (names[fp].casefold(), fp))
+        empty = [fp for fp in order if not counts[fp]]
+        for filepath in order:
+            if not counts[filepath]:
+                continue
+            item = QTreeWidgetItem([names[filepath], f"{counts[filepath]:,}"])
             item.setData(0, Qt.ItemDataRole.UserRole, filepath)
-            item.setToolTip(0, filepath)
+            item.setToolTip(0, f"{filepath}\n{counts[filepath]:,} events")
+            self._style_count_column(item)
             self._file_tree.addTopLevelItem(item)
+        if empty:
+            grp = QTreeWidgetItem(["Empty logs", f"{len(empty):,}"])
+            grp.setData(0, Qt.ItemDataRole.UserRole, self._EMPTY_GROUP_KEY)
+            grp.setToolTip(0, "Logs with no events -- empty, or cleared. Click to show them.")
+            grp.setIcon(0, _icon("chevron-right", "text_muted", 12))
+            grp.setForeground(0, QColor(COLORS["text_dim"]))
+            self._style_count_column(grp)
+            self._file_tree.addTopLevelItem(grp)
+            for filepath in empty:
+                ch = QTreeWidgetItem([names[filepath]])
+                ch.setData(0, Qt.ItemDataRole.UserRole, filepath if empty_openable else None)
+                ch.setToolTip(0, f"{filepath}\nNo events: the log is empty or was cleared")
+                ch.setForeground(0, QColor(COLORS["text_muted"]))
+                grp.addChild(ch)
+            grp.setExpanded(False)
+
+    @staticmethod
+    def _style_count_column(item) -> None:
+        item.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        item.setForeground(1, QColor(COLORS["text_dim"]))
+
+    def _toggle_empty_group(self, item) -> None:
+        from .icons import icon as _icon
+        item.setExpanded(not item.isExpanded())
+        item.setIcon(0, _icon("chevron-down" if item.isExpanded() else "chevron-right",
+                              "text_muted", 12))
 
     # =========================================================================
     # FILE MANAGEMENT
@@ -11640,19 +11718,17 @@ class MainWindow(QMainWindow):
             self._jm_file_models: list = []
 
             # Populate file tree — "All Events" at top, then per-file entries
-            self._file_tree.clear()
-            all_item = QTreeWidgetItem(["All Events"])
-            all_item.setData(0, Qt.ItemDataRole.UserRole, "__all_events__")
-            all_item.setToolTip(0, "View all events from all files combined")
-            f = all_item.font(0)
-            f.setBold(True)
-            all_item.setFont(0, f)
-            self._file_tree.addTopLevelItem(all_item)
-            for fp in source_files:
-                ti = QTreeWidgetItem([_short_log_name(fp)])
-                ti.setData(0, Qt.ItemDataRole.UserRole, fp)
-                ti.setToolTip(0, fp)
-                self._file_tree.addTopLevelItem(ti)
+            # with their counts (value_counts on the dictionary-encoded column
+            # is as cheap as unique()), and the parsed files that produced no
+            # rows grouped as empty logs.
+            try:
+                _vc = arrow_table["source_file"].value_counts()
+                _counts = {str(v["values"]): int(v["counts"]) for v in _vc.to_pylist() if v["values"]}
+            except Exception:
+                _counts = {fp: 1 for fp in source_files}   # names without counts beats nothing
+            for _fp in getattr(self, "_last_parsed_files", None) or []:
+                _counts.setdefault(_fp, 0)
+            self._fill_file_tree(_counts, empty_openable=False)
 
             # Show the All Events tab with a close button
             self._events_tab_widget.setTabVisible(0, True)
@@ -17051,7 +17127,7 @@ class MainWindow(QMainWindow):
         _tf = tree_item.font(0)
         _tf.setBold(True)
         tree_item.setFont(0, _tf)
-        self._file_tree.addTopLevelItem(tree_item)
+        self._add_tree_entry(tree_item)
 
         # Show the file-tree panel if it is hidden (e.g. merged mode)
         if not self._file_tree_panel.isVisible():
@@ -17309,7 +17385,7 @@ class MainWindow(QMainWindow):
         _tf = tree_item.font(0)
         _tf.setBold(True)
         tree_item.setFont(0, _tf)
-        self._file_tree.addTopLevelItem(tree_item)
+        self._add_tree_entry(tree_item)
         if not self._file_tree_panel.isVisible():
             self._file_tree_panel.setVisible(True)
             self._btn_tree_toggle.setEnabled(True)

@@ -10,7 +10,7 @@ The left panel queues files, selects profiles and analysis, and starts parsing. 
 
 Until events are loaded, the empty event grid says what to do next (add inputs, press Parse, or wait for parsing). On a window narrower than 1500 px the side panel folds away after a parse so the grid gets the room; the arrow at the left edge brings it back. This automatic fold is not remembered; folding the panel yourself is.
 
-The event grid begins with **All Events**. File tabs and investigation tabs have their own scope and column filters. The detail pane describes the selected row. The analysis area has **ATT&CK**, **IOCs**, **Chains**, and **Bookmarks** tabs.
+The event grid begins with **All Events**. In the **Tab per file** view the file list shows each log's event count; logs with no events (empty, or cleared) are grouped under a collapsed **Empty logs** entry at the bottom rather than hidden. File tabs and investigation tabs have their own scope and column filters. The detail pane describes the selected row. The analysis area has **ATT&CK**, **IOCs**, **Chains**, and **Bookmarks** tabs.
 
 ## Menus and actions
 

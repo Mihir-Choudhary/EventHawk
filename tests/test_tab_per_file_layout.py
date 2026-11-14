@@ -69,6 +69,58 @@ def main() -> int:
     btn.click(); T.pump(100)
     check("and it closes the tab", w._events_tab_widget.indexOf(tbl) < 0)
 
+    print("\n=== file list: counts and the empty-logs group ===")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QTreeWidgetItem
+    secl = r"C:\s\Security.evtx"
+    e1 = r"C:\s\Microsoft-Windows-Bits-Client%4Operational.evtx"
+    e2 = r"C:\s\HardwareEvents.evtx"
+    w._per_file_data = {
+        sec: {"events": evs, "search_cache": None},
+        secl: {"events": evs[:3], "search_cache": None},
+        e1: {"events": [], "search_cache": None},
+        e2: {"events": [], "search_cache": None},
+    }
+    w._populate_file_tree()
+    tree = w._file_tree
+    tops = [tree.topLevelItem(i) for i in range(tree.topLevelItemCount())]
+    texts = [f"{t.text(0)} ({t.text(1)})" for t in tops]
+    check("All Events shows the total", texts[0] == "All Events (8)", texts[0])
+    check("each log with events shows its count (own right-aligned column)",
+          "PowerShell / Operational (5)" in texts and "Security (3)" in texts
+          and bool(tops[1].textAlignment(1) & Qt.AlignmentFlag.AlignRight), str(texts))
+    grp = tops[-1]
+    check("empty logs are grouped last, with their number",
+          texts[-1] == "Empty logs (2)" and grp.childCount() == 2, texts[-1])
+    check("...collapsed, so they take one line", not grp.isExpanded())
+    check("empty logs are not listed among the others",
+          not any("Bits-Client" in t or "HardwareEvents" in t for t in texts[:-1]), str(texts))
+    w._on_tree_item_clicked(grp, 0)
+    check("clicking the group shows the empty logs", grp.isExpanded())
+    w._on_tree_item_clicked(grp, 0)
+    check("clicking again hides them", not grp.isExpanded())
+    child = grp.child(0)
+    check("an empty log keeps its full path as tooltip",
+          child.toolTip(0).startswith("C:\\s\\") and "No events" in child.toolTip(0), child.toolTip(0))
+    w._on_tree_item_clicked(child, 0); T.pump(100)
+    check("Normal mode: an empty log still opens (an empty tab)",
+          child.data(0, Qt.ItemDataRole.UserRole) in w._file_tabs)
+
+    pivot = QTreeWidgetItem(["⏱ around"])
+    pivot.setData(0, Qt.ItemDataRole.UserRole, "__around__x")
+    w._add_tree_entry(pivot)
+    check("a pivot tab's entry goes above the Empty logs group",
+          tree.indexOfTopLevelItem(pivot) == tree.topLevelItemCount() - 2)
+
+    w._remove_loaded_file(e2); T.pump(50)
+    grp = tree.topLevelItem(tree.topLevelItemCount() - 1)
+    check("removing an empty log updates the group", grp.text(1) == "1", grp.text(1))
+
+    w._fill_file_tree({sec: 5, e1: 0}, empty_openable=False)
+    g2 = tree.topLevelItem(tree.topLevelItemCount() - 1)
+    check("Juggernaut Mode: an empty log's entry opens nothing (no rows to show)",
+          g2.child(0).data(0, Qt.ItemDataRole.UserRole) is None)
+
     w.close(); T.pump(100)
 
     ok = sum(1 for _n, c, _d in CHECKS if c)
