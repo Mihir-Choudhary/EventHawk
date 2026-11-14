@@ -237,7 +237,7 @@ class FilterDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Filter")
-        self.resize(680, 720)
+        self.resize(700, 800)          # every section visible; fitted to small screens
         self.setMinimumSize(580, 550)
         self._metadata = metadata
         # First and last loaded event ("yyyy-MM-dd HH:mm:ss", display zone):
@@ -276,19 +276,83 @@ class FilterDialog(QDialog):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         body_widget = QWidget()
         body = QVBoxLayout(body_widget)
-        body.setContentsMargins(0, 0, 4, 0)
-        body.setSpacing(6)
+        body.setContentsMargins(4, 2, 8, 4)
+        body.setSpacing(16)
 
-        # ── Row 1: Event types + Source/Category/User/Computer ────────────
-        top_row = QHBoxLayout()
-        top_row.setSpacing(12)
+        # Sections, most used first: Find (IDs, text), Levels, Where and who,
+        # Time, Field conditions.  Each has a heading and one line saying what
+        # it does; whitespace separates them (no boxes, no divider lines: the
+        # flat wall of controls read as overwhelming).
+        def section(title: str, sub: str = "") -> QVBoxLayout:
+            box = QWidget()
+            lay = QVBoxLayout(box)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(5)
+            head = QLabel(title)
+            head.setObjectName("filterSection")
+            lay.addWidget(head)
+            if sub:
+                s = QLabel(sub)
+                s.setObjectName("filterSectionSub")
+                s.setWordWrap(True)
+                s.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+                lay.addWidget(s)
+            body.addWidget(box)
+            return lay
 
-        # Event types group
-        types_grp = QGroupBox("Event types")
-        types_layout = QVBoxLayout(types_grp)
-        types_layout.setSpacing(2)
-        types_layout.setContentsMargins(8, 12, 8, 8)
+        # ── Find ──────────────────────────────────────────────────────────
+        find = section("Find")
+        find_grid = QGridLayout()
+        find_grid.setHorizontalSpacing(8)
+        find_grid.setVerticalSpacing(6)
+        find_grid.addWidget(_lbl("Event IDs:"), 0, 0)
+        self._inp_event_ids = QLineEdit()
+        self._inp_event_ids.setPlaceholderText("4624, 4634-4648 !4647")
+        self._inp_event_ids.setToolTip("Event ID numbers and ranges, separated by commas.\n"
+                                       "After an exclamation mark: IDs to leave out.\n"
+                                       "Example: 4624,4634-4648!4647")
+        find_grid.addWidget(self._inp_event_ids, 0, 1)
+        self._chk_eid_exclude = QCheckBox("Exclude")
+        find_grid.addWidget(self._chk_eid_exclude, 0, 3)
+        hint = QLabel("Numbers and ranges separated by commas; after ! the IDs to leave out.")
+        hint.setObjectName("filterSectionSub")
+        hint.setWordWrap(True)
+        hint.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        find_grid.addWidget(hint, 1, 1, 1, 3)
 
+        self._lbl_text = _lbl("Text:")
+        find_grid.addWidget(self._lbl_text, 2, 0)
+        self._inp_text = QLineEdit()
+        self._inp_text.setPlaceholderText("Anywhere in the event: IP, user, path, hash, any word…")
+        _scope = ("Searches the whole event: every System field (provider, event ID, "
+                  "computer, channel, user SID, keywords, process/thread IDs, record ID, "
+                  "timestamps, GUIDs), every EventData / UserData value and field name, "
+                  "the description shown in the event details, the decoded labels "
+                  "(logon type, keywords ...) and the System XML element names.")
+        self._lbl_text.setToolTip(_scope)
+        self._inp_text.setToolTip(_scope)
+        find_grid.addWidget(self._inp_text, 2, 1)
+        self._chk_regex = QCheckBox("RegExp")
+        self._chk_regex.setToolTip("Treat search text as a regular expression")
+        find_grid.addWidget(self._chk_regex, 2, 2)
+        self._chk_text_exclude = QCheckBox("Exclude")
+        find_grid.addWidget(self._chk_text_exclude, 2, 3)
+        find_grid.setColumnStretch(1, 1)
+        find_grid.setColumnMinimumWidth(0, 76)   # labels line up across sections
+        find.addLayout(find_grid)
+
+        # Kept (hidden) so any caller still referencing it does not break; the
+        # Juggernaut restriction it explained no longer exists.
+        self._lbl_text_disabled_hint = QLabel("")
+        self._lbl_text_disabled_hint.setWordWrap(True)
+        self._lbl_text_disabled_hint.setStyleSheet(
+            f"color:{COLORS['text_dim']}; font-size:7pt;"
+        )
+        self._lbl_text_disabled_hint.setVisible(False)
+        find.addWidget(self._lbl_text_disabled_hint)
+
+        # ── Levels ────────────────────────────────────────────────────────
+        levels = section("Levels")
         self._chk_verbose     = QCheckBox("Verbose")
         # Level 0 and level 4 together, as in Windows Event Viewer.  Level 0
         # had a box of its own, "LogAlways" (the user, 2026-11-12).
@@ -310,150 +374,88 @@ class FilterDialog(QDialog):
             "Audit Success": self._chk_audit_success,
             "Audit Failure": self._chk_audit_failure,
         }
-        for chk in self._level_checks.values():
+        lv_grid = QGridLayout()
+        lv_grid.setHorizontalSpacing(18)
+        lv_grid.setVerticalSpacing(4)
+        for i, chk in enumerate(self._level_checks.values()):
             chk.setChecked(True)
-            types_layout.addWidget(chk)
+            lv_grid.addWidget(chk, i // 4, i % 4)
+        lv_links = QHBoxLayout()
+        lv_links.setSpacing(4)
+        for text, state in (("All", True), ("None", False)):
+            b = QPushButton(text)
+            b.setObjectName("filterLink")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip(f"{'Tick' if state else 'Untick'} every level")
+            b.clicked.connect(lambda _=False, s=state: [c.setChecked(s) for c in self._level_checks.values()])
+            lv_links.addWidget(b)
+        lv_links.addStretch()
+        lv_grid.addLayout(lv_links, 1, 3)
+        lv_grid.setColumnStretch(4, 1)
+        levels.addLayout(lv_grid)
 
-        top_row.addWidget(types_grp)
+        # ── Where and who ─────────────────────────────────────────────────
+        who = section("Source, channel, user, computer",
+                      "Events whose value contains the text; several values separated by commas. "
+                      "… picks from the loaded events.")
+        fields_grid = QGridLayout()
+        fields_grid.setHorizontalSpacing(8)
+        fields_grid.setVerticalSpacing(5)
 
-        # Source / Category / User / Computer grid
-        fields_widget = QWidget()
-        fields_grid = QGridLayout(fields_widget)
-        fields_grid.setContentsMargins(0, 0, 0, 0)
-        fields_grid.setSpacing(4)
+        def field_row(row, label, placeholder, tip, browse_tip, field, title):
+            fields_grid.addWidget(_lbl(label), row, 0)
+            inp = QLineEdit()
+            inp.setPlaceholderText(placeholder)
+            inp.setToolTip(tip + "\nSeveral values: separate them with commas.")
+            fields_grid.addWidget(inp, row, 1)
+            btn = QPushButton("...")
+            btn.setFixedWidth(30)
+            btn.setToolTip(browse_tip)
+            btn.clicked.connect(lambda: self._open_picker(field, title, inp))
+            fields_grid.addWidget(btn, row, 2)
+            exc = QCheckBox("Exclude")
+            fields_grid.addWidget(exc, row, 3)
+            return inp, btn, exc
 
-        # Source
-        fields_grid.addWidget(_lbl("Source:"), 0, 0)
-        self._inp_source = QLineEdit()
-        self._inp_source.setPlaceholderText("Provider name")
-        self._inp_source.setToolTip("Events whose provider or channel name contains this text.\n"
-                                    "Several values: separate them with commas.")
-        fields_grid.addWidget(self._inp_source, 0, 1)
-        self._btn_source = QPushButton("...")
-        self._btn_source.setFixedWidth(28)
-        self._btn_source.setToolTip("Browse available sources")
-        self._btn_source.clicked.connect(lambda: self._open_picker("source", "Select sources", self._inp_source))
-        fields_grid.addWidget(self._btn_source, 0, 2)
-        self._chk_source_exclude = QCheckBox("Exclude")
-        fields_grid.addWidget(self._chk_source_exclude, 0, 3)
+        self._inp_source, self._btn_source, self._chk_source_exclude = field_row(
+            0, "Source:", "Provider name", "Events whose provider or channel name contains this text.",
+            "Browse available sources", "source", "Select sources")
+        self._inp_category, self._btn_category, self._chk_category_exclude = field_row(
+            1, "Channel:", "Channel name", "Events whose channel (log) name contains this text, e.g. Security.",
+            "Browse available channels", "category", "Select categories")
+        self._inp_user, self._btn_user, self._chk_user_exclude = field_row(
+            2, "User:", "User / SID", "Events whose user name or SID contains this text.",
+            "Browse available users", "user", "Select users")
+        self._inp_computer, self._btn_computer, self._chk_computer_exclude = field_row(
+            3, "Computer:", "Hostname", "Events whose Computer name contains this text.",
+            "Browse available computers", "computer", "Select computers")
+        fields_grid.setColumnStretch(1, 1)
+        fields_grid.setColumnMinimumWidth(0, 76)
+        who.addLayout(fields_grid)
 
-        # Category
-        fields_grid.addWidget(_lbl("Channel:"), 1, 0)
-        self._inp_category = QLineEdit()
-        self._inp_category.setPlaceholderText("Channel name")
-        self._inp_category.setToolTip("Events whose channel (log) name contains this text, e.g. Security.\n"
-                                      "Several values: separate them with commas.")
-        fields_grid.addWidget(self._inp_category, 1, 1)
-        self._btn_category = QPushButton("...")
-        self._btn_category.setFixedWidth(28)
-        self._btn_category.setToolTip("Browse available channels")
-        self._btn_category.clicked.connect(lambda: self._open_picker("category", "Select categories", self._inp_category))
-        fields_grid.addWidget(self._btn_category, 1, 2)
-        self._chk_category_exclude = QCheckBox("Exclude")
-        fields_grid.addWidget(self._chk_category_exclude, 1, 3)
-
-        # User
-        fields_grid.addWidget(_lbl("User:"), 2, 0)
-        self._inp_user = QLineEdit()
-        self._inp_user.setPlaceholderText("User / SID")
-        self._inp_user.setToolTip("Events whose user name or SID contains this text.\n"
-                                  "Several values: separate them with commas.")
-        fields_grid.addWidget(self._inp_user, 2, 1)
-        self._btn_user = QPushButton("...")
-        self._btn_user.setFixedWidth(28)
-        self._btn_user.setToolTip("Browse available users")
-        self._btn_user.clicked.connect(lambda: self._open_picker("user", "Select users", self._inp_user))
-        fields_grid.addWidget(self._btn_user, 2, 2)
-        self._chk_user_exclude = QCheckBox("Exclude")
-        fields_grid.addWidget(self._chk_user_exclude, 2, 3)
-
-        # Computer
-        fields_grid.addWidget(_lbl("Computer:"), 3, 0)
-        self._inp_computer = QLineEdit()
-        self._inp_computer.setPlaceholderText("Hostname")
-        self._inp_computer.setToolTip("Events whose Computer name contains this text.\n"
-                                      "Several values: separate them with commas.")
-        fields_grid.addWidget(self._inp_computer, 3, 1)
-        self._btn_computer = QPushButton("...")
-        self._btn_computer.setFixedWidth(28)
-        self._btn_computer.setToolTip("Browse available computers")
-        self._btn_computer.clicked.connect(lambda: self._open_picker("computer", "Select computers", self._inp_computer))
-        fields_grid.addWidget(self._btn_computer, 3, 2)
-        self._chk_computer_exclude = QCheckBox("Exclude")
-        fields_grid.addWidget(self._chk_computer_exclude, 3, 3)
-
-        top_row.addWidget(fields_widget, stretch=1)
-        body.addLayout(top_row)
-
-        body.addWidget(_styled_line())
-
-        # ── Event IDs ─────────────────────────────────────────────────────
-        eid_row = QHBoxLayout()
-        eid_row.addWidget(_lbl("Event ID(s):"))
-        self._inp_event_ids = QLineEdit()
-        self._inp_event_ids.setPlaceholderText("1-19,100,250-450!10,255")
-        self._inp_event_ids.setToolTip("Event ID numbers and ranges, separated by commas.\n"
-                                       "After an exclamation mark: IDs to leave out.\n"
-                                       "Example: 4624,4634-4648!4647")
-        eid_row.addWidget(self._inp_event_ids, stretch=1)
-        self._chk_eid_exclude = QCheckBox("Exclude")
-        eid_row.addWidget(self._chk_eid_exclude)
-        body.addLayout(eid_row)
-
-        hint = QLabel("Enter ID numbers and/or ID ranges, separated by commas, "
-                       "use exclamation mark to exclude criteria (e.g. 1-19,100,250-450!10,255)")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color:{COLORS['text_dim']}; font-size:7pt;")
-        hint.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)   # no empty gap around it
-        body.addWidget(hint)
-
-        body.addWidget(_styled_line())
-
-        # ── Text anywhere in the event ────────────────────────────────────
-        text_row = QHBoxLayout()
-        self._lbl_text = _lbl("Text (anywhere in the event):")
-        text_row.addWidget(self._lbl_text)
-        self._inp_text = QLineEdit()
-        self._inp_text.setPlaceholderText("IP, user, path, hash, any word…")
-        _scope = ("Searches the whole event: every System field (provider, event ID, "
-                  "computer, channel, user SID, keywords, process/thread IDs, record ID, "
-                  "timestamps, GUIDs), every EventData / UserData value and field name, "
-                  "the description shown in the event details, the decoded labels "
-                  "(logon type, keywords ...) and the System XML element names.")
-        self._lbl_text.setToolTip(_scope)
-        self._inp_text.setToolTip(_scope)
-        text_row.addWidget(self._inp_text, stretch=1)
-        self._chk_regex = QCheckBox("RegExp")
-        self._chk_regex.setToolTip("Treat search text as a regular expression")
-        text_row.addWidget(self._chk_regex)
-        self._chk_text_exclude = QCheckBox("Exclude")
-        text_row.addWidget(self._chk_text_exclude)
-        body.addLayout(text_row)
-
-        # Kept (hidden) so any caller still referencing it does not break; the
-        # Juggernaut restriction it explained no longer exists.
-        self._lbl_text_disabled_hint = QLabel("")
-        self._lbl_text_disabled_hint.setWordWrap(True)
-        self._lbl_text_disabled_hint.setStyleSheet(
-            f"color:{COLORS['text_dim']}; font-size:7pt;"
-        )
-        self._lbl_text_disabled_hint.setVisible(False)
-        body.addWidget(self._lbl_text_disabled_hint)
-
-        body.addWidget(_styled_line())
-
-        # ── Date / Time ───────────────────────────────────────────────────
+        # ── Time ──────────────────────────────────────────────────────────
+        tsec = section("Time", "In the display time zone. Pick one way: a range, the last days and hours, "
+                               "or one day.")
         dt_header = QHBoxLayout()
-        self._chk_date_enable = QCheckBox("Date")
-        self._chk_time_enable = QCheckBox("Time")
-        self._chk_separately  = QCheckBox("Separately")
+        dt_header.setSpacing(16)
+        self._chk_date_enable = QCheckBox("Use dates")
+        self._chk_date_enable.setToolTip("Compare the calendar dates of From and To")
+        self._chk_time_enable = QCheckBox("Use times")
+        self._chk_time_enable.setToolTip("Compare the times of day of From and To.\n"
+                                         "With Use dates and without “Times apply to every day”: "
+                                         "one continuous range from From to To.")
+        self._chk_separately  = QCheckBox("Times apply to every day")
+        self._chk_separately.setToolTip("With Use dates and Use times: events on the dates From to To, "
+                                        "and on each of those days only between the two times of day "
+                                        "(for example 09:00 to 17:00 every day of a week).")
         dt_header.addWidget(self._chk_date_enable)
         dt_header.addWidget(self._chk_time_enable)
         dt_header.addWidget(self._chk_separately)
         dt_header.addStretch()
-        body.addLayout(dt_header)
+        tsec.addLayout(dt_header)
 
         dt_row = QHBoxLayout()
+        dt_row.setSpacing(8)
         dt_row.addWidget(_lbl("From:"))
         self._dt_from = _DateTimePickerEdit()
         # Year-month-day, as the event table shows dates.
@@ -478,7 +480,8 @@ class FilterDialog(QDialog):
         dt_row.addWidget(self._dt_to)
         self._chk_date_exclude = QCheckBox("Exclude")
         dt_row.addWidget(self._chk_date_exclude)
-        body.addLayout(dt_row)
+        dt_row.addStretch()
+        tsec.addLayout(dt_row)
 
         # Enable/disable date pickers
         self._chk_date_enable.toggled.connect(self._toggle_date)
@@ -486,7 +489,8 @@ class FilterDialog(QDialog):
 
         # Relative time
         rel_row = QHBoxLayout()
-        rel_row.addWidget(_lbl("Display events for the last"))
+        rel_row.setSpacing(6)
+        rel_row.addWidget(_lbl("Or the last"))
         self._spn_days = QSpinBox()
         self._spn_days.setRange(0, 9999)
         self._spn_days.setValue(0)
@@ -500,11 +504,12 @@ class FilterDialog(QDialog):
         self._chk_rel_exclude = QCheckBox("Exclude")
         rel_row.addWidget(self._chk_rel_exclude)
         rel_row.addStretch()
-        body.addLayout(rel_row)
+        tsec.addLayout(rel_row)
 
         # Specific day
         specific_day_row = QHBoxLayout()
-        self._chk_specific_day = QCheckBox("Specific day")
+        specific_day_row.setSpacing(8)
+        self._chk_specific_day = QCheckBox("Or one day:")
         self._chk_specific_day.setToolTip(
             "Filter events for a single calendar day (00:00:00 – 23:59:59)"
         )
@@ -520,23 +525,19 @@ class FilterDialog(QDialog):
         self._de_specific_day.setEnabled(False)
         specific_day_row.addWidget(self._de_specific_day)
         specific_day_row.addStretch()
-        body.addLayout(specific_day_row)
+        tsec.addLayout(specific_day_row)
 
         self._chk_specific_day.toggled.connect(self._toggle_specific_day)
 
-        body.addWidget(_styled_line())
-
-        # ── Custom conditions ──────────────────────────────────────────────
-        cond_widget = QWidget()
-        cond_widget.setMaximumHeight(180)
-        cond_layout = QVBoxLayout(cond_widget)
-        cond_layout.setContentsMargins(4, 4, 4, 4)
-        cond_layout.setSpacing(4)
-
+        # ── Field conditions ──────────────────────────────────────────────
+        cond = section("Field conditions",
+                       "Any field of the event: name, operator, value. Every condition must match; "
+                       "several “equals” on the same field mean either value.")
         cond_btn_row = QHBoxLayout()
-        btn_new_cond = QPushButton("New condition")
+        cond_btn_row.setSpacing(6)
+        btn_new_cond = QPushButton("Add condition")
         btn_new_cond.clicked.connect(self._add_condition)
-        btn_del_cond = QPushButton("Delete condition")
+        btn_del_cond = QPushButton("Remove selected")
         btn_del_cond.clicked.connect(self._del_condition)
         btn_clear_cond = QPushButton("Clear list")
         btn_clear_cond.clicked.connect(self._clear_conditions)
@@ -544,20 +545,20 @@ class FilterDialog(QDialog):
         cond_btn_row.addWidget(btn_del_cond)
         cond_btn_row.addWidget(btn_clear_cond)
         cond_btn_row.addStretch()
-        cond_layout.addLayout(cond_btn_row)
+        cond.addLayout(cond_btn_row)
 
         self._tbl_conditions = QTableWidget(0, 3)
         self._tbl_conditions.setHorizontalHeaderLabels(["Name", "Operator", "Value"])
         hdr = self._tbl_conditions.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        hdr.setStretchLastSection(False)
         hdr.resizeSection(0, 180)   # Name
         hdr.resizeSection(1, 130)   # Operator — wide enough for "not contains"
-        hdr.resizeSection(2, 240)   # Value
+        hdr.setStretchLastSection(True)   # Value takes the rest (was a blank strip)
         self._tbl_conditions.verticalHeader().setVisible(False)
-        cond_layout.addWidget(self._tbl_conditions)
-
-        body.addWidget(cond_widget)
+        self._tbl_conditions.setMinimumHeight(96)
+        self._tbl_conditions.setMaximumHeight(170)
+        cond.addWidget(self._tbl_conditions)
+        body.addStretch()
 
         scroll.setWidget(body_widget)
         root.addWidget(scroll)
@@ -639,6 +640,25 @@ class FilterDialog(QDialog):
             QLabel {{
                 color: {COLORS['text']};
                 font-size: 9pt;
+            }}
+            QLabel#filterSection {{
+                font-size: 10pt;
+                font-weight: bold;
+            }}
+            QLabel#filterSectionSub {{
+                color: {COLORS['text_dim']};
+                font-size: 8pt;
+            }}
+            QPushButton#filterLink {{
+                background: transparent;
+                border: none;
+                color: {COLORS.get('accent', '#7a5c1e')};
+                padding: 2px 4px;
+            }}
+            QPushButton#filterLink:hover {{
+                background: transparent;
+                color: {COLORS['text']};
+                text-decoration: underline;
             }}
             QLineEdit {{
                 background: {COLORS['bg_main']};

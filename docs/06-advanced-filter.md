@@ -1,6 +1,6 @@
 # Advanced Filter
 
-Open **Filter** above the event grid. The dialog provides event types/levels, sources, categories, users, computers, Event ID expressions, text search, dates/relative time, and field conditions. **OK** applies it; **Cancel** discards the dialog changes. **Clear**, **Load...**, and **Save...** manage the filter configuration.
+Open **Filter** above the event grid. The dialog has five sections, most used first: **Find** (Event ID expressions and text anywhere in the event), **Levels** (with All / None), **Source, channel, user, computer**, **Time**, and **Field conditions**. **OK** applies it; **Cancel** discards the dialog changes. **Clear**, **Load...**, and **Save...** manage the filter configuration.
 
 Event ID expressions accept IDs and ranges; the dialog supports exclusions as well. Values in an ordinary multi-value field are alternatives; restrictions in different fields combine. Excluded values reject matching events. Equal-to conditions on the same field are alternatives (OR); the resulting groups and other conditions combine with AND. There is no separate logical-expression composer in this dialog.
 
@@ -8,7 +8,7 @@ The dialog has one text entry, RegExp and Exclude controls, plus case sensitivit
 
 ## Time boundaries
 
-GUI date/time boundaries use the selected display time zone and are converted to UTC for filtering. Stored event times are not rewritten. With relative time enabled the filter evaluates a moving time range rather than a fixed historical case window. See [time zones](06b-timezone.md).
+In **Time**, pick one way: a range (**Use dates** compares calendar dates, **Use times** times of day; both together are one continuous range, or with **Times apply to every day** the dates From to To and, on each of those days, only the hours between the two times), **Or the last** days and hours, or **Or one day**. GUI date/time boundaries use the selected display time zone and are converted to UTC for filtering. Stored event times are not rewritten. With relative time enabled the filter evaluates a moving time range rather than a fixed historical case window. See [time zones](06b-timezone.md).
 
 ## Load/Save and hidden restrictions
 
