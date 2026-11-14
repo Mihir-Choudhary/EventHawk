@@ -73,6 +73,8 @@ _SHAPES: dict[str, str] = {
     "copy": ('<rect x="8" y="8" width="14" height="14" rx="2"/>'
              '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
     "circle-play": '<circle cx="12" cy="12" r="10"/><path d="M10 8.5v7l5.5-3.5z"/>',
+    "link": ('<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/>'
+             '<path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>'),
 }
 
 ICON_NAMES = tuple(_SHAPES)

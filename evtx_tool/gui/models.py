@@ -112,7 +112,7 @@ def _refresh_theme_colors(_theme: str | None = None) -> None:
     _BG_ALT       = qc("#ede8d8")
     _BG_SEL       = qc("#ddd4bc")
     _BG_BOOKMARK  = qc("#e8c96e")   # amber highlight for bookmarked rows
-    # Readable, not just visible: #9a8878 was 3.0:1 on the row colour, and
+    # Readable, not just visible: the old muted brown was 3.0:1 on the row colour, and
     # it is the colour of every cell of a LogAlways row (audit UX-3).
     _FG_MUTED     = qc("#5a4e42")
     _FG_ACCENT    = qc("#73571c")

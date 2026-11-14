@@ -8,7 +8,7 @@ ATT&CK Mapping is initially enabled in Normal mode. It maps supported patterns t
 
 ## IOCs
 
-Enable **IOC Extraction** to collect supported addresses, domains, URLs, hashes, processes, commands, paths and identities. Results include category, count/context and heuristic scores. Ordinary administrative activity can produce the same values or scores.
+Enable **IOC Extraction** to collect supported addresses, domains, URLs, hashes, processes, commands, paths and identities. Results include category, count/context and heuristic scores. Ordinary administrative activity can produce the same values or scores. Each category has its own table; while all category tabs fit the pane they show as tabs, otherwise a **Category** drop-down lists every category with its count. First and Last Seen follow the display time zone and precision; hover for the exact UTC value.
 
 Use an IOC's pivot action to inspect related events. An empty category can reflect absent fields, unsupported shapes or restricted input scope; it does not establish that an artifact never existed. **Export IOCs** is separate from event export; see [exporting](11-exporting.md). Threat-intelligence lookups are a separate user action with external-service requirements.
 

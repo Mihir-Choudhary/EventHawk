@@ -10169,15 +10169,67 @@ class MainWindow(QMainWindow):
         hdr.addWidget(self._btn_export_iocs)
         layout.addLayout(hdr)
 
+        # Up to 18 categories.  While their tabs fit they show as tabs; when
+        # they would not (scroll arrows hid categories off to the side on a
+        # laptop-width pane) a "Category" drop-down with every category and
+        # its count takes the tab bar's place.  Same pages, same order.
+        cat_row = QHBoxLayout()
+        cat_row.setContentsMargins(0, 0, 0, 0)
+        self._lbl_ioc_cat = QLabel("Category:")
+        self._cmb_ioc_cat = QComboBox()
+        self._cmb_ioc_cat.setAccessibleName("IOC category")
+        self._cmb_ioc_cat.setToolTip("Every IOC category in these events, with its count")
+        self._cmb_ioc_cat.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        cat_row.addWidget(self._lbl_ioc_cat)
+        cat_row.addWidget(self._cmb_ioc_cat)
+        cat_row.addStretch()
+        self._ioc_cat_row = QWidget()
+        self._ioc_cat_row.setLayout(cat_row)
+        self._ioc_cat_row.hide()
+        layout.addWidget(self._ioc_cat_row)
+
         self._ioc_tabs = QTabWidget()
         self._ioc_tabs.setObjectName("iocTabs")
         self._ioc_tabs.setDocumentMode(True)
-        # Up to 18 categories: tighter tabs so more of them fit before the
-        # scroll arrows appear on a laptop-width pane.
         self._ioc_tabs.setStyleSheet(
             "QTabWidget#iocTabs QTabBar::tab { padding: 4px 9px; font-size: 8pt; }")
+        self._cmb_ioc_cat.currentIndexChanged.connect(
+            lambda i: self._ioc_tabs.setCurrentIndex(i) if i >= 0 else None)
+        self._ioc_tabs.currentChanged.connect(self._sync_ioc_cat_combo)
+        self._ioc_tabs.installEventFilter(self)
         layout.addWidget(self._ioc_tabs)
         return w
+
+    def _sync_ioc_cat_combo(self, i: int) -> None:
+        if self._cmb_ioc_cat.currentIndex() != i:
+            self._cmb_ioc_cat.blockSignals(True)
+            self._cmb_ioc_cat.setCurrentIndex(i)
+            self._cmb_ioc_cat.blockSignals(False)
+
+    def _fit_ioc_categories(self) -> None:
+        """Tabs while every category's tab fits the pane, else the drop-down."""
+        try:
+            tabs, bar = self._ioc_tabs, self._ioc_tabs.tabBar()
+            need = sum(bar.tabSizeHint(i).width() for i in range(bar.count()))
+            narrow = bar.count() > 1 and need > tabs.width()   # Qt scrolls exactly then
+            bar.setVisible(not narrow)
+            self._ioc_cat_row.setVisible(narrow)
+        except RuntimeError:
+            pass
+
+    def _fill_ioc_cat_combo(self) -> None:
+        self._cmb_ioc_cat.blockSignals(True)
+        self._cmb_ioc_cat.clear()
+        for i in range(self._ioc_tabs.count()):
+            self._cmb_ioc_cat.addItem(self._ioc_tabs.tabIcon(i), self._ioc_tabs.tabText(i))
+        self._cmb_ioc_cat.setCurrentIndex(self._ioc_tabs.currentIndex())
+        self._cmb_ioc_cat.blockSignals(False)
+        self._fit_ioc_categories()
+
+    def eventFilter(self, obj, event):  # noqa: N802  (Qt naming)
+        if event.type() == QEvent.Type.Resize and obj is getattr(self, "_ioc_tabs", None):
+            self._fit_ioc_categories()
+        return super().eventFilter(obj, event)
 
     def _build_chains_tab(self) -> QWidget:
         w = QWidget()
@@ -16589,6 +16641,7 @@ class MainWindow(QMainWindow):
             self._lbl_ioc_summary.setText("No IOC data — run with IOC Extraction enabled.")
             self._btn_export_iocs.setEnabled(False)
             self._btn_threat_intel.setEnabled(False)
+            self._fill_ioc_cat_combo()
             return
 
         # Ordered display list (label, ioc_type_key)
@@ -16670,8 +16723,8 @@ class MainWindow(QMainWindow):
                 if isinstance(entry, dict):
                     value    = entry.get("value", "")
                     count    = entry.get("count", 1)
-                    first    = (entry.get("first_seen") or "")[:19]
-                    last     = (entry.get("last_seen")  or "")[:19]
+                    first    = entry.get("first_seen") or ""
+                    last     = entry.get("last_seen")  or ""
                     score    = entry.get("score", 0)
                     reasons  = entry.get("score_reasons") or []
                     ti       = entry.get("threat_intel")
@@ -16712,9 +16765,13 @@ class MainWindow(QMainWindow):
                 cnt_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 tbl.setItem(r, 1, cnt_item)
 
-                # First/Last seen
-                tbl.setItem(r, 2, QTableWidgetItem(first))
-                tbl.setItem(r, 3, QTableWidgetItem(last))
+                # First/Last seen: in the display zone and precision like the
+                # event table (they were raw UTC ISO strings); exact on hover.
+                for _ci, _raw in ((2, first), (3, last)):
+                    _it = QTableWidgetItem(apply_tz(_raw) if _raw else "")
+                    if _raw:
+                        _it.setToolTip(f"UTC {_raw}")
+                    tbl.setItem(r, _ci, _it)
 
                 # Score
                 score_item = QTableWidgetItem(str(score))
@@ -16765,10 +16822,12 @@ class MainWindow(QMainWindow):
                 lambda pos, t=corr_tbl: self._corr_table_context_menu(pos, t)
             )
 
+            # Theme colours that read on every row background (the flat
+            # reds / greys were 2.6-3.6:1, under WCAG's 4.5:1).
             _CONF_COLOR = {
-                "high":   QColor("#e74c3c"),
-                "medium": QColor("#e67e22"),
-                "low":    QColor("#8b949e"),
+                "high":   QColor(COLORS["level_critical"]),
+                "medium": QColor(COLORS["level_warning"]),
+                "low":    QColor(COLORS["text_dim"]),
             }
             for r, pair in enumerate(pairs):
                 corr_tbl.setItem(r, 0, QTableWidgetItem(str(pair.get("value_a", ""))))
@@ -16779,11 +16838,13 @@ class MainWindow(QMainWindow):
                     f"{pair.get('shared_context', 0)}  [{pair.get('confidence', '')}]"
                 )
                 shared_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                conf_col = _CONF_COLOR.get(pair.get("confidence", ""), QColor("#8b949e"))
+                conf_col = _CONF_COLOR.get(pair.get("confidence", ""), QColor(COLORS["text_dim"]))
                 shared_item.setForeground(conf_col)
                 corr_tbl.setItem(r, 4, shared_item)
 
-            self._ioc_tabs.addTab(corr_tbl, f"🔗 Correlation ({len(pairs):,})")
+            from .icons import icon as _icon
+            self._ioc_tabs.addTab(corr_tbl, _icon("link", "text_dim", 14), f"Correlation ({len(pairs):,})")
+        self._fill_ioc_cat_combo()
 
     # ── IOC pivot / threat intel ──────────────────────────────────────────────
 
@@ -18898,6 +18959,7 @@ class MainWindow(QMainWindow):
             self._tz_custom_offset_min,
         )
         self._refresh_bookmarks_tab()       # its times follow the display zone too
+        self._refresh_iocs_tab()            # First / Last Seen too
 
         # Drop the cached column-popup values.  "timestamp_date" is the one
         # column whose values depend on the display timezone, and neither cache
