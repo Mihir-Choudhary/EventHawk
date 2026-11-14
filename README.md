@@ -40,7 +40,7 @@ py -3.12 evtx_tool.py parse --help
 | Sessions and activity | [PowerShell](docs/10b-ps-extract.md), [logons](docs/10c-logon-sessions.md), [remote sessions](docs/10d-inbound-rdp.md), [downtime](docs/10e-downtime-in-sessions.md), [System Activity](docs/10f-system-activity.md) |
 | Terminal | [CLI](docs/12-cli.md), [TUI and wizard](docs/13-tui.md) |
 | Baselines | [Build](docs/16-sentinel-baseline.md), [analyze](docs/17-sentinel-analysis.md), [Sigma limitations](docs/18-sentinel-sigma.md) |
-| Development | [Thin launcher](docs/20-building-release.md), [standalone build](docs/21-building-standalone.md), [tests](docs/22-testing.md) |
+| Development | [Thin launcher](docs/20-building-release.md), [standalone build](docs/21-building-standalone.md), [tests](docs/22-testing.md), [accessibility (WCAG 2.2 AA)](docs/23-accessibility.md) |
 
 The PNGs in `docs/screenshots/` illustrate earlier UI versions. Current labels and behavior are described in the guides; those images are not evidence of the current version's output.
 

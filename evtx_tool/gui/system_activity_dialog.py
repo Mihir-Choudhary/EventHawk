@@ -341,6 +341,7 @@ class SystemActivityDialog(QDialog):
         return (str(v if v is not None else "").replace("&", "&amp;")
                 .replace("<", "&lt;").replace(">", "&gt;"))
 
+    @rebuild_on_theme
     def _show_details(self, tbl) -> None:
         """The selected period / moment with every field unclipped (wraps)."""
         rows = tbl.selectionModel().selectedRows() if tbl is not None and tbl.selectionModel() else []

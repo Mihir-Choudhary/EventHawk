@@ -4,7 +4,7 @@ __DATA__ (the JSON payload; filled last, see render_html)."""
 
 _LIGHT = """
   --bg:#f6f2ea; --surface:#fffcf7; --surface-2:#efe9de; --surface-3:#e6ddcd;
-  --line:#e3dacb; --line-2:#cdc2ae; --text:#1e1a14; --text-2:#5a4e42; --text-3:#6e6253;
+  --line:#e3dacb; --line-2:#cdc2ae; --line-input:#938464; --text:#1e1a14; --text-2:#5a4e42; --text-3:#6e6253;
   --accent:#7a5c1e; --accent-soft:#f1e6cc; --sel:#f3e7c9; --hover:#f4eee4; --ring:rgba(122,92,30,.45);
   --warn:#8a4800; --shadow:0 18px 40px -16px rgba(60,45,20,.30),0 2px 6px rgba(60,45,20,.08);
   --st-on:#3f8f55; --st-sleep:#7d9fd0; --st-hib:#a08ccd; --st-low:#8fb5c2; --st-ms:#b3cad1; --st-off:#c9c0b2;
@@ -13,7 +13,7 @@ _LIGHT = """
 
 _DARK = """
   --bg:#121417; --surface:#191c20; --surface-2:#20242a; --surface-3:#2a2f36;
-  --line:#2a2f36; --line-2:#3a414a; --text:#e8e4dc; --text-2:#aaa397; --text-3:#8d877c;
+  --line:#2a2f36; --line-2:#3a414a; --line-input:#7a7468; --text:#e8e4dc; --text-2:#aaa397; --text-3:#a39d91;
   --accent:#d8b36a; --accent-soft:#3b3222; --sel:#2f2a1f; --hover:#1f2328; --ring:rgba(216,179,106,.5);
   --warn:#f0a65a; --shadow:0 18px 44px -14px rgba(0,0,0,.65),0 2px 8px rgba(0,0,0,.4);
   --st-on:#58b56f; --st-sleep:#5f7fae; --st-hib:#8a77b8; --st-low:#4d7f8f; --st-ms:#4a6670; --st-off:#4a4640;
@@ -48,12 +48,12 @@ button{font:inherit;color:inherit}
 .chip button{all:unset;cursor:pointer;width:22px;height:22px;border-radius:11px;display:grid;place-items:center}
 .chip button:hover{background:color-mix(in srgb,var(--accent) 18%,transparent)}
 .chip svg{width:13px;height:13px}
-.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 11px;border:1px solid var(--line-2);background:var(--surface);border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap}
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 11px;border:1px solid var(--line-input);background:var(--surface);border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap}
 .btn:hover{background:var(--hover)}
 .btn.icon{width:32px;justify-content:center;padding:0}
 .btn.ghost{border-color:transparent;background:transparent}
 .btn.ghost:hover{background:var(--hover)}
-select,input[type=datetime-local]{height:32px;border:1px solid var(--line-2);background:var(--surface);color:var(--text);border-radius:8px;font:inherit;font-size:13px;padding:0 8px}
+select,input[type=datetime-local]{height:32px;border:1px solid var(--line-input);background:var(--surface);color:var(--text);border-radius:8px;font:inherit;font-size:13px;padding:0 8px}
 select{max-width:240px}
 input[type=datetime-local]{font-family:var(--mono);font-size:12.5px}
 input[type=datetime-local]::-webkit-calendar-picker-indicator{opacity:.6;cursor:pointer}
@@ -81,7 +81,7 @@ h2{font-size:20px;letter-spacing:-.015em;margin:0 0 4px;font-weight:640}
 .range-top .when b{color:var(--text);font-weight:600}
 .range-ctl{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;margin-left:auto}
 .range-ctl label{font-size:12.5px;color:var(--text-3);display:inline-flex;align-items:center;gap:6px}
-.seg{display:inline-flex;border:1px solid var(--line-2);border-radius:8px;overflow:hidden;background:var(--surface)}
+.seg{display:inline-flex;border:1px solid var(--line-input);border-radius:8px;overflow:hidden;background:var(--surface)}
 .seg button{border:0;background:transparent;color:var(--text-2);font-size:12.5px;padding:0 10px;height:30px;cursor:pointer;white-space:nowrap}
 .seg button+button{border-left:1px solid var(--line-2)}
 .seg button:hover{background:var(--hover);color:var(--text)}
@@ -125,9 +125,9 @@ h2{font-size:20px;letter-spacing:-.015em;margin:0 0 4px;font-weight:640}
 .cal-wrap{display:flex;flex-wrap:wrap;gap:18px 22px;margin-top:14px}
 .cal-m{width:max-content}
 .cal-t{font-size:12px;font-weight:600;color:var(--text-2);margin:0 0 6px}
-.cal-g{display:grid;grid-template-columns:repeat(7,17px);gap:3px}
-.cal-g .wd{font-size:10px;color:var(--text-3);text-align:center;line-height:14px}
-.cal-g button{all:unset;width:17px;height:17px;border-radius:4px;background:var(--heat-0);cursor:pointer;box-sizing:border-box}
+.cal-g{display:grid;grid-template-columns:repeat(7,24px);gap:3px}
+.cal-g .wd{font-size:10.5px;color:var(--text-3);text-align:center;line-height:14px}
+.cal-g button{all:unset;width:24px;height:24px;border-radius:4px;background:var(--heat-0);cursor:pointer;box-sizing:border-box}
 .cal-g button.nd{background:transparent;box-shadow:inset 0 0 0 1px var(--line);cursor:default}
 .cal-g button:hover{box-shadow:inset 0 0 0 2px var(--text)}
 .cal-g button.in{box-shadow:0 0 0 2px var(--accent)}
@@ -157,7 +157,7 @@ h2{font-size:20px;letter-spacing:-.015em;margin:0 0 4px;font-weight:640}
 /* filters */
 .ctrl{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:0 0 12px}
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
-.act{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 10px;border-radius:14px;border:1px solid var(--line-2);background:var(--surface);font-size:12.5px;cursor:pointer;color:var(--text)}
+.act{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 10px;border-radius:14px;border:1px solid var(--line-input);background:var(--surface);font-size:12.5px;cursor:pointer;color:var(--text)}
 .act .sw{margin:0}
 .act .c{color:var(--text-3);font-size:11.5px}
 .act[aria-pressed=false]{color:var(--text-3);background:transparent;border-style:dashed}
@@ -166,7 +166,7 @@ h2{font-size:20px;letter-spacing:-.015em;margin:0 0 4px;font-weight:640}
 .acts .reset{all:unset;cursor:pointer;font-size:12.5px;color:var(--accent);padding:0 6px;height:28px;line-height:28px}
 .search{position:relative;flex:1 1 280px;max-width:460px}
 .search svg{position:absolute;left:10px;top:9px;color:var(--text-3);pointer-events:none}
-.search input{width:100%;height:34px;border:1px solid var(--line-2);background:var(--surface);color:var(--text);border-radius:9px;font:inherit;font-size:13.5px;padding:0 40px 0 32px}
+.search input{width:100%;height:34px;border:1px solid var(--line-input);background:var(--surface);color:var(--text);border-radius:9px;font:inherit;font-size:13.5px;padding:0 40px 0 32px}
 .search input::placeholder{color:var(--text-3)}
 .search kbd{position:absolute;right:8px;top:8px;font:11px var(--mono);color:var(--text-3);border:1px solid var(--line-2);border-radius:4px;padding:0 5px;background:var(--surface-2)}
 .chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);cursor:pointer;user-select:none;white-space:nowrap}
@@ -181,8 +181,9 @@ h2{font-size:20px;letter-spacing:-.015em;margin:0 0 4px;font-weight:640}
 .dd-pop label{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer}
 .dd-pop label:hover{background:var(--hover)}
 .dd-pop label .c{margin-left:auto;color:var(--text-3);font-size:12px}
-.dd-pop label .only{all:unset;font-size:11.5px;color:var(--accent);padding:0 4px;visibility:hidden}
-.dd-pop label:hover .only{visibility:visible}
+.dd-pop label .only{all:unset;font-size:11.5px;color:var(--accent);padding:2px 6px;opacity:0;cursor:pointer;border-radius:4px}
+.dd-pop label:hover .only,.dd-pop label:focus-within .only{opacity:1}
+.dd-pop label .only:focus-visible{opacity:1;outline:2px solid var(--accent)}
 .dd-pop .ft{display:flex;gap:8px;border-top:1px solid var(--line);margin-top:4px;padding:6px 4px 2px}
 .dd-pop .ft button{all:unset;cursor:pointer;font-size:12.5px;color:var(--accent);padding:2px 4px}
 /* timeline */
@@ -282,6 +283,9 @@ details.sys>summary svg{width:13px;height:13px;transition:transform .15s}
 details.sys[open]>summary svg{transform:rotate(90deg)}
 .used a{display:flex;align-items:center;padding:4px 0}
 .dupnote{font-size:12.5px;color:var(--text-2);margin:6px 0 0}
+.skip{position:absolute;left:12px;top:-60px;z-index:100;background:var(--text);color:var(--bg);padding:8px 12px;border-radius:8px;text-decoration:none}
+.skip:focus{top:10px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .toast{position:fixed;bottom:22px;left:50%;transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;opacity:0;transition:.18s;z-index:70;pointer-events:none}
 .toast.on{opacity:1;transform:translate(-50%,0)}
 footer{color:var(--text-3);font-size:12px;border-top:1px solid var(--line);padding:18px 0 40px}
@@ -326,6 +330,7 @@ _BODY = r"""
  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M22 3H2l8 9.5V19l4 2v-8.5z"/></symbol>
 </svg>
+<a class="skip" href="#overview">Skip to the report</a>
 <header class="bar">
  <div class="wrap">
   <div class="brand"><img src="__LOGO__" alt="" width="33" height="26">EventHawk</div>
@@ -344,7 +349,7 @@ _BODY = r"""
   </div>
  </div>
 </header>
-<main class="wrap">
+<main class="wrap" id="main">
  <section id="overview" aria-labelledby="h-ov">
   <h1 id="h-ov">System activity</h1>
   <p class="lede" id="ov-lede"></p>
@@ -392,7 +397,8 @@ _BODY = r"""
    <label class="chk"><input type="checkbox" id="tl-short" checked> Hide periods under 1 s</label>
   </div>
   <div class="acts" id="acts" role="group" aria-label="Activities shown"></div>
-  <div class="panel tl" id="tl"></div>
+  <p class="sr">The same periods are in the Periods table below, which works with the keyboard.</p>
+  <div class="panel tl" id="tl" role="img" aria-label="Day-by-day timeline of power, screen and lock periods; the Periods table below lists the same periods."></div>
  </section>
 
  <section id="periods" aria-labelledby="h-p">
@@ -431,7 +437,7 @@ _BODY = r"""
  </section>
  <footer id="foot"></footer>
 </main>
-<aside id="insp" aria-label="Details" aria-hidden="true">
+<aside id="insp" role="dialog" aria-label="Details" aria-hidden="true">
  <header><div id="insp-head"></div><button class="btn icon ghost x" id="insp-x" type="button" aria-label="Close details" title="Close (Esc)"><svg class="i"><use href="#i-x"/></svg></button></header>
  <div class="scroll" id="insp-body"></div>
 </aside>
@@ -603,6 +609,8 @@ function brushSel(a, b){
   brush.classList.toggle("full", a <= FA && b >= FB);
   $("range-when").innerHTML = whenText(a, b);
   hit.setAttribute("aria-valuetext", whenText(a, b).replace(/<[^>]+>/g, ""));
+  hit.setAttribute("aria-valuemin", "0"); hit.setAttribute("aria-valuemax", String(NDAYS));
+  hit.setAttribute("aria-valuenow", String(Math.round((a - FA) / DAY)));
 }
 function whenText(a, b){
   const days = (b - a) / DAY;
@@ -734,7 +742,7 @@ function heatRender(){
     for (let hh = 0; hh < 24; hh++){
       const k = w * 24 + hh, sl = slots[k], pct = sl ? Math.min(1, on[k] / sl) : 0;
       const l = !sl || pct <= 0 || !mx ? 0 : Math.max(1, Math.ceil(pct / Math.min(1, mx) * 5));
-      html += `<i class="${l ? "l" + l : ""}" data-h="${w},${hh},${sl ? Math.round(pct * 100) : -1}" aria-label="${WD[w]} ${pad(hh)}:00, ${sl ? Math.round(pct * 100) + "% on" : "no records"}"></i>`;
+      html += `<i role="img" class="${l ? "l" + l : ""}" data-h="${w},${hh},${sl ? Math.round(pct * 100) : -1}" aria-label="${WD[w]} ${pad(hh)}:00, ${sl ? Math.round(pct * 100) + "% on" : "no records"}"></i>`;
     }
   }
   $("heat").innerHTML = html;
@@ -1011,7 +1019,7 @@ class VTable {
     this.o = o; this.el = $(o.id); this.rows = []; this.sel = -1; this.sortCol = o.sortCol; this.sortDir = 1; this.full = false;
     this.el.style.setProperty("--cols", o.cols.map(c => c.w).join(" "));
     this.el.style.setProperty("--minw", o.minw + "px");
-    this.el.innerHTML = `<div class="th" role="row">${o.cols.map((c, i) => `<div class="td${c.r ? " r" : ""}" role="columnheader">${c.sort ? `<button type="button" data-c="${i}">${c.label}${icon("down")}</button>` : c.label}</div>`).join("")}</div><div class="body"></div>`;
+    this.el.innerHTML = `<div class="th" role="row" aria-rowindex="1">${o.cols.map((c, i) => `<div class="td${c.r ? " r" : ""}" role="columnheader">${c.sort ? `<button type="button" data-c="${i}">${c.label}${icon("down")}</button>` : c.label}</div>`).join("")}</div><div class="body"></div>`;
     this.body = this.el.querySelector(".body");
     let raf = 0;
     this.el.addEventListener("scroll", () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; this.paint(); }); }, {passive: true});
@@ -1051,6 +1059,7 @@ class VTable {
     const n = this.rows.length;
     this.el.style.setProperty("--h", (HEAD + Math.max(n, 4) * RH + 2) + "px");
     this.body.style.height = (n * RH) + "px";
+    this.el.setAttribute("aria-rowcount", String(n + 1));
     this.a = this.b = -1; this.paint(true);
     if (this.o.count) this.o.count(n);
     (window.__ehPerf = window.__ehPerf || {})[this.o.id] = performance.now() - t0;
@@ -1064,8 +1073,8 @@ class VTable {
     const cols = this.o.cols, q = this.o.terms(), out = [];
     for (let k = a; k < b; k++){
       const i = this.rows[k]; let cells = "";
-      for (const co of cols){ const v = co.get(i); cells += `<div class="td${co.cls ? " " + co.cls : ""}"${co.tip ? ` title="${h(co.tip(i))}"` : ""}>${co.html ? v : hl(v, q)}</div>`; }
-      out.push(`<div class="tr${i === this.sel ? " sel" : ""}${this.o.rowCls ? this.o.rowCls(i) : ""}" role="row" data-k="${i}" style="${this.full ? "position:static" : `transform:translateY(${k * RH}px)`}">${cells}</div>`);
+      for (const co of cols){ const v = co.get(i); cells += `<div class="td${co.cls ? " " + co.cls : ""}" role="gridcell"${co.tip ? ` title="${h(co.tip(i))}"` : ""}>${co.html ? v : hl(v, q)}</div>`; }
+      out.push(`<div class="tr${i === this.sel ? " sel" : ""}${this.o.rowCls ? this.o.rowCls(i) : ""}" role="row" aria-rowindex="${k + 2}" aria-selected="${i === this.sel}" data-k="${i}" style="${this.full ? "position:static" : `transform:translateY(${k * RH}px)`}">${cells}</div>`);
     }
     this.body.innerHTML = out.join("");
   }

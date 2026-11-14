@@ -1172,11 +1172,11 @@ class ColumnFilterPopup(QDialog):
             QCheckBox { color: #1e1a14; font-size: 9pt; spacing: 4px; background: transparent; }
             QCheckBox::indicator { width: 13px; height: 13px; border: 1px solid #c4bba8;
                 border-radius: 2px; background: #faf7f2; }
-            QCheckBox::indicator:checked { background: #7a5c1e; border-color: #9b7a2e; }
-            QCheckBox::indicator:hover { border-color: #9a8878; }
-            QLineEdit { background: #faf7f2; color: #1e1a14; border: 1px solid #c4bba8;
+            QCheckBox::indicator:checked { background: #73571c; border-color: #9b7a2e; }
+            QCheckBox::indicator:hover { border-color: #67594d; }
+            QLineEdit { background: #faf7f2; color: #1e1a14; border: 1px solid #938464;
                 border-radius: 2px; padding: 3px 6px; font-size: 9pt; }
-            QLineEdit:focus { border-color: #b8924a; }
+            QLineEdit:focus { border-color: #73571c; }
             QPushButton { background: #e4ddd3; color: #1e1a14; border: 1px solid #c4bba8;
                 border-radius: 2px; padding: 2px 8px; font-size: 8pt; }
             QPushButton:hover { background: #d8d1c5; }
@@ -1187,9 +1187,9 @@ class ColumnFilterPopup(QDialog):
             QTreeWidget::item:hover { background: #e4ddd3; }
             QTreeWidget::indicator { width: 13px; height: 13px; border: 1px solid #c4bba8;
                 border-radius: 2px; background: #faf7f2; }
-            QTreeWidget::indicator:checked { background: #7a5c1e; border-color: #9b7a2e; }
-            QTreeWidget::indicator:indeterminate { background: #b8924a; border-color: #9b7a2e; }
-            QTreeWidget::indicator:hover { border-color: #9a8878; }
+            QTreeWidget::indicator:checked { background: #73571c; border-color: #9b7a2e; }
+            QTreeWidget::indicator:indeterminate { background: #98783c; border-color: #9b7a2e; }
+            QTreeWidget::indicator:hover { border-color: #67594d; }
             QTreeWidget::item:selected { background: #e4ddd3; color: #1e1a14; }
         """ + self._branch_qss())
 
@@ -1992,15 +1992,15 @@ class EventTimeZoneDialog(QDialog):
         p.setColor(QPalette.ColorRole.Text,            qc("#1e1a14"))
         p.setColor(QPalette.ColorRole.Button,          qc("#e4ddd3"))
         p.setColor(QPalette.ColorRole.ButtonText,      qc("#1e1a14"))
-        p.setColor(QPalette.ColorRole.Highlight,       qc("#7a5c1e"))
+        p.setColor(QPalette.ColorRole.Highlight,       qc("#73571c"))
         p.setColor(QPalette.ColorRole.HighlightedText, qc("#ffffff"))
         p.setColor(QPalette.ColorRole.ToolTipBase,     qc("#e4ddd3"))
         p.setColor(QPalette.ColorRole.ToolTipText,     qc("#1e1a14"))
-        p.setColor(QPalette.ColorRole.PlaceholderText, qc("#9a8878"))
+        p.setColor(QPalette.ColorRole.PlaceholderText, qc("#67594d"))
         # Disabled group – warm-muted on cream background
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, qc("#9a8878"))
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,       qc("#9a8878"))
-        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, qc("#9a8878"))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, qc("#67594d"))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,       qc("#67594d"))
+        p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, qc("#67594d"))
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base,       qc("#ede8df"))
         p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Button,     qc("#ede8df"))
         return p
@@ -2034,22 +2034,22 @@ class EventTimeZoneDialog(QDialog):
             color: #9b7a2e;
             font-weight: bold;
         }
-        QRadioButton:disabled { color: #9a8878; }
+        QRadioButton:disabled { color: #67594d; }
 
         QRadioButton::indicator {
             width: 12px;
             height: 12px;
             border-radius: 7px;
-            border: 1px solid #9a8878;
+            border: 1px solid #67594d;
             background: #faf7f2;
         }
         QRadioButton::indicator:hover {
-            border-color: #7a5c1e;
+            border-color: #73571c;
         }
         QRadioButton::indicator:checked {
             width: 6px;
             height: 6px;
-            border: 4px solid #7a5c1e;
+            border: 4px solid #73571c;
             background: #faf7f2;
         }
         QRadioButton::indicator:checked:hover {
@@ -2064,17 +2064,17 @@ class EventTimeZoneDialog(QDialog):
         QComboBox {
             background: #faf7f2;
             color: #1e1a14;
-            border: 1px solid #c4bba8;
+            border: 1px solid #938464;
             border-radius: 3px;
             padding: 3px 6px;
             min-height: 24px;
         }
-        QComboBox:hover  { border-color: #7a5c1e; }
-        QComboBox:focus  { border-color: #7a5c1e; }
-        QComboBox:on     { border-color: #7a5c1e; }
+        QComboBox:hover  { border-color: #73571c; }
+        QComboBox:focus  { border-color: #73571c; }
+        QComboBox:on     { border-color: #73571c; }
         QComboBox:disabled {
             background: #ede8df;
-            color: #9a8878;
+            color: #67594d;
             border-color: #c4bba8;
         }
         QComboBox::drop-down {
@@ -2098,16 +2098,16 @@ class EventTimeZoneDialog(QDialog):
         QSpinBox {
             background: #faf7f2;
             color: #1e1a14;
-            border: 1px solid #c4bba8;
+            border: 1px solid #938464;
             border-radius: 3px;
             padding: 2px 4px;
             min-height: 24px;
         }
-        QSpinBox:hover { border-color: #7a5c1e; }
-        QSpinBox:focus { border-color: #7a5c1e; }
+        QSpinBox:hover { border-color: #73571c; }
+        QSpinBox:focus { border-color: #73571c; }
         QSpinBox:disabled {
             background: #ede8df;
-            color: #9a8878;
+            color: #67594d;
             border-color: #c4bba8;
         }
         QSpinBox::up-button, QSpinBox::down-button {
@@ -2136,17 +2136,17 @@ class EventTimeZoneDialog(QDialog):
             border-top:   5px solid #5a4e42;
         }
         QSpinBox::up-arrow:disabled, QSpinBox::down-arrow:disabled {
-            border-top-color:    #9a8878;
-            border-bottom-color: #9a8878;
+            border-top-color:    #67594d;
+            border-bottom-color: #67594d;
         }
 
         /* -- Sign toggle button -- */
         QPushButton#signToggle {
             font-weight: bold;
             font-size: 14pt;
-            color: #7a5c1e;
+            color: #73571c;
             background: #e8e0cc;
-            border: 1px solid #7a5c1e;
+            border: 1px solid #73571c;
             border-radius: 4px;
             min-width: 32px;
             max-width: 32px;
@@ -2157,15 +2157,15 @@ class EventTimeZoneDialog(QDialog):
         QPushButton#signToggle:hover   { background: #d4c8a8; }
         QPushButton#signToggle:pressed { background: #c4b898; }
         QPushButton#signToggle:disabled {
-            color: #9a8878;
+            color: #67594d;
             border-color: #c4bba8;
             background: #ede8df;
         }
 
         /* -- OK button -- */
         QPushButton#okBtn {
-            background: #7a5c1e;
-            color: #ffffff;
+            background: #73571c;
+            color: #fffdf8;
             border: none;
             border-radius: 4px;
             padding: 5px 20px;
@@ -2200,7 +2200,7 @@ class EventTimeZoneDialog(QDialog):
             border-radius: 5px;
             min-height: 20px;
         }
-        QScrollBar::handle:vertical:hover { background: #9a8878; }
+        QScrollBar::handle:vertical:hover { background: #67594d; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
     """
 
@@ -2211,8 +2211,8 @@ class EventTimeZoneDialog(QDialog):
         QAbstractItemView {
             background: #faf7f2;
             color: #1e1a14;
-            selection-background-color: #7a5c1e;
-            selection-color: #ffffff;
+            selection-background-color: #73571c;
+            selection-color: #fffdf8;
             border: 1px solid #c4bba8;
             outline: none;
             font-size: 9pt;
@@ -2226,8 +2226,8 @@ class EventTimeZoneDialog(QDialog):
             color: #1e1a14;
         }
         QAbstractItemView::item:selected {
-            background: #7a5c1e;
-            color: #ffffff;
+            background: #73571c;
+            color: #fffdf8;
         }
         QScrollBar:vertical {
             background: #f5f0e8;
@@ -3000,8 +3000,8 @@ class _LogonSessionDialog(QDialog):
                 alternate-background-color: #f3ede3;
             }
             QTableWidget::item:selected {
-                background: #7a5c1e;
-                color: white;
+                background: #73571c;
+                color: #fffdf8;
             }
             QHeaderView::section {
                 background: #ede8df;
@@ -3014,7 +3014,7 @@ class _LogonSessionDialog(QDialog):
             }
             QLineEdit {
                 background: #faf7f2;
-                border: 1px solid #c4bba8;
+                border: 1px solid #938464;
                 border-radius: 3px;
                 padding: 3px 6px;
                 font-size: 9pt;
@@ -3077,7 +3077,7 @@ class _LogonSessionDialog(QDialog):
         # ── Active filter badge ───────────────────────────────────────────
         self._filter_badge = QLabel()
         self._filter_badge.setStyleSheet(
-            "background:#7a5c1e; color:white; border-radius:3px;"
+            "background:#73571c; color:#fffdf8; border-radius:3px;"
             " padding:3px 8px; font-size:8.5pt; font-weight:bold;"
         )
         self._filter_badge.setVisible(False)
@@ -3399,7 +3399,7 @@ class _MissingRecordIdDialog(QDialog):
             " border-radius:3px; padding:4px; font-size:9pt; color:#1e1a14; }"
             "QScrollBar:vertical { background:#f5f0e8; width:8px; margin:0; }"
             "QScrollBar::handle:vertical { background:#c4bba8; border-radius:3px; min-height:28px; }"
-            "QScrollBar::handle:vertical:hover { background:#7a5c1e; }"
+            "QScrollBar::handle:vertical:hover { background:#73571c; }"
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }"
         )
         browser.setHtml("<br>".join(sections))
@@ -4295,8 +4295,8 @@ class _WifiHistoryDialog(QDialog):
                 alternate-background-color: #f3ede3;
             }
             QTableWidget::item:selected {
-                background: #7a5c1e;
-                color: white;
+                background: #73571c;
+                color: #fffdf8;
             }
             QHeaderView::section {
                 background: #ede8df;
@@ -4309,7 +4309,7 @@ class _WifiHistoryDialog(QDialog):
             }
             QLineEdit {
                 background: #faf7f2;
-                border: 1px solid #c4bba8;
+                border: 1px solid #938464;
                 border-radius: 3px;
                 padding: 3px 6px;
                 font-size: 9pt;
@@ -4830,7 +4830,7 @@ class _RemoteAssistanceDialog(QDialog):
     _TYPE_COLORS: dict[str, str] = {
         "Classic RA":  "#1e4d8c",
         "Remote Help": "#2e6820",
-        "RDP Session": "#7a5c1e",     # inbound / destination-side (this host was accessed)
+        "RDP Session": "#73571c",     # inbound / destination-side (this host was accessed)
         "RDP (Outbound)": "#0f6e6e",  # source-side (this host connected OUT to elsewhere)
         "Quick Assist":"#6b1e6b",
     }
@@ -4840,18 +4840,18 @@ class _RemoteAssistanceDialog(QDialog):
         QLabel  { color: #1e1a14; font-size: 9pt; }
         QLineEdit {
             background: #faf7f2; color: #1e1a14;
-            border: 1px solid #c4bba8; border-radius: 3px;
+            border: 1px solid #938464; border-radius: 3px;
             padding: 2px 6px; font-size: 9pt;
         }
-        QLineEdit:focus { border-color: #7a5c1e; }
+        QLineEdit:focus { border-color: #73571c; }
         QComboBox {
             background: #faf7f2; color: #1e1a14;
-            border: 1px solid #c4bba8; border-radius: 3px;
+            border: 1px solid #938464; border-radius: 3px;
             padding: 2px 6px; font-size: 9pt; min-width: 110px;
         }
         QComboBox QAbstractItemView {
             background: #faf7f2; color: #1e1a14;
-            selection-background-color: #7a5c1e;
+            selection-background-color: #73571c;
         }
         QPushButton {
             background: #e4ddd3; color: #1e1a14;
@@ -4861,7 +4861,7 @@ class _RemoteAssistanceDialog(QDialog):
         QPushButton:hover    { background: #d6cdbf; }
         QPushButton:pressed  { background: #c4bba8; }
         QPushButton#okBtn {
-            background: #7a5c1e; color: #ffffff;
+            background: #73571c; color: #fffdf8;
             border: 1px solid #5a3e1e;
         }
         QPushButton#okBtn:hover   { background: #8a6c2e; }
@@ -4873,7 +4873,7 @@ class _RemoteAssistanceDialog(QDialog):
         }
         QTableWidget::item { padding: 1px 4px; }
         QTableWidget::item:selected {
-            background: #7a5c1e; color: #ffffff;
+            background: #73571c; color: #fffdf8;
         }
         QHeaderView::section {
             background: #e4ddd3; color: #1e1a14;
@@ -4885,13 +4885,13 @@ class _RemoteAssistanceDialog(QDialog):
         QScrollBar::handle:vertical {
             background: #c4bba8; border-radius: 3px; min-height: 28px;
         }
-        QScrollBar::handle:vertical:hover { background: #9a8878; }
+        QScrollBar::handle:vertical:hover { background: #67594d; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         QScrollBar:horizontal { background: #f5f0e8; height: 8px; margin: 0; }
         QScrollBar::handle:horizontal {
             background: #c4bba8; border-radius: 3px; min-width: 28px;
         }
-        QScrollBar::handle:horizontal:hover { background: #9a8878; }
+        QScrollBar::handle:horizontal:hover { background: #67594d; }
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
     """
 
@@ -7128,18 +7128,18 @@ class _ComputerNormalisationDialog(QDialog):
         QLabel  { color: #1e1a14; font-size: 9pt; }
         QLineEdit {
             background: #faf7f2; color: #1e1a14;
-            border: 1px solid #c4bba8; border-radius: 3px;
+            border: 1px solid #938464; border-radius: 3px;
             padding: 2px 6px; font-size: 9pt;
         }
-        QLineEdit:focus { border-color: #7a5c1e; }
+        QLineEdit:focus { border-color: #73571c; }
         QComboBox {
             background: #faf7f2; color: #1e1a14;
-            border: 1px solid #c4bba8; border-radius: 3px;
+            border: 1px solid #938464; border-radius: 3px;
             padding: 2px 6px; font-size: 9pt; min-width: 130px;
         }
         QComboBox QAbstractItemView {
             background: #faf7f2; color: #1e1a14;
-            selection-background-color: #7a5c1e;
+            selection-background-color: #73571c;
         }
         QPushButton {
             background: #e4ddd3; color: #1e1a14;
@@ -7149,7 +7149,7 @@ class _ComputerNormalisationDialog(QDialog):
         QPushButton:hover    { background: #d6cdbf; }
         QPushButton:pressed  { background: #c4bba8; }
         QPushButton#okBtn {
-            background: #7a5c1e; color: #ffffff;
+            background: #73571c; color: #fffdf8;
             border: 1px solid #5a3e1e;
         }
         QPushButton#okBtn:hover   { background: #8a6c2e; }
@@ -7161,7 +7161,7 @@ class _ComputerNormalisationDialog(QDialog):
         }
         QTableWidget::item { padding: 1px 4px; }
         QTableWidget::item:selected {
-            background: #7a5c1e; color: #ffffff;
+            background: #73571c; color: #fffdf8;
         }
         QHeaderView::section {
             background: #e4ddd3; color: #1e1a14;
@@ -7173,13 +7173,13 @@ class _ComputerNormalisationDialog(QDialog):
         QScrollBar::handle:vertical {
             background: #c4bba8; border-radius: 3px; min-height: 28px;
         }
-        QScrollBar::handle:vertical:hover { background: #9a8878; }
+        QScrollBar::handle:vertical:hover { background: #67594d; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         QScrollBar:horizontal { background: #f5f0e8; height: 8px; margin: 0; }
         QScrollBar::handle:horizontal {
             background: #c4bba8; border-radius: 3px; min-width: 28px;
         }
-        QScrollBar::handle:horizontal:hover { background: #9a8878; }
+        QScrollBar::handle:horizontal:hover { background: #67594d; }
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
     """
 
@@ -7447,7 +7447,7 @@ class _ComputerNormalisationDialog(QDialog):
                     # Stash orig_row index for context-menu lookup.
                     item.setData(Qt.ItemDataRole.UserRole, orig_row)
                     if r["variant_count"] > 1:
-                        item.setForeground(qc("#7a5c1e"))   # highlight
+                        item.setForeground(qc("#73571c"))   # highlight
                 if c == 4 and r["forwarded"]:
                     item.setForeground(qc("#8a4800"))       # amber
                 if c == 5:
@@ -7682,8 +7682,8 @@ class AddRemoveColumnsDialog(QDialog):
             border: none;
         }
         QListWidget::item:selected {
-            background: #7a5c1e;
-            color: #ffffff;
+            background: #73571c;
+            color: #fffdf8;
         }
         QListWidget::item:hover:!selected {
             background: #e0d8c4;
@@ -7700,10 +7700,10 @@ class AddRemoveColumnsDialog(QDialog):
         }
         QPushButton:hover   { background: #ccc5b5; }
         QPushButton:pressed { background: #b8b0a0; }
-        QPushButton:disabled { color: #9a8878; background: #ede8df; border-color: #c4bba8; }
+        QPushButton:disabled { color: #67594d; background: #ede8df; border-color: #c4bba8; }
         QPushButton#okBtn {
-            background: #7a5c1e;
-            color: #ffffff;
+            background: #73571c;
+            color: #fffdf8;
             border: none;
             border-radius: 3px;
             padding: 4px 18px;
@@ -8338,7 +8338,7 @@ class _ExportScopeDialog(QDialog):
                 border: 1px solid {COLORS['border']}; border-radius: 3px;
                 padding: 4px 12px; font-size: 9pt;
             }}
-            QPushButton:hover {{ background: {COLORS.get('accent', '#7a5c1e')}; color: white; }}
+            QPushButton:hover {{ background: {COLORS.get('accent', '#73571c')}; color: white; }}
             QScrollArea {{ border: none; background: transparent; }}
         """)
 
@@ -8641,6 +8641,40 @@ class _ElidedCellTooltip(QObject):
             return False
 
 
+def _name_for_assistive_tech(w, refresh: bool = False) -> None:
+    """WCAG 4.1.2: a control a screen reader cannot name is unusable to its
+    user.  Icon-only buttons (sidebar, refresh, close tab, "..." browse) and
+    unlabelled boxes take their tooltip -- or a text box its placeholder --
+    as accessible name, unless the code gave them one.  Re-derived when the
+    tooltip changes (the Brief/Bookmark buttons change theirs)."""
+    try:
+        from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox as _QCB, QLineEdit as _QLE
+        if not isinstance(w, (QAbstractButton, _QLE, _QCB, QAbstractSpinBox)):
+            return
+        auto = bool(w.property("_eh_auto_name"))
+        if w.accessibleName() and not (refresh and auto):
+            return
+        name = ""
+        if isinstance(w, QAbstractButton):
+            if w.text().strip(" .…&"):
+                return                         # its text is its name
+            name = w.toolTip()
+            if not name and isinstance(w.parent(), _QLE):
+                # The x Qt puts in a text box with a clear button.
+                name = "Clear text"
+                w.setToolTip(name)
+        elif isinstance(w, _QLE):
+            name = w.placeholderText() or w.toolTip()
+        else:
+            name = w.toolTip()
+        name = " ".join(str(name).split())[:140]
+        if name:
+            w.setAccessibleName(name)
+            w.setProperty("_eh_auto_name", True)
+    except RuntimeError:
+        pass
+
+
 class _CalmTables(QObject):
     """App-wide: tables draw no grid lines unless View > Grid Lines is on,
     and every item view shows the full text of a clipped cell on hover.
@@ -8658,6 +8692,9 @@ class _CalmTables(QObject):
         self._tips = _ElidedCellTooltip(self)
 
     def eventFilter(self, obj, event):  # noqa: N802
+        et = event.type()
+        if et == QEvent.Type.Polish or et == QEvent.Type.ToolTipChange:
+            _name_for_assistive_tech(obj, et == QEvent.Type.ToolTipChange)
         if event.type() == QEvent.Type.Polish and isinstance(obj, QAbstractItemView):
             vp = obj.viewport()
             if vp is not None and not vp.property("_eh_tips"):
@@ -17417,7 +17454,7 @@ class MainWindow(QMainWindow):
         _btn_close = QPushButton("\u00d7")
         _btn_close.setFixedSize(16, 16)
         _btn_close.setStyleSheet(
-            "QPushButton { color: #7a5c1e; font-size: 12pt; font-weight: bold;"
+            "QPushButton { color: #73571c; font-size: 12pt; font-weight: bold;"
             " border: none; background: transparent; padding: 0; margin: 0; }"
             "QPushButton:hover { color: #a01800; background: #f5e0dc; border-radius: 2px; }"
         )
@@ -19057,7 +19094,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu { background:#ede8df; color:#1e1a14; border:1px solid #c4bba8; }"
-            "QMenu::item:selected { background:#7a5c1e; color:#ffffff; }"
+            "QMenu::item:selected { background:#73571c; color:#fffdf8; }"
             "QMenu::separator { height:1px; background:#c4bba8; margin:2px 8px; }"
         )
 

@@ -434,7 +434,7 @@ class ProfileEditorDialog(QDialog):
             QLineEdit, QTextEdit {{
                 background: {COLORS['bg_input']};
                 color: {COLORS['text']};
-                border: 1px solid {COLORS['border']};
+                border: 1px solid {COLORS['border_input']};
                 border-radius: 3px;
                 padding: 3px 5px;
             }}

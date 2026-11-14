@@ -463,6 +463,7 @@ class FilterDialog(QDialog):
         # Default time to 00:00:00 — user sets time explicitly via the "Time" checkbox
         self._dt_from.setDateTime(QDateTime(QDateTime.currentDateTime().addYears(-1).date(), QTime(0, 0, 0)))
         self._dt_from.setEnabled(False)
+        self._dt_from.setAccessibleName("From")
         dt_row.addWidget(self._dt_from)
         dt_row.addWidget(_lbl("To:"))
         self._dt_to = _DateTimePickerEdit()
@@ -477,6 +478,7 @@ class FilterDialog(QDialog):
                 self._dt_from.setDateTime(QDateTime(_lo.date(), QTime(0, 0, 0)))
                 self._dt_to.setDateTime(QDateTime(_hi.date(), QTime(23, 59, 59)))
         self._dt_to.setEnabled(False)
+        self._dt_to.setAccessibleName("To")
         dt_row.addWidget(self._dt_to)
         self._chk_date_exclude = QCheckBox("Exclude")
         dt_row.addWidget(self._chk_date_exclude)
@@ -494,11 +496,13 @@ class FilterDialog(QDialog):
         self._spn_days = QSpinBox()
         self._spn_days.setRange(0, 9999)
         self._spn_days.setValue(0)
+        self._spn_days.setAccessibleName("Last days")
         rel_row.addWidget(self._spn_days)
         rel_row.addWidget(_lbl("days"))
         self._spn_hours = QSpinBox()
         self._spn_hours.setRange(0, 23)
         self._spn_hours.setValue(0)
+        self._spn_hours.setAccessibleName("Last hours")
         rel_row.addWidget(self._spn_hours)
         rel_row.addWidget(_lbl("hours"))
         self._chk_rel_exclude = QCheckBox("Exclude")
@@ -523,6 +527,7 @@ class FilterDialog(QDialog):
             if _day.isValid():
                 self._de_specific_day.setDate(_day)
         self._de_specific_day.setEnabled(False)
+        self._de_specific_day.setAccessibleName("One day")
         specific_day_row.addWidget(self._de_specific_day)
         specific_day_row.addStretch()
         tsec.addLayout(specific_day_row)
@@ -652,7 +657,7 @@ class FilterDialog(QDialog):
             QPushButton#filterLink {{
                 background: transparent;
                 border: none;
-                color: {COLORS.get('accent', '#7a5c1e')};
+                color: {COLORS.get('accent', '#73571c')};
                 padding: 2px 4px;
             }}
             QPushButton#filterLink:hover {{
@@ -663,13 +668,14 @@ class FilterDialog(QDialog):
             QLineEdit {{
                 background: {COLORS['bg_main']};
                 color: {COLORS['text']};
-                border: 1px solid {COLORS['border']};
+                border: 1px solid {COLORS['border_input']};
                 border-radius: 3px;
                 padding: 3px 6px;
                 font-size: 9pt;
             }}
             QLineEdit:focus {{
-                border-color: {COLORS.get('accent', '#7a5c1e')};
+                border: 2px solid {COLORS.get('accent', '#73571c')};
+                padding: 2px 5px;
             }}
             QPushButton {{
                 background: {COLORS['bg_header']};
@@ -680,8 +686,8 @@ class FilterDialog(QDialog):
                 font-size: 9pt;
             }}
             QPushButton:hover {{
-                background: {COLORS.get('accent', '#7a5c1e')};
-                color: white;
+                background: {COLORS['btn_hover']};
+                color: {COLORS['text']};
             }}
             QPushButton:pressed {{
                 background: {COLORS.get('accent_hover', '#9b7a2e')};
@@ -689,7 +695,7 @@ class FilterDialog(QDialog):
             QDateTimeEdit, QSpinBox {{
                 background: {COLORS['bg_main']};
                 color: {COLORS['text']};
-                border: 1px solid {COLORS['border']};
+                border: 1px solid {COLORS['border_input']};
                 border-radius: 3px;
                 padding: 2px 4px;
                 font-size: 9pt;
@@ -732,7 +738,7 @@ class FilterDialog(QDialog):
             QComboBox {{
                 background: {COLORS['bg_main']};
                 color: {COLORS['text']};
-                border: 1px solid {COLORS['border']};
+                border: 1px solid {COLORS['border_input']};
                 border-radius: 3px;
                 padding: 3px 6px;
                 font-size: 9pt;
