@@ -230,6 +230,15 @@ def _score_ip(value: str) -> tuple[int, list[str]]:
     reasons: list[str] = []
     if _RE_PRIVATE_IPv4.match(value):
         return 0, ["Private/internal address"]
+    # Link-local, unique-local, loopback, mapped private... (IPv6 too): not a
+    # public address, whatever the IPv4 pattern above says (Gemini 7-07).
+    try:
+        import ipaddress
+        _ipo = ipaddress.ip_address(value.split("%", 1)[0])
+        if not _ipo.is_global:
+            return 0, ["Private/internal/link-local address"]
+    except ValueError:
+        pass
     if value in _TOR_EXITS:
         reasons.append("Known TOR exit node")
         return min(100, 85), reasons

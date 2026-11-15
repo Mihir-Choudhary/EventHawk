@@ -35,6 +35,28 @@ _RE_IPv6 = re.compile(
       r'(?:\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)){3}'
     r')\b'
 )
+_RE_IPV6_CAND = re.compile(r"[0-9A-Fa-f:.%]{2,}")
+
+
+def _ipv6_values(text: str) -> list:
+    """Every IPv6 address in *text*, checked by the standard library.
+
+    The regex alone cut "fe80::1" to "fe80::" and missed "::1" and
+    "::ffff:192.0.2.10" (Gemini audit 7-07)."""
+    import ipaddress
+    out = []
+    for tok in _RE_IPV6_CAND.findall(text or ""):
+        if tok.count(":") < 2:
+            continue
+        tok = tok.strip(".").split("%", 1)[0]       # zone index ("%eth0") is not part of it
+        try:
+            ipaddress.IPv6Address(tok)          # validate only: keep it as the log wrote it
+        except ValueError:
+            continue
+        out.append(tok.lower())
+    return out
+
+
 _RE_SHA256 = re.compile(r'\b[0-9a-fA-F]{64}\b')
 _RE_SHA1   = re.compile(r'\b[0-9a-fA-F]{40}\b')
 _RE_MD5    = re.compile(r'\b[0-9a-fA-F]{32}\b')
@@ -298,7 +320,16 @@ def extract_iocs(events: list[dict], progress_fn: object = None) -> dict:
         user = _get_user(ed)
 
         # Short aliases for the hot path
+        _seen_here: set = set()
+
         def _a(store: dict, key: str) -> None:
+            # Once per event: a value found by two scans of the same record
+            # (a structured field, then the full-text pass) counted twice
+            # (Gemini audit 7-07).
+            k = (id(store), key)
+            if k in _seen_here:
+                return
+            _seen_here.add(k)
             _accum(store, key, ts, eid, record_id, user, comp, src, rkeys)
 
         # ── Computer name ─────────────────────────────────────────────────
@@ -324,15 +355,18 @@ def extract_iocs(events: list[dict], progress_fn: object = None) -> dict:
                     c = _clean_ip(ip)
                     if c:
                         _a(st_ipv4, c)
-                for ip in _RE_IPv6.findall(val):
-                    _a(st_ipv6, ip.strip())
+                for ip in _ipv6_values(val):
+                    _a(st_ipv6, ip)
 
         # ── Process / command-line ────────────────────────────────────────
         if eid in _PROCESS_EIDS:
             for cmdfield in ("CommandLine", "ProcessCommandLine"):
                 cmd = ed.get(cmdfield, "")
                 if cmd:
-                    _a(st_commandlines, str(cmd)[:500])
+                    # Whole: cut to 500 characters, the part after the cut
+                    # was never scored (an -EncodedCommand there scored 0)
+                    # (Gemini audit 7-07).
+                    _a(st_commandlines, str(cmd))
             for imgfield in ("Image", "NewProcessName", "ApplicationPath"):
                 img = ed.get(imgfield, "")
                 if img:
