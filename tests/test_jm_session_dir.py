@@ -30,12 +30,15 @@ def check(name, cond, detail=""):
 class FakeEngine:
     fail = False
     seen = []
+    on_run = None        # called inside run(): a stop that arrives mid-parse
 
     def __init__(self, parquet_dir, on_progress=None):
         self.d = parquet_dir
         FakeEngine.seen.append(parquet_dir)
 
     def run(self, files, filter_config):
+        if FakeEngine.on_run:
+            FakeEngine.on_run()
         with open(os.path.join(self.d, "shard_00000.parquet"), "w") as f:
             f.write(files[0])
         with open(os.path.join(self.d, "parquet_manifest.json"), "w") as f:
@@ -55,9 +58,14 @@ def parse(name, stop=False):
     w.finished.connect(lambda d: out.__setitem__("dir", d))
     w.error.connect(lambda e: out.__setitem__("err", e))
     w.cancelled.connect(lambda: out.__setitem__("cancelled", True))
-    if stop:
+    if stop == "before":
         w.request_stop()
-    w.run()
+    elif stop:
+        FakeEngine.on_run = w.request_stop
+    try:
+        w.run()
+    finally:
+        FakeEngine.on_run = None
     return out
 
 
@@ -97,6 +105,11 @@ def main() -> int:
         c = parse("log D", stop=True)
         check("a stopped parse says so", c.get("cancelled") is True)
         check("a stopped parse leaves no folder", FakeEngine.seen and not os.path.exists(FakeEngine.seen[-1]))
+        # Stopped before it began (Gemini audit 2-08): nothing is parsed or made.
+        FakeEngine.seen.clear()
+        c = parse("log E", stop="before")
+        check("a parse stopped before it began says so and starts no engine",
+              c.get("cancelled") is True and not FakeEngine.seen and not c.get("dir"), str(c))
 
         # A folder left by an EventHawk that no longer runs / that still runs.
         p = subprocess.Popen([sys.executable, "-c", "pass"])
