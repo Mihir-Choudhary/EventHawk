@@ -19530,16 +19530,7 @@ class MainWindow(QMainWindow):
                     logger.exception("time zone change: quick filter rebuild failed")
 
         # Re-render detail panel if a row is currently selected
-        try:
-            _ev = None
-            _proxy = self._active_proxy
-            _sel = self._active_table.selectionModel().selectedRows()
-            if _sel:
-                _ev = _proxy.get_source_event(_sel[0].row())
-            if _ev:
-                self._render_event_detail(_ev)
-        except Exception:
-            pass
+        self._refresh_detail_for_selection()
 
         # Update status bar to show active timezone
         _labels = {
@@ -19556,6 +19547,30 @@ class MainWindow(QMainWindow):
         }
         self._set_status(f"Timezone: {_labels.get(self._tz_mode, self._tz_mode)}"
                          + (f" ({_tz_unavailable} not available)" if _tz_unavailable else ""))
+
+    def _refresh_detail_for_selection(self) -> None:
+        """Re-render the Event Detail pane for the selected row after a
+        display-only change (time zone, precision).
+
+        The pane caches the event it shows (_last_detail_key), so it kept the
+        old timestamp while the grid changed; and in Juggernaut mode the row
+        must be read from the table's ArrowTableModel, not a proxy (Gemini
+        audit 5-06)."""
+        try:
+            self._last_detail_key = None
+            _sel = self._active_table.selectionModel().selectedRows()
+            if not _sel:
+                return
+            from evtx_tool.gui.heavyweight_model import ArrowTableModel as _ATM
+            _m = self._active_table.model()
+            if isinstance(_m, _ATM):
+                _ev = _m.get_event(_sel[0].row())
+            else:
+                _ev = self._active_proxy.get_source_event(_sel[0].row())
+            if _ev:
+                self._render_event_detail(_ev)
+        except Exception:
+            logger.exception("Event Detail refresh failed")
 
     def _on_ts_precision_changed(self, digits: int) -> None:
         """Apply a new timestamp display precision (0/3/6) and refresh all views.
@@ -19593,15 +19608,7 @@ class MainWindow(QMainWindow):
                 pass
 
         # Re-render detail panel if a row is currently selected
-        try:
-            _proxy = self._active_proxy
-            _sel = self._active_table.selectionModel().selectedRows()
-            if _sel:
-                _ev = _proxy.get_source_event(_sel[0].row())
-                if _ev:
-                    self._render_event_detail(_ev)
-        except Exception:
-            pass
+        self._refresh_detail_for_selection()
 
         _plabels = {0: "Seconds", 3: "Milliseconds", 6: "Microseconds"}
         self._set_status(f"Timestamp precision: {_plabels.get(digits, 'Seconds')}")
@@ -20377,7 +20384,9 @@ class MainWindow(QMainWindow):
         if self._hw_model is not None:
             self._hw_model.apply_bookmark_filter(key_set)
         else:
-            self._proxy_model.set_record_id_filter(key_set)
+            # The bookmark slot, which "Clear all bookmarks" clears: the
+            # record-id slot used here stayed on after it (Gemini audit 5-14).
+            self._proxy_model.set_bookmark_filter(key_set)
         self._update_count_label()
         self._set_status(f"Pivot to bookmarked event (record_id={rid})")
 
