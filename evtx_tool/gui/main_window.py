@@ -14766,6 +14766,11 @@ class MainWindow(QMainWindow):
         cfg = getattr(self, "_adv_filter_cfg", None) or {}
         term = cfg.get("text_search")
         term = term if isinstance(term, str) else ""
+        if not self._text_term_is_plain(cfg):
+            # An Exclude / NOT / Regex text term is not what the box does: shown
+            # here it would read as a plain search for that text.  The badge
+            # shows the filter; the box stays empty and leaves the term alone.
+            term = ""
         if self._quick_search.text() != term:
             self._quick_search.blockSignals(True)
             self._quick_search.setText(term)
@@ -14778,6 +14783,14 @@ class MainWindow(QMainWindow):
         # dataset is a visible wait.
         if not text.strip() and self._quick_search_applied:
             self._apply_quick_search()
+
+    @staticmethod
+    def _text_term_is_plain(cfg: dict) -> bool:
+        """True when the Advanced Filter's text term is a plain include search:
+        no Exclude, mode AND (or none), no Regex -- what the search box does."""
+        return (not cfg.get("text_exclude")
+                and str(cfg.get("search_mode") or "AND").upper() == "AND"
+                and not cfg.get("text_regex"))
 
     def _has_loaded_events(self) -> bool:
         return bool(self._events) or self._hw_model is not None
@@ -14802,6 +14815,13 @@ class MainWindow(QMainWindow):
         else:
             cfg = dict(self._adv_filter_cfg) if had_cfg else empty_filter()
             cfg["text_search"] = text
+            # The box always searches plainly: the dialog's Exclude, NOT and
+            # Regex options belong to the dialog's own term.  Kept, they made
+            # "svchost" show the events WITHOUT it, or a path with backslashes
+            # find nothing, with no sign of it in the box (PR #19 review QS-1).
+            cfg["text_exclude"] = False
+            cfg["search_mode"] = "AND"
+            cfg["text_regex"] = False
             if not had_cfg:
                 self._quick_search_owned_cfg = True
         logger.info("Quick search %s", "applied" if text else "removed")
