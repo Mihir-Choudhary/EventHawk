@@ -432,16 +432,14 @@ class ProcessingEngine:
 
         self.state = EngineState(max_workers=max_workers)
         self._stop_event = threading.Event()
+        self._cpu_limit = cpu_limit
+        self._ram_limit = ram_limit
         self._monitor = ResourceMonitor(cpu_limit=cpu_limit, ram_limit=ram_limit)
         self._all_events: list[dict] = []
         self._events_lock = threading.Lock()
-
-        # Register Ctrl+C handler (only valid in the main thread;
-        # silently skipped when engine is created inside a worker thread, e.g. GUI)
-        try:
-            signal.signal(signal.SIGINT, self._sigint_handler)
-        except ValueError:
-            pass  # "signal only works in main thread" — safe to ignore in GUI mode
+        # The Ctrl+C handler is installed by run() for the length of the run
+        # only, and the caller's handler is put back afterwards: installing it
+        # here, for good, left Ctrl+C dead in the whole process (Gemini 1-07).
 
     def _sigint_handler(self, sig, frame) -> None:
         logger.warning("SIGINT received — initiating graceful shutdown")
@@ -472,6 +470,15 @@ class ProcessingEngine:
         if not files:
             return []
 
+        # A run starts with a clean report: errors and warnings of an earlier
+        # run on this engine are not this run's (Gemini audit 1-07).
+        with self.state._lock:
+            self.state.errors = []
+            self.state.warnings = []
+            self.state.benign_warnings = []
+        # A monitor thread can be started once; a second run needs a new one.
+        if self._monitor.ident is not None:
+            self._monitor = ResourceMonitor(cpu_limit=self._cpu_limit, ram_limit=self._ram_limit)
         # Do NOT clear _stop_event here: a stop() that came before run() must
         # be honoured (Gemini audit 1-02).  It is cleared when run() ends, so
         # the engine can be run again.
@@ -489,13 +496,27 @@ class ProcessingEngine:
             max_workers=self.max_workers,
         )
 
-        self._monitor.start()
         start_time = time.monotonic()
-
+        _prev_sigint = None
+        _sigint_set = False
         try:
+            # Ctrl+C handler only in the main thread (signal.signal raises
+            # ValueError elsewhere, e.g. in the GUI's worker thread).
+            try:
+                _prev_sigint = signal.signal(signal.SIGINT, self._sigint_handler)
+                _sigint_set = True
+            except ValueError:
+                pass
+            self._monitor.start()
             self._run_pool(files, filter_config, start_time)
         finally:
-            self._monitor.stop()
+            if _sigint_set:
+                try:
+                    signal.signal(signal.SIGINT, _prev_sigint)
+                except (ValueError, TypeError):
+                    pass
+            if self._monitor.ident is not None:   # it may not have started
+                self._monitor.stop()
             self._stop_event.clear()
             elapsed = time.monotonic() - start_time
             matched = len(self._all_events)
