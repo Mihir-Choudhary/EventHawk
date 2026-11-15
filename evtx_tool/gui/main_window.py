@@ -4035,7 +4035,10 @@ class _WifiHistoryDialog(QDialog):
         # Pair connects with disconnects in chronological order per interface.
         # Key: (computer, iface) so events from different hosts in merged datasets
         # are never paired together, even if they share the same InterfaceGuid.
-        all_conn_disco = sorted(connect_ev + disco_ev, key=lambda x: x["ts"])
+        # Sorted on the full-precision time: on whole seconds a disconnect and
+        # a roam later in the same second ran connect-first, closing the new
+        # session with the old one's disconnect (Gemini audit 8-02).
+        all_conn_disco = sorted(connect_ev + disco_ev, key=lambda x: x["ts_full"] or x["ts"])
 
         # pending: (computer, iface) → list[open session dict] (FIFO)
         pending: dict[tuple, list[dict]] = {}
@@ -4468,7 +4471,7 @@ class _WifiHistoryDialog(QDialog):
                 row_bg = col_open
             elif s["auth_failures"] > 0:
                 row_bg = col_authfail
-            elif not s["disconnect_ts"]:
+            elif s["duration"] == "Active":
                 row_bg = col_active
             else:
                 row_bg = None
@@ -4478,24 +4481,7 @@ class _WifiHistoryDialog(QDialog):
                 if s["channel"] else s["frequency_band"]
             )
 
-            # Connect/disconnect at the selected precision; duration recomputed
-            # with sub-second detail only when the analyst opted in AND the value
-            # is a real computed span (never for Unavailable/Active/Out-of-order).
-            _conn_disp = self._fmt_disp_ts(s.get("connect_ts_full") or s["connect_ts"], digits)
-            _disc_disp = (
-                self._fmt_disp_ts(s.get("disconnect_ts_full") or s["disconnect_ts"], digits)
-                if s["disconnect_ts"] else "Active"
-            )
-            _dur_disp = s["duration"]
-            # Not for a subtracted duration: connect-to-disconnect would put
-            # the host's downtime back in.
-            if (digits and s["duration_secs"] >= 0 and s.get("connect_ts_full") and s.get("disconnect_ts_full")
-                    and "downtime_subtracted" not in s["anomaly_flags"]):
-                _precise = _WifiHistoryDialog._fmt_dur_precise(
-                    s["connect_ts_full"], s["disconnect_ts_full"], digits
-                )
-                if _precise is not None:
-                    _dur_disp = _precise
+            _conn_disp, _disc_disp, _dur_disp = self._disp_times(s, digits)
 
             cells = [
                 s["ssid"],
@@ -4524,6 +4510,30 @@ class _WifiHistoryDialog(QDialog):
         self._tbl.setSortingEnabled(True)
         self._shown_sessions = sessions
 
+    @staticmethod
+    def _disp_times(s: dict, digits: int) -> tuple:
+        """(Connected, Disconnected, Duration) as the table shows them, which
+        the CSV export writes too (Gemini audit 8-13).  Only a session still
+        open reads "Active": a failed attempt or a session whose disconnect was
+        not logged has no disconnect time either (8-08)."""
+        conn = _WifiHistoryDialog._fmt_disp_ts(s.get("connect_ts_full") or s["connect_ts"], digits)
+        if s["disconnect_ts"]:
+            disc = _WifiHistoryDialog._fmt_disp_ts(s.get("disconnect_ts_full") or s["disconnect_ts"], digits)
+        elif s["duration"] == "Active":
+            disc = "Active"
+        else:
+            disc = "Not logged"
+        dur = s["duration"]
+        # Sub-second detail only when the analyst opted in AND the value is a
+        # real computed span; not for a subtracted duration (connect-to-
+        # disconnect would put the host's downtime back in).
+        if (digits and s["duration_secs"] >= 0 and s.get("connect_ts_full") and s.get("disconnect_ts_full")
+                and "downtime_subtracted" not in s["anomaly_flags"]):
+            precise = _WifiHistoryDialog._fmt_dur_precise(s["connect_ts_full"], s["disconnect_ts_full"], digits)
+            if precise is not None:
+                dur = precise
+        return conn, disc, dur
+
     # ── Filtering / summary ───────────────────────────────────────────────
 
     def _apply_display_filters(self, *_) -> None:
@@ -4551,7 +4561,7 @@ class _WifiHistoryDialog(QDialog):
     def _update_summary(self, sessions: list[dict]) -> None:
         total  = len(sessions)
         ssids  = len({s["ssid"] for s in sessions})
-        active = sum(1 for s in sessions if not s["disconnect_ts"])
+        active = sum(1 for s in sessions if s["duration"] == "Active")
         open_n = sum(1 for s in sessions if s["security_grade"] == "OPEN")
         parts  = [
             f"<b>{total}</b> session(s)",
@@ -4638,6 +4648,7 @@ class _WifiHistoryDialog(QDialog):
                         ordered.append(self._shown_sessions[orig])
                 if not ordered:
                     ordered = self._shown_sessions
+                digits = get_ts_precision()
                 for s in ordered:
                     band_ch = (
                         f"{s['frequency_band']} / Ch.{s['channel']}"
@@ -4645,7 +4656,7 @@ class _WifiHistoryDialog(QDialog):
                     )
                     writer.writerow([
                         s["ssid"], s["bssid"], s["oui_vendor"], s["adapter"],
-                        s["connect_ts"], s["disconnect_ts"], s["duration"],
+                        *self._disp_times(s, digits),
                         s["security_grade"], band_ch, s["phy_label"],
                         s["disconnect_reason"], ", ".join(s["anomaly_flags"]),
                         s.get("notes", ""),
