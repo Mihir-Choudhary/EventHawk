@@ -167,6 +167,11 @@ def _build_filter(
                 click.echo(f"Warning: unrecognised event-ID spec '{spec}' — skipped", err=True)
         if ids:
             fc["event_ids"] = ids
+            # --event-id REPLACES a saved filter's Event IDs.  Keeping the
+            # preset's expression too made an event need both: 0 matched
+            # (Gemini audit 3-09).
+            fc["event_id_expr"] = ""
+            fc["event_id_exclude"] = False
 
     if exclude_id:
         # Ranges too, as for --event-id (a range excluded nothing: Codex DOC-3).
@@ -198,16 +203,30 @@ def _build_filter(
         # (--level 4) is that level exactly.
         "information": [0, 4], "info": [0, 4], "verbose": [5], "logalways": [0],
     }
+    # Audit Success / Failure are Keywords bits, matched by name.
+    audit_map = {"audit success": "Audit Success", "auditsuccess": "Audit Success",
+                 "audit failure": "Audit Failure", "auditfailure": "Audit Failure"}
     if level:
-        levels: list[int] = []
+        levels: list = []
         for lvl in level.lower().split(","):
             lvl = lvl.strip()
+            if not lvl:
+                continue
             if lvl in level_map:
                 levels.extend(level_map[lvl])
+            elif lvl in audit_map:
+                levels.append(audit_map[lvl])
             elif lvl.isdigit():
                 levels.append(int(lvl))
+            else:
+                # An unknown word was dropped; with nothing left, no level
+                # filter was set and EVERY level matched (Gemini 3-09 / 11-04).
+                raise click.BadParameter(
+                    f"unknown level '{lvl}' (use critical, error, warning, information, "
+                    f"verbose, logalways, audit success, audit failure or a number)",
+                    param_hint="--level")
         if levels:
-            fc["levels"] = list(set(levels))
+            fc["levels"] = list(dict.fromkeys(levels))
 
     if date_from: fc["date_from"] = _cli_bound(date_from, "--date-from")
     if date_to:   fc["date_to"]   = _cli_bound(date_to, "--date-to")
