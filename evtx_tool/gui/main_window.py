@@ -17456,6 +17456,31 @@ class MainWindow(QMainWindow):
         elif action == act_filter:
             self._filter_by_tactic_dialog(tactic)
 
+    def _scoped_file_state(self):
+        """The file tab whose analysis the ATT&CK / IOC tabs show, when the
+        separate view's Analysis scope is "This File"; else None."""
+        if self._view_mode == "separate" and self._analysis_scope == "file" and self._active_file_tab:
+            _st = self._file_tabs.get(self._active_file_tab)
+            if _st is not None and _st.events:
+                return _st
+        return None
+
+    def _scoped_events(self) -> list:
+        """The events the analysis tabs show (Gemini audit 6-06: the exports
+        took every file's events while the tab showed one file's)."""
+        _st = self._scoped_file_state()
+        return _st.events if _st is not None else self._events
+
+    def _scoped_iocs(self):
+        """The IOCs the IOC tab shows (see _scoped_events)."""
+        _st = self._scoped_file_state()
+        if _st is None:
+            return self._iocs
+        if _st.iocs is None:
+            from evtx_tool.analysis.ioc_extractor import extract_iocs
+            _st.iocs = extract_iocs(_st.events)
+        return _st.iocs
+
     def _export_tactic_csv(self, tactic: str) -> None:
         """Export all events matching the given tactic to a CSV file."""
         import csv
@@ -17463,7 +17488,7 @@ class MainWindow(QMainWindow):
 
         tactic_lower = tactic.lower()
         filtered = [
-            ev for ev in self._events
+            ev for ev in self._scoped_events()
             if any(t.get("tactic", "").lower() == tactic_lower
                    for t in (ev.get("attack_tags") or []))
         ]
@@ -17572,7 +17597,8 @@ class MainWindow(QMainWindow):
     # ── Export all IOCs to CSV / TXT ──────────────────────────────────────────
 
     def _on_export_iocs_clicked(self) -> None:
-        if not self._iocs:
+        _iocs = self._scoped_iocs()    # what the IOC tab shows (Gemini 6-06)
+        if not _iocs:
             return
 
         path, selected_filter = QFileDialog.getSaveFileName(
@@ -17602,7 +17628,7 @@ class MainWindow(QMainWindow):
 
             if is_stix:
                 _skipped: dict = {}
-                count = export_stix(self._iocs, path, skipped=_skipped)
+                count = export_stix(_iocs, path, skipped=_skipped)
                 msg   = f"Exported {count:,} STIX indicator objects to:\n{path}"
                 if _skipped:
                     # No standard STIX 2.1 object for these: say so (Codex C4-4).
@@ -17611,15 +17637,15 @@ class MainWindow(QMainWindow):
                             + ". The CSV export and the bulk copy contain every value.")
 
             elif is_misp:
-                count = export_misp(self._iocs, path)
+                count = export_misp(_iocs, path)
                 msg   = f"Exported {count:,} MISP attributes to:\n{path}"
 
             elif is_yara:
-                count = export_yara(self._iocs, path)
+                count = export_yara(_iocs, path)
                 msg   = f"Exported {count:,} YARA strings to:\n{path}"
 
             elif is_bulk:
-                text = format_bulk_clipboard(self._iocs)
+                text = format_bulk_clipboard(_iocs)
                 QApplication.clipboard().setText(text)
                 count = text.count("\n") + 1 if text else 0
                 QMessageBox.information(
@@ -17646,7 +17672,7 @@ class MainWindow(QMainWindow):
                     writer.writerow(["type", "value", "count", "first_seen",
                                      "last_seen", "score"])
                     for label, key in _ioc_keys:
-                        for entry in (self._iocs.get(key) or []):
+                        for entry in (_iocs.get(key) or []):
                             if isinstance(entry, dict):
                                 writer.writerow([
                                     label,
@@ -17679,7 +17705,7 @@ class MainWindow(QMainWindow):
                 count = 0
                 with open(path, "w", encoding="utf-8", newline="") as fh:
                     for label, key in _ioc_keys:
-                        items = self._iocs.get(key) or []
+                        items = _iocs.get(key) or []
                         if items:
                             fh.write(f"# {label}\n")
                             for entry in items:
