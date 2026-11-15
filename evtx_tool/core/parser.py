@@ -178,16 +178,38 @@ def check_evtx_truncation(filepath: str) -> "str | None":
             hdr = fh.read(48)
     except OSError:
         return None   # unreadable files are reported elsewhere (open_error)
-    if len(hdr) < 44 or hdr[:8] != b"ElfFile\x00":
+    if hdr[:8] != b"ElfFile\x00":
         return None   # unopenable/garbage files are reported elsewhere
+    if size < 4096:
+        # Shorter than the header block: no chunk can be in it (Gemini 1-06).
+        return (f"file appears TRUNCATED — only {size:,} byte(s), less than the "
+                f"4,096-byte header block; it holds no readable records")
     import struct as _struct
-    hdr_chunks = _struct.unpack_from("<H", hdr, 0x2A)[0]
+    hdr_chunks = _struct.unpack_from("<H", hdr, 0x2A)[0] if len(hdr) >= 44 else 0
     size_chunks = max(0, (size - 4096) // 65536)
     if hdr_chunks > size_chunks:
         return (
             f"file appears TRUNCATED — header declares {hdr_chunks} chunk(s) "
             f"but the file only contains {size_chunks} (acquisition may be incomplete)"
         )
+    tail = (size - 4096) % 65536
+    if tail:
+        # The last chunk is cut short.  No parser reads a partial chunk, so its
+        # records are lost; say which ones its header declares (Gemini 1-06).
+        what = ""
+        try:
+            with open(filepath, "rb") as fh:
+                fh.seek(4096 + size_chunks * 65536)
+                ch = fh.read(0x28)
+            if len(ch) >= 0x28 and ch[:8] == b"ElfChnk\x00":
+                lo, hi = _struct.unpack_from("<QQ", ch, 24)
+                if 0 < lo <= hi < 2 ** 63:
+                    what = (f"; that chunk declares records {lo:,}-{hi:,} "
+                            f"({hi - lo + 1:,} record(s)), which are NOT read")
+        except OSError:
+            pass
+        return (f"file appears TRUNCATED — its last chunk is cut short "
+                f"({tail:,} of 65,536 bytes present){what} (acquisition may be incomplete)")
     return None
 
 

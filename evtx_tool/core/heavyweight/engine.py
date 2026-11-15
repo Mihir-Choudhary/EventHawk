@@ -242,12 +242,10 @@ def _split_evtx(filepath: str, n_parts: int, tmp_dir: str, tag: str = "0") -> li
         n_chunks = (size - _EVTX_HDR_BLOCK) // _EVTX_CHUNK_SZ
         if n_chunks < _EVTX_MIN_SPLIT or n_parts <= 1:
             return [filepath]
-        if (size - _EVTX_HDR_BLOCK) % _EVTX_CHUNK_SZ:
-            # A trailing partial chunk would not be copied into any shard;
-            # parse the file whole so nothing is cut off (Gemini audit 2-09).
-            logger.warning("%s ends in a partial chunk; parsing it unsplit",
-                           os.path.basename(filepath))
-            return [filepath]
+        # A trailing partial chunk is not copied into any shard.  No parser
+        # reads a partial chunk either (measured: an unsplit parse of a real
+        # 1.7 GB log with one reads exactly its whole chunks' records), so
+        # splitting loses nothing more; check_evtx_truncation reports it.
 
         per = max(1, n_chunks // n_parts)
         sub_files: list[str] = []

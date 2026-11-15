@@ -6,14 +6,14 @@ the whole file's ranges.  It does not: expected_ranges() reads the chunk
 headers IN the file it is given, which for a shard are only that shard's
 chunks.  So on every log over 64 MB a silently skipped record went
 unreported.  Also: a split that fell back to the whole file was still
-marked is_split; a file with a trailing partial chunk was split without that
-chunk; a filter that could not be compiled let every event through.
+marked is_split; a filter that could not be compiled let every event through.
 
 Expected:
 - on the real >64 MB log, split for real, every shard read pristine reports
   0 missing and the shards together hold every record the log has;
 - with one record silently skipped in one shard, that shard reports 1 missing;
-- _split_evtx does not split a file with a trailing partial chunk;
+- a file with a trailing partial chunk is reported (no parser reads that
+  chunk, so splitting loses nothing more; see test_truncation_partial_chunk);
 - a filter that cannot be compiled yields no rows and an error, not all rows.
 
 Real log read in place (needs EVTX_TEST_LOGS or _ONLINE with a log over 64 MB); shards
@@ -115,8 +115,9 @@ def main() -> int:
             for _ in range(16):
                 fh.write(b"ElfChnk\x00".ljust(65536, b"\x00"))
             fh.write(b"ElfChnk\x00".ljust(32768, b"\x00"))
-        out = H._split_evtx(part, 4, tmp, tag="p")
-        check("a file with a trailing partial chunk is not split", out == [part], str(len(out)))
+        from evtx_tool.core.parser import check_evtx_truncation
+        w = check_evtx_truncation(part)
+        check("a file with a trailing partial chunk is reported as truncated", bool(w), repr(w))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     n = sum(ok for _, ok, _ in CHECKS)
