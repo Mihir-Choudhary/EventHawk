@@ -45,6 +45,9 @@ def _same_content(a: dict, b: dict) -> bool:
     return all(a.get(f) == b.get(f) for f in _SYSTEM_CONTENT)
 
 
+same_content = _same_content       # public: the session tools use it (Gemini audit 8-09)
+
+
 def collapse_copies(events: list[dict]) -> tuple[list[dict], dict[int, list[dict]]]:
     """Return (events with copies removed, {id(kept event): [its copies]}).
 

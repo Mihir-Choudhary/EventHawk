@@ -2684,8 +2684,12 @@ class _LogonSessionDialog(QDialog):
         # within a log; these event IDs are Security-only); the copies' own
         # (file, record) keys are kept for the session filter.  An event with
         # no record id is never collapsed.  Same rule as Remote Assistance.
+        # A copy also has the same content (core/record_identity): logs of
+        # cloned hosts share ids and times but not their logons, and both are
+        # evidence (Gemini audit 8-09: one of two sessions vanished).
+        from evtx_tool.core.record_identity import same_content as _same
         _copies: dict[int, list[dict]] = {}
-        _kept: dict[tuple, dict] = {}
+        _kept: dict[tuple, list[dict]] = {}
         _unique: list[dict] = []
         for ev in events:
             rid = ev.get("_record_id", ev.get("record_id"))
@@ -2693,12 +2697,14 @@ class _LogonSessionDialog(QDialog):
                 _unique.append(ev)
                 continue
             ident = (str(ev.get("computer") or "").strip().lower(),
+                     str(ev.get("channel") or "").strip().lower(),
                      str(ev.get("event_id") or ""),
                      str(ev.get("timestamp") or "").strip(),
                      str(rid).strip())
-            first = _kept.get(ident)
+            variants = _kept.setdefault(ident, [])
+            first = next((k for k in variants if _same(k, ev)), None)
             if first is None:
-                _kept[ident] = ev
+                variants.append(ev)
                 _unique.append(ev)
             else:
                 _copies.setdefault(id(first), []).append(ev)
@@ -4020,7 +4026,13 @@ class _WifiHistoryDialog(QDialog):
         from evtx_tool.analysis.host_power import HostPower, fmt_secs as _fmt_secs
         _power = HostPower(events)
 
-        for ev in events:
+        # Copies of a log (the same record loaded twice) count once: an 11006
+        # in "WLAN.evtx" and "WLAN - Copy.evtx" was two auth failures
+        # (Gemini audit 8-09).  Same identity AND content (record_identity).
+        from evtx_tool.core.record_identity import collapse_copies as _collapse
+        _wl, _ = _collapse([ev for ev in events
+                            if str(ev.get("channel") or ev.get("Channel") or "").lower() == WLAN_CH.lower()])
+        for ev in _wl:
             ch = str(ev.get("channel") or ev.get("Channel") or "")
             # Low/Medium fix: use exact equality instead of substring containment.
             # The old "ch not in WLAN_CH" let any short prefix like "Microsoft"
@@ -4380,7 +4392,8 @@ class _WifiHistoryDialog(QDialog):
         seen:    set[tuple] = set()
         unique:  list[dict] = []
         for s in sessions:
-            key = (s["interface_guid"], s["ssid"], s["bssid"],
+            # The host too: identical sessions of two hosts are two (8-09).
+            key = (s["computer"], s["interface_guid"], s["ssid"], s["bssid"],
                    s["connect_ts"], s["disconnect_ts"])
             if key not in seen:
                 seen.add(key)
@@ -4822,7 +4835,7 @@ class _WifiJMFetchWorker(QThread):
                     # Boots too: a session spanning a restart of its host
                     # has no measurable length (Codex audit-5b A5B-WIFI).
                     f"SELECT event_id, timestamp_utc, event_data_json, computer, source_file, "
-                    f"       channel, provider "
+                    f"       channel, provider, record_id, event_record_id "
                     f"FROM parquet_scan({shard_list}) "
                     f"WHERE (channel = ? AND event_id IN ({eids_csv})) "
                     # Shutdowns and startups: see evtx_tool.analysis.host_power.
@@ -4845,7 +4858,7 @@ class _WifiJMFetchWorker(QThread):
         truncated = False                  # no limit any more
 
         events: list[dict] = []
-        for ev_id, ts_utc, ed_json, computer, source_file, channel, provider in rows:
+        for ev_id, ts_utc, ed_json, computer, source_file, channel, provider, rec_id, xml_rid in rows:
             try:
                 ed = _json.loads(ed_json) if ed_json else {}
             except Exception:
@@ -4858,6 +4871,9 @@ class _WifiJMFetchWorker(QThread):
                 "provider":   provider or "",
                 "computer":   computer or "",
                 "source_file": source_file or "",
+                # so copies of a log collapse as in Normal mode (8-09)
+                "record_id":  rec_id,
+                "event_record_id": xml_rid,
             })
         self.finished.emit(events, truncated)
 
@@ -5325,7 +5341,12 @@ class _RemoteAssistanceDialog(QDialog):
             AND marked the real one AMBIGUOUS_PAIRING, discarding a duration
             the log genuinely proves.
             """
-            srcs: dict = {}          # identity → {source basenames}
+            # A repeat also has the same content (core/record_identity): two
+            # cloned hosts' records sharing an identity are both kept
+            # (Gemini audit 8-09).  srcs: id(kept record) -> {basenames}.
+            from evtx_tool.core.record_identity import same_content as _same
+            srcs: dict = {}
+            kept: dict = {}          # identity -> [kept records]
             out:  list[dict] = []
             for e in evts:
                 key  = _ident(e)
@@ -5335,11 +5356,14 @@ class _RemoteAssistanceDialog(QDialog):
                 if key is None:
                     out.append(e)
                     continue
-                if key in srcs:
+                variants = kept.setdefault(key, [])
+                first = next((k for k in variants if _same(k, e)), None)
+                if first is not None:
                     if base:
-                        srcs[key].add(base)   # same record, another file
+                        srcs[id(first)].add(base)   # same record, another file
                     continue
-                srcs[key] = {base} if base else set()
+                variants.append(e)
+                srcs[id(e)] = {base} if base else set()
                 out.append(e)
             return out, srcs
 
@@ -6068,8 +6092,7 @@ class _RemoteAssistanceDialog(QDialog):
             # same evidence appeared under several file names.
             _srcs: set = set()
             for e in evs:
-                _k = _ident(e)
-                _extra = _dup_sources.get(_k) if _k is not None else None
+                _extra = _dup_sources.get(id(e))
                 if _extra:
                     _srcs |= _extra
                 else:
