@@ -584,6 +584,10 @@ def _build_search_string(ev: dict) -> str:
         for v in ed.values():
             if v is not None:
                 parts.append(event_data_text(v))
+    # The custom columns the report shows are searchable too (Gemini 6-07).
+    for v in (ev.get("custom_columns") or {}).values():
+        if v not in (None, ""):
+            parts.append(str(v))
 
     return " ".join(p for p in parts if p).lower()
 
@@ -1113,6 +1117,10 @@ function _applySort() {
     var dir = _sortDir === 1 ? 1 : -1;
     rows.sort(function(a, b) {
       var av, bv;
+      // ATT&CK moves right by one per custom column: a fixed "case 7" sorted
+      // the first custom column by tag count (Gemini audit 6-07).
+      if (colIdx === (window._ATKCOL || 7))
+        return dir * ((+(a.dataset.atkCount||0)) - (+(b.dataset.atkCount||0)));
       switch (colIdx) {
         case 1: // Timestamp — ISO string, lexicographic = chronological
           return dir * (a.dataset.ts||'').localeCompare(b.dataset.ts||'');
@@ -1120,8 +1128,6 @@ function _applySort() {
           return dir * ((+(a.dataset.eid||0)) - (+(b.dataset.eid||0)));
         case 3: // Level — by severity order (Critical first on asc)
           return dir * ((_LEVEL_ORDER[a.dataset.level]??99) - (_LEVEL_ORDER[b.dataset.level]??99));
-        case 7: // ATT&CK — by technique tag count
-          return dir * ((+(a.dataset.atkCount||0)) - (+(b.dataset.atkCount||0)));
         default:
           av = (a.cells[colIdx] ? a.cells[colIdx].textContent : '').trim();
           bv = (b.cells[colIdx] ? b.cells[colIdx].textContent : '').trim();
@@ -1531,7 +1537,7 @@ def export_html(
                 "<code>tid:T1059</code> &nbsp;— combine freely with free text</div>\n")
 
         _cc_titles = list((events[0].get("custom_columns") or {}) if events else ())
-        f.write(f"<script>window._DCOLS={9 + len(_cc_titles)};"
+        f.write(f"<script>window._DCOLS={9 + len(_cc_titles)};window._ATKCOL={7 + len(_cc_titles)};"
                 f"window._CORE={_safe_dumps(list(_DETAIL_CORE_LABELS))};</script>\n")
         f.write("<div id='ehLoading' style='background:#3a2a00;border:1px solid #e6a700;color:#ffd666;"
                 "padding:6px 10px;border-radius:4px;margin:6px 0;font-size:0.85em'>"
