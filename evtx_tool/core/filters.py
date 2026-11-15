@@ -1364,7 +1364,14 @@ def save_filter(fc: dict, filepath: str) -> None:
 def load_filter(filepath: str) -> dict:
     """Load filter config from JSON file."""
     with open(filepath, "r", encoding="utf-8") as f:
-        return filter_from_dict(fast_loads(f.read()))
+        fc = filter_from_dict(fast_loads(f.read()))
+    # A preset saved by the GUI holds its From/To as display-zone wall time
+    # plus the UTC instants they mean; the CLI compares in UTC, so it uses
+    # the UTC ones (Gemini audit 4-05).
+    for _k in ("date_from", "date_to"):
+        if fc.get(_k + "_utc"):
+            fc[_k] = fc[_k + "_utc"]
+    return fc
 
 
 # ── Profile → filter conversion ────────────────────────────────────────────────

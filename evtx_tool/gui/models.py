@@ -143,6 +143,29 @@ _tz_state: dict = {
 }
 
 
+def display_naive_to_utc(naive):
+    """The aware UTC instant of display-zone wall time *naive* -- the
+    conversion set_advanced_filter applies to the dialog's bounds, for
+    writing them into a saved preset (Gemini audit 4-05)."""
+    from datetime import timezone as _utc_tz, timedelta as _tdl
+    naive = naive.replace(tzinfo=None)
+    mode = _tz_state.get("mode")
+    if mode == "local":
+        try:
+            return naive.astimezone(_utc_tz.utc)
+        except (OSError, OverflowError, ValueError):
+            return naive.replace(tzinfo=_utc_tz.utc)     # before 1970 on Windows
+    if mode == "specific":
+        try:
+            from zoneinfo import ZoneInfo
+            return naive.replace(tzinfo=ZoneInfo(_tz_state["specific"])).astimezone(_utc_tz.utc)
+        except Exception:
+            return naive.replace(tzinfo=_utc_tz.utc)
+    if mode == "custom":
+        return (naive - _tdl(minutes=_tz_state.get("custom_offset_min", 0))).replace(tzinfo=_utc_tz.utc)
+    return naive.replace(tzinfo=_utc_tz.utc)
+
+
 def utc_to_display_naive(dt):
     """The display-zone wall time (naive) of aware UTC datetime *dt* -- the
     inverse of the boundary conversion in set_advanced_filter, for putting a

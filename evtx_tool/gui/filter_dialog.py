@@ -949,6 +949,23 @@ class FilterDialog(QDialog):
         if not path:
             return
         cfg = self.get_filter_config()
+        # The bounds above are display-zone wall time.  Also write the UTC
+        # instants they mean, for a full date+time range or a specific day:
+        # the CLI reads a preset in UTC and was hours off, and a reload under
+        # another display zone showed a different instant (Gemini 4-05).
+        _range = (cfg.get("specific_day_enabled")
+                  or (cfg.get("date_enabled") and cfg.get("time_enabled")
+                      and not cfg.get("separately_enabled")))
+        if _range:
+            from datetime import datetime as _dtp
+            from evtx_tool.gui.models import display_naive_to_utc
+            for _k in ("date_from", "date_to"):
+                if cfg.get(_k):
+                    try:
+                        _u = display_naive_to_utc(_dtp.strptime(cfg[_k][:19], "%Y-%m-%d %H:%M:%S"))
+                        cfg[_k + "_utc"] = _u.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    except ValueError:
+                        pass
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -1144,9 +1161,14 @@ class FilterDialog(QDialog):
         to the display zone and switched on as a date+time range; a missing
         side stays open.  Returns False for the dialog's own format."""
         df, dt_ = cfg.get("date_from"), cfg.get("date_to")
-        if not any(isinstance(x, str) and "T" in x for x in (df, dt_)):
+        _has_utc = bool(cfg.get("date_from_utc") or cfg.get("date_to_utc"))
+        if _has_utc:
+            # A preset saved by this dialog with its UTC instants: show them in
+            # the zone in force NOW, not the saved wall time (Gemini 4-05).
+            df, dt_ = cfg.get("date_from_utc"), cfg.get("date_to_utc")
+        elif not any(isinstance(x, str) and "T" in x for x in (df, dt_)):
             return False
-        if cfg.get("date_enabled") or cfg.get("time_enabled") or cfg.get("specific_day_enabled"):
+        elif cfg.get("date_enabled") or cfg.get("time_enabled") or cfg.get("specific_day_enabled"):
             return False
         from datetime import datetime as _dt, timezone as _tzu
         from evtx_tool.gui.models import utc_to_display_naive
