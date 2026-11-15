@@ -17844,7 +17844,10 @@ class MainWindow(QMainWindow):
             top.addChild(ev_item)
 
     def _on_chain_double_click(self, item: QTreeWidgetItem, col: int) -> None:
-        """Filter the events table to show only events matching the chain's event IDs."""
+        """Open the chain's events in a tab, as "View Chain Events in New Tab".
+
+        It built a list of event IDs and did nothing with it: double-clicking
+        a chain had no effect (Gemini audit 14-02 / 5-12 / 7-15)."""
         chain_wrap = item.data(0, Qt.ItemDataRole.UserRole)
         chain = chain_wrap.data if hasattr(chain_wrap, 'data') else None
         if not chain:
@@ -17852,18 +17855,9 @@ class MainWindow(QMainWindow):
             if item:
                 chain_wrap = item.data(0, Qt.ItemDataRole.UserRole)
                 chain = chain_wrap.data if hasattr(chain_wrap, 'data') else None
-        if not chain:
+        if not chain or item is None:
             return
-        raw_evs = chain.get("events") or []
-        if raw_evs:
-            # events are full dicts — extract unique event_id values
-            seen_ids: list[str] = []
-            for e in raw_evs[:20]:
-                eid = str(e.get("event_id", "")) if isinstance(e, dict) else str(e)
-                if eid and eid not in seen_ids:
-                    seen_ids.append(eid)
-                if len(seen_ids) >= 5:
-                    break
+        self._open_chain_events_tab([item])
 
     def _on_chains_context_menu(self, pos) -> None:
         """Right-click menu on the correlation chains tree."""
