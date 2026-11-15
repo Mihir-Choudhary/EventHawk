@@ -34,7 +34,8 @@ SPAWN = {"NewProcessName": r"C:\Windows\System32\powershell.exe",
 def _ev(rid, eid, ts, computer="HOST1", user="alice", **ed):
     return {"record_id": rid, "event_id": eid, "timestamp": ts,
             "channel": "Security", "computer": computer, "user_id": user,
-            "provider": "p", "source_file": "s.evtx",
+            # A 4104 is a PowerShell script block only from PowerShell (7-13).
+            "provider": "Microsoft-Windows-PowerShell" if eid == 4104 else "p", "source_file": "s.evtx",
             "event_data": dict(ed, TargetUserName=user, SubjectUserName=user)}
 
 

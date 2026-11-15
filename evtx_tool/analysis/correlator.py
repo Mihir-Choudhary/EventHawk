@@ -871,8 +871,10 @@ def _rule_pass_the_hash(idx: _EventIndex) -> list[dict]:
         # Only flag when the field is explicitly "0"; skip events where the
         # parser did not extract it to avoid FP from incomplete parses.
         key_len = str(ed.get("KeyLength", "")).strip()
-        if key_len and key_len != "0":
-            continue  # non-zero → real session key negotiated, not PTH
+        if key_len != "0":
+            # Non-zero: a session key was negotiated.  Blank: the log does not
+            # say -- the chain claimed "KeyLength=0" for it (Gemini audit 7-13).
+            continue
 
         # ── LmPackageName must confirm NTLM (not Negotiate falling back) ─────
         # When present, must contain "ntlm" (e.g. "NTLM V2", "NTLM V1").
@@ -1133,8 +1135,9 @@ def _rule_ps_exec_chain(idx: _EventIndex) -> list[dict]:
         ed = pe.get("event_data", {}) or {}
         new_proc = (ed.get("NewProcessName") or "").lower()
         parent   = (ed.get("ParentProcessName") or "").lower()
-        if "powershell" not in new_proc and "cmd" not in new_proc:
-            continue
+        _np_base = new_proc.replace("/", "\\").rsplit("\\", 1)[-1]
+        if not ("powershell" in _np_base or _np_base == "pwsh.exe" or "cmd" in _np_base):
+            continue      # pwsh.exe is PowerShell 7 (Gemini audit 7-13)
         # Processes that should never legitimately spawn cmd/PowerShell.
         # "explorer" is intentionally excluded: a user clicking a .ps1 file in
         # Windows Explorer spawns PowerShell with explorer as parent — this is
@@ -1159,6 +1162,9 @@ def _rule_ps_exec_chain(idx: _EventIndex) -> list[dict]:
             # inventing a causal link the log does not support.
             if _ts_delta(pe_ts, b.get("timestamp", "")) <= 60
             and _ts_ge(b.get("timestamp", ""), pe_ts)
+            # A PowerShell script block, not any provider's event ID 4104
+            # (Gemini audit 7-13); a 4104 with no provider is kept.
+            and (not b.get("provider") or "powershell" in str(b.get("provider")).lower())
         ]
         if related_ps:
             chains.append(_chain(
@@ -1362,7 +1368,10 @@ def _rule_multi_host_lateral_movement(idx: _EventIndex, session_idx: _LogonSessi
                 else:
                     break
 
-            distinct_computers = {ev.get("computer", "") for ev in window}
+            # One host however it is written: "HOST-01", "host-01" and
+            # "HOST-01.corp.example" were three computers (Gemini audit 7-13).
+            distinct_computers = {str(ev.get("computer", "") or "").strip().lower().split(".")[0]
+                                  for ev in window}
             distinct_computers.discard("")
 
             if len(distinct_computers) >= _MIN_HOSTS:
