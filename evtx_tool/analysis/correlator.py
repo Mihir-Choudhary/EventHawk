@@ -43,12 +43,12 @@ logger = logging.getLogger(__name__)
 def _ts(ts_str: str) -> datetime | None:
     if not ts_str:
         return None
-    # Both "YYYY-MM-DDTHH:MM:SS" and Juggernaut's stored "YYYY-MM-DD HH:MM:SS".
-    s = ts_str.rstrip("Z").split(".")[0][:19].replace(" ", "T", 1)
-    try:
-        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
+    # Both "YYYY-MM-DDTHH:MM:SS.ffffffZ" and Juggernaut's "YYYY-MM-DD HH:MM:SS",
+    # with the fraction and any UTC offset: cutting them off made two events
+    # in one second equal (an effect "at" its cause) and an offset hours off
+    # (Gemini audit 7-04).  Same parser as the Around window.
+    from evtx_tool.core.time_window import parse_event_ts
+    return parse_event_ts(ts_str)
 
 
 def _ts_delta(a: str, b: str) -> float:
