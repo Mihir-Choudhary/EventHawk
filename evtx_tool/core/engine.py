@@ -589,7 +589,13 @@ class ProcessingEngine:
                                                   benign=True)
                         self._mem_pause_count = 0  # reset for next file
 
-                # CPU throttling: reduce workers temporarily
+                # CPU throttling: fewer files in flight, never cancelled work.
+                # It used to shut the pool down with cancel_futures=True and
+                # start a smaller one, cancelling files already submitted;
+                # restoring the count did not rebuild the pool, so the next
+                # spike cancelled again: files lost, or the parse hung on
+                # as_completed (Gemini audit 1-01).  The pool now stays as it
+                # is and submissions wait while `workers` files are running.
                 if self._monitor.is_throttling():
                     reduced = max(1, workers // 2)
                     if reduced < workers:
@@ -599,25 +605,21 @@ class ProcessingEngine:
                             f"CPU > {self._monitor._cpu_limit:.0f}% — throttled to {reduced} workers",
                             benign=True
                         )
-                        # Recreate executor with fewer workers (non-blocking to avoid hangs)
-                        try:
-                            executor.shutdown(wait=False, cancel_futures=True)
-                        except Exception:
-                            pass
                         workers = reduced
-                        executor = _make_executor(workers)
-                        # Re-adjust semaphore for new worker count
-                        for _ in range(workers * self.MAX_QUEUE_DEPTH_FACTOR):
-                            try:
-                                semaphore.release()
-                            except ValueError:
-                                break
-                        semaphore.acquire(timeout=0)  # re-consume the one we had
-                else:
-                    # Restore full worker count if throttle cleared
-                    if workers < self.max_workers and not self._monitor.is_throttling():
-                        self.state.update(phase="running", is_throttling=False)
-                        workers = self.max_workers
+                elif workers < self.max_workers:
+                    # Throttle cleared: back to full speed
+                    self.state.update(phase="running", is_throttling=False)
+                    workers = self.max_workers
+                if workers < self.max_workers:
+                    while not self._stop_event.is_set():
+                        with active_lock:
+                            in_flight = len(active_futures)
+                        if in_flight < workers:
+                            break
+                        time.sleep(0.1)
+                    if self._stop_event.is_set():
+                        semaphore.release()
+                        break
 
                 try:
                     fut = _submit_file(executor, filepath)
