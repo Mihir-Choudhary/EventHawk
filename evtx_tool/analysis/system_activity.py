@@ -207,7 +207,7 @@ def build(events) -> dict:
         power = _power_rows(host, evs)
         screen = _screen_rows(host, power)
         _flag_conflicts(sorted(screen, key=_order))
-        mine = power + screen + _lock_rows(host)
+        mine = power + screen + _lock_rows(host, HostPower(evs).restarts.get(host_key(host.name), []))
         _clock_checks(host, mine)
         rows.extend(mine)
         points.extend(_points(host))
@@ -615,30 +615,88 @@ def _screen_rows(host, power):
 
 # ── lock / screen saver (Security) ───────────────────────────────────────────
 
-def _lock_rows(host):
+def _lock_rows(host, restarts=()):
+    """Locked (4800 -> 4801) and Screen saver (4802 -> 4803) periods, per logon.
+
+    Gemini audit 8-04: a lock is never paired across a restart of its host
+    (a 4800 before a shutdown and a 4801 after the restart read 15 hours
+    "Locked" while the host was off); an unlock logon (4624 LogonType 7) of
+    the locking user ends a lock when no 4801 is logged (4801 preferred when
+    both are); the user is the locking event's, not the closing one's.
+    """
+    bars = [((r.get("shutdown") or r["boot"])[0], r["boot"][1], r) for r in restarts]
+
+    def _restart(a, b):
+        """The first restart reaching into (a, b); b None: any after a."""
+        for lo, hi, r in bars:
+            if hi > a and (b is None or lo < b):
+                return r
+        return None
+
+    def _user(ev):
+        return str(_data(ev).get("TargetUserName") or "")
+
+    def _rnote(r, finish):
+        lbl = r["boot"][2]
+        if r.get("shutdown"):
+            lbl = f"{r['shutdown'][2]}, then {lbl}"
+        return f"the host restarted ({lbl}) before a {finish} was logged"
+
     out = []
     for begin, finish, state in ((4800, 4801, "Locked"), (4802, 4803, "Screen saver")):
-        open_: dict = {}
+        open_: dict = {}          # lid -> [start t, start ev, (t, ev) of an unlock logon]
+
+        def _unended(pt, pe, why):
+            u = _user(pe)
+            r = _restart(pt, None)
+            out.append(_row(host, "Lock", state, pt, None, f"Security {begin}", "Unavailable", pe, None,
+                            [f"user {u}" if u else "", why, _rnote(r, finish) if r else ""]))
+
+        def _end(pt, pe, t, e, ended_by, notes=()):
+            u = _user(pe)
+            out.append(_row(host, "Lock", state, pt, t, f"Security {begin}", ended_by, pe, e,
+                            [f"user {u}" if u else "", *notes]))
+
+        def _settle(pt, pe, cand, why):
+            if cand is not None:
+                _end(pt, pe, cand[0], cand[1], "Security 4624 (unlock logon, type 7)",
+                     [f"no {finish} logged; ended by the user's unlock logon"])
+            else:
+                _unended(pt, pe, why)
+
         for t, e in host.events:
             if str(e.get("channel") or "").lower() != "security":
                 continue
             eid = _int(e.get("event_id"))
-            lid = str(_data(e).get("TargetLogonId") or _data(e).get("SessionId") or "")
-            user = str(_data(e).get("TargetUserName") or "")
+            d = _data(e)
+            lid = str(d.get("TargetLogonId") or d.get("SessionId") or "")
             if eid == begin:
                 if lid in open_:
-                    pt, pe = open_.pop(lid)
-                    out.append(_row(host, "Lock", state, pt, None, f"Security {begin}", "Unavailable", pe, None,
-                                    [f"user {user}" if user else "", f"no {finish} logged before the next {begin}"]))
-                open_[lid] = (t, e)
+                    pt, pe, cand = open_.pop(lid)
+                    _settle(pt, pe, cand, f"no {finish} logged before the next {begin}")
+                open_[lid] = [t, e, None]
             elif eid == finish and lid in open_:
-                pt, pe = open_.pop(lid)
-                out.append(_row(host, "Lock", state, pt, t, f"Security {begin}", f"Security {finish}", pe, e,
-                                [f"user {user}" if user else ""]))
-        for pt, pe in open_.values():
-            u = str(_data(pe).get("TargetUserName") or "")
-            out.append(_row(host, "Lock", state, pt, None, f"Security {begin}", "Unavailable", pe, None,
-                            [f"user {u}" if u else "", f"no {finish} logged"]))
+                pt, pe, cand = open_.pop(lid)
+                r = _restart(pt, t)
+                if r is not None:
+                    # Not this lock's end: the host went down in between.
+                    _settle(pt, pe, cand, "")
+                else:
+                    _end(pt, pe, t, e, f"Security {finish}")
+            elif (begin == 4800 and eid == 4624 and str(d.get("LogonType", "")).strip() == "7"
+                  and _user(e)):
+                who = _user(e).casefold()
+                dom = str(d.get("TargetDomainName") or "").casefold()
+                mine = [k for k, (pt, pe, cand) in open_.items()
+                        if cand is None and pt <= t and _user(pe).casefold() == who
+                        and (not dom or not str(_data(pe).get("TargetDomainName") or "")
+                             or str(_data(pe).get("TargetDomainName")).casefold() == dom)
+                        and _restart(pt, t) is None]
+                if mine:
+                    k = max(mine, key=lambda k: open_[k][0])     # the latest lock
+                    open_[k][2] = (t, e)
+        for pt, pe, cand in open_.values():
+            _settle(pt, pe, cand, f"no {finish} logged")
     return out
 
 
