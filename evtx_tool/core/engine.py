@@ -460,7 +460,9 @@ class ProcessingEngine:
         if not files:
             return []
 
-        self._stop_event.clear()
+        # Do NOT clear _stop_event here: a stop() that came before run() must
+        # be honoured (Gemini audit 1-02).  It is cleared when run() ends, so
+        # the engine can be run again.
         self._all_events.clear()
 
         self.state.update(
@@ -482,6 +484,7 @@ class ProcessingEngine:
             self._run_pool(files, filter_config, start_time)
         finally:
             self._monitor.stop()
+            self._stop_event.clear()
             elapsed = time.monotonic() - start_time
             matched = len(self._all_events)
             eps = matched / elapsed if elapsed > 0 else 0.0

@@ -98,6 +98,10 @@ class ParseWorker(QThread):
                 self.progress.emit(state.snapshot() if hasattr(state, "snapshot") else state)
 
         engine._on_progress = _on_progress
+        if self._stop_event.is_set():
+            # STOP arrived before the engine existed: hand it on, so run()
+            # parses nothing (Gemini audit 1-02).
+            engine.stop()
 
         # ── 1. Parse ──────────────────────────────────────────────────────────
         events: list[dict] = engine.run(self._files, self._filter_config)
@@ -118,8 +122,15 @@ class ParseWorker(QThread):
             self.parse_errors = []
 
         if self._stop_event.is_set():
-            self.finished.emit(events, None, False, False, [])
-            return
+            # A stopped parse is PART of the evidence.  Say so, loudly (not a
+            # benign warning), and still sort and index what was read below,
+            # so the table never shows an unsorted, unsearchable partial set
+            # (Gemini audit 1-02 / 12-01).
+            _st = engine.state
+            self.parse_warnings.append(
+                f"Parse stopped by the user: {_st.done_files} of {_st.total_files} "
+                f"file(s) were read ({_st.failed_files} failed). The loaded events are "
+                f"incomplete: files not read are missing.")
 
         # ── Hard engine failure → surface it, don't emit an empty result ─────
         # The engine reports a fatal condition (e.g. "ProcessPool permanently
@@ -163,7 +174,7 @@ class ParseWorker(QThread):
         # adds attack_tags to each event AND builds the summary dict, replacing
         # the old two-call pattern (enrich_with_attack + build_attack_summary).
         attack_summary = None
-        if self._do_attack and not self._stop_event.is_set():
+        if self._do_attack:
             try:
                 from evtx_tool.analysis.attack_mapping import enrich_and_summarize
                 attack_summary = enrich_and_summarize(events)
@@ -174,7 +185,7 @@ class ParseWorker(QThread):
         # Translates raw hex/int codes to human-readable descriptions.
         # Runs AFTER ATT&CK so correlation rules see the same raw values they
         # were written against.  Adds only new *_desc keys — never mutates raw.
-        if events and not self._stop_event.is_set():
+        if events:
             try:
                 from evtx_tool.analysis.normalizer import SemanticNormalizer
                 SemanticNormalizer.get().enrich_events(events)
@@ -185,7 +196,7 @@ class ParseWorker(QThread):
         # Perf: building 400K search strings takes ~5s. Doing it here keeps
         # the GUI responsive. The cache is passed to set_events().
         search_cache: list[str] = []
-        if events and not self._stop_event.is_set():
+        if events:
             from evtx_tool.gui.models import EventTableModel
             # Interned here, in this thread: set_events then skips its own
             # pass (~2 s of frozen window on 460k events).
@@ -204,10 +215,7 @@ class ParseWorker(QThread):
         """Signal the worker to abort as soon as possible."""
         self._stop_event.set()
         if self._engine is not None:
-            try:
-                self._engine.stop_event.set()
-            except AttributeError:
-                pass
+            self._engine.stop()
 
 
 class AnalysisWorker(QThread):
