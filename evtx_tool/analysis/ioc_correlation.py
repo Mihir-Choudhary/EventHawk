@@ -58,8 +58,16 @@ def correlate_iocs(iocs: dict) -> dict:
             if not isinstance(computers, list):
                 computers = []
 
-            # Build context set: pairs of (user, computer)
-            # If one list is empty, use a placeholder
+            # Context = the events the value was seen in, when known: two
+            # values co-occur when they share an event.  Pairing every user
+            # with every computer of an IOC invented (user, host) contexts it
+            # was never seen in, and linked IOCs that never shared an event
+            # (Gemini audit 7-16).  The old contexts remain for entries with
+            # no record keys (data from elsewhere).
+            rkeys = entry.get("record_keys")
+            if isinstance(rkeys, list) and rkeys:
+                flat.append((ioc_type, value, frozenset(tuple(k) for k in rkeys)))
+                continue
             ctx_pairs: set[tuple[str, str]] = set()
             if users and computers:
                 for u in users:
