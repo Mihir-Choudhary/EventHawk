@@ -1309,6 +1309,11 @@ class FilterDialog(QDialog):
 
         errors: list[str] = []
 
+        # ── Event Types: none ticked would read as "all" (levels == []) and
+        # show every event (Gemini audit 3-05).
+        if not any(c.isChecked() for c in self._level_checks.values()):
+            errors.append("Event Types: tick at least one type (none ticked would match every event).")
+
         # ── Event ID expression ───────────────────────────────────────────
         eid_expr = self._inp_event_ids.text().strip()
         if eid_expr:
@@ -1317,7 +1322,7 @@ class FilterDialog(QDialog):
                 tokens = ", ".join(repr(t) for t in invalid)
                 errors.append(
                     f"Event ID(s): invalid token(s) — {tokens}.\n"
-                    f"Use integers, ranges, and commas (e.g. 1-19,100,250-450 "
+                    f"Use integers, low-to-high ranges, and commas (e.g. 1-19,100,250-450 "
                     f"or with excludes: 1-19,100!10,255)."
                 )
 

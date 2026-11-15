@@ -149,9 +149,17 @@ def _build_filter(
             if "-" in spec and spec.count("-") == 1 and not spec.startswith("-"):
                 lo, hi = spec.split("-", 1)
                 try:
-                    ids.extend(range(int(lo), int(hi) + 1))
+                    lo_i, hi_i = int(lo), int(hi)
                 except ValueError:
-                    pass
+                    raise click.BadParameter(f"'{spec}' is not a range of Event IDs",
+                                             param_hint="--event-id")
+                if hi_i < lo_i:
+                    # An empty range left no Event ID restriction at all:
+                    # every event matched (Gemini audit 3-04).
+                    raise click.BadParameter(
+                        f"'{spec}' is written high-to-low; did you mean {hi_i}-{lo_i}?",
+                        param_hint="--event-id")
+                ids.extend(range(lo_i, hi_i + 1))
             elif spec.isdigit():
                 ids.append(int(spec))
             elif spec:
@@ -168,9 +176,15 @@ def _build_filter(
             if "-" in spec:
                 lo, hi = spec.split("-", 1)
                 try:
-                    excl.extend(range(int(lo), int(hi) + 1))
+                    lo_i, hi_i = int(lo), int(hi)
                 except ValueError:
                     click.echo(f"Warning: unrecognised event-ID spec '{spec}' — skipped", err=True)
+                    continue
+                if hi_i < lo_i:
+                    raise click.BadParameter(
+                        f"'{spec}' is written high-to-low; did you mean {hi_i}-{lo_i}?",
+                        param_hint="--exclude-id")
+                excl.extend(range(lo_i, hi_i + 1))
             elif spec.isdigit():
                 excl.append(int(spec))
             elif spec:

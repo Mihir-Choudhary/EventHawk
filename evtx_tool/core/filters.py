@@ -22,12 +22,15 @@ Filter fields:
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Callable
 
 from evtx_tool.core._json_compat import fast_loads, fast_dumps
+
+logger = logging.getLogger(__name__)
 
 
 # ── Values-only searchable-text extraction ────────────────────────────────────
@@ -145,7 +148,16 @@ def parse_event_id_expression(expr: str) -> tuple[set[int], set[int]]:
             if "-" in token:
                 try:
                     lo, hi = token.split("-", 1)
-                    ids.update(range(int(lo.strip()), int(hi.strip()) + 1))
+                    lo_i, hi_i = int(lo.strip()), int(hi.strip())
+                    if hi_i < lo_i:
+                        # "4630-4624" names the range 4624..4630.  Left empty it
+                        # meant "no Event ID restriction": every event matched
+                        # (Gemini audit 3-04).  The dialog rejects it; a saved
+                        # filter or profile is read as the range it names.
+                        logger.warning("Event ID range %r is written high-to-low; "
+                                       "reading it as %d-%d", token, hi_i, lo_i)
+                        lo_i, hi_i = hi_i, lo_i
+                    ids.update(range(lo_i, hi_i + 1))
                 except (ValueError, TypeError):
                     pass
             else:
@@ -208,8 +220,8 @@ def validate_event_id_expression(expr: str) -> list[str]:
             if "-" in token:
                 lo, _, hi = token.partition("-")
                 try:
-                    int(lo.strip())
-                    int(hi.strip())
+                    if int(hi.strip()) < int(lo.strip()):
+                        invalid.append(token)     # high-to-low (Gemini 3-04)
                 except (ValueError, TypeError):
                     invalid.append(token)
             else:
