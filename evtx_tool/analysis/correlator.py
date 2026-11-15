@@ -402,26 +402,50 @@ def _rule_guid_process_tree(idx: _EventIndex, guid_idx: _GuidIndex) -> list[dict
                 stack.append(iter(guid_idx.children.get(cg, [])))
         return result
 
-    for guid, root_ev in guid_idx.guid_to_event.items():
+    def _parent_base(c: dict) -> str:
+        """The parent's image name: its own EID 1 when logged, else the
+        ParentImage the child event carries (Sysmon records it)."""
+        ed = c.get("event_data") or {}
+        pg = str(ed.get("ParentProcessGuid") or "").strip().lower()
+        pev = guid_idx.guid_to_event.get(pg)
+        if pev is not None:
+            return _base(pev)
+        return os.path.basename(str(ed.get("ParentImage") or "").lower())
+
+    # Roots: every logged process, AND every parent GUID that has children but
+    # no EID 1 of its own -- a process started before the log (a long-running
+    # Office app or browser).  Only logged ones were visited, so their spawns
+    # made no chain (Gemini audit 7-10).
+    _roots = list(guid_idx.guid_to_event.items())
+    _roots += [(pg, None) for pg in guid_idx.children if pg not in guid_idx.guid_to_event]
+
+    for guid, root_ev in _roots:
         if guid in emitted or not guid_idx.children.get(guid):
             continue
+        if root_ev is None and all(
+                str((c.get("event_data") or {}).get("ProcessGuid") or "").strip().lower() in emitted
+                for c in guid_idx.children[guid]):
+            continue        # an unlogged parent whose trees were already reported
 
-        root_base = _base(root_ev)
         children  = _walk(guid)
         if not children:
             continue
+        root_base = _base(root_ev) if root_ev is not None else _parent_base(guid_idx.children[guid][0])
 
         severity: str | None = None
         desc:     str | None = None
 
         # ── Pattern 1: office/browser → shell (critical) ──────────────────────
-        bad_spawn = _SUSPICIOUS_SPAWN.get(root_base, frozenset())
-        bad_kids  = [c for c in children if _base(c) in bad_spawn]
-        if bad_kids:
+        # Any parent -> child pair in the tree, not only the root's: a
+        # WINWORD -> powershell under an explorer that also started certutil
+        # was reported as only "high" (Gemini audit 7-03).
+        bad_pairs = [(_parent_base(c), c) for c in children
+                     if _base(c) in _SUSPICIOUS_SPAWN.get(_parent_base(c), frozenset())]
+        if bad_pairs:
             severity = "critical"
             desc = (
-                f"Suspicious process spawned by {root_base}: "
-                + ", ".join(sorted({_base(c) for c in bad_kids}))
+                "Suspicious process spawned: "
+                + ", ".join(sorted({f"{pb} -> {_base(c)}" for pb, c in bad_pairs}))
                 + " — common phishing/macro dropper pattern"
             )
 
@@ -453,7 +477,7 @@ def _rule_guid_process_tree(idx: _EventIndex, guid_idx: _GuidIndex) -> list[dict
             tactic      = "Execution",
             severity    = severity,
             description = desc,
-            events      = [root_ev] + children,
+            events      = ([root_ev] if root_ev is not None else []) + children,
         ))
         # Mark root AND all descendant GUIDs so intermediate nodes that are
         # also roots (have their own children) don't spawn duplicate sub-chains.
