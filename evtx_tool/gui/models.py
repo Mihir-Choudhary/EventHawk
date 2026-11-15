@@ -1019,7 +1019,7 @@ class EventTableModel(QAbstractTableModel):
         if n > 0:
             self.dataChanged.emit(
                 self.index(0, 0),
-                self.index(n - 1, len(COLUMNS) - 1),
+                self.index(n - 1, self.columnCount() - 1),   # custom columns too (Gemini 5-11)
             )
 
 
