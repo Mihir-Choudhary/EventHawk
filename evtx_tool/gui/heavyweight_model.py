@@ -1607,9 +1607,9 @@ class ArrowTableModel(QAbstractTableModel):
         record_id   = _col("record_id")
         source_file = _col("source_file") or ""
         ts_raw      = _col("timestamp_utc") or ""
-        event_data_json = self._load_event_data(record_id, source_file)
+        event_data_json, extra = self._load_event_data_and_extra(record_id, source_file)
 
-        return {
+        ev = {
             "record_id":      record_id,
             "event_record_id": _col("event_record_id"),
             "event_id":       _col("event_id"),
@@ -1629,17 +1629,35 @@ class ArrowTableModel(QAbstractTableModel):
             "correlation_id": _col("correlation_id") or "",
             "event_data":     json.loads(event_data_json) if event_data_json else {},
             "_heavyweight":   True,
+            # Stored in the shards; Normal mode's detail shows them too (Gemini 2-04).
+            "event_source_name": (_col("event_source_name") if "event_source_name" in t.column_names
+                                  else extra.get("event_source_name")) or "",
+            "provider_guid":  extra.get("provider_guid") or "",
+            "qualifiers":     extra.get("qualifiers"),
+            "version":        extra.get("version") if extra.get("version") is not None else 0,
         }
+        # The same *_desc decodings Normal mode adds at parse time.
+        try:
+            from evtx_tool.analysis.normalizer import SemanticNormalizer
+            SemanticNormalizer.get().enrich(ev)
+        except Exception:
+            logger.warning("Semantic normalization failed for the detail view", exc_info=True)
+        return ev
 
     def _load_event_data(self, record_id: int | None, source_file: str = "") -> str:
-        """Lazy-load event_data_json for one (source_file, record_id) from Parquet.
+        """event_data_json for one (source_file, record_id) (see below)."""
+        return self._load_event_data_and_extra(record_id, source_file)[0]
+
+    def _load_event_data_and_extra(self, record_id: int | None, source_file: str = "") -> tuple:
+        """Lazy-load event_data_json (and provider_guid, qualifiers, version,
+        event_source_name) for one (source_file, record_id) from Parquet.
 
         source_file is required to avoid returning data from a different file that
         happens to share the same record_id (record_id is only unique per file).
         The cache key is (source_file, record_id) for the same reason.
         """
         if record_id is None:
-            return "{}"
+            return "{}", {}
 
         cache_key = (source_file, record_id)
 
@@ -1648,7 +1666,8 @@ class ArrowTableModel(QAbstractTableModel):
             self._event_data_cache.move_to_end(cache_key)
             return self._event_data_cache[cache_key]
 
-        val = "{}"
+        val = ("{}", {})
+        _extra_cols = ("provider_guid", "qualifiers", "version", "event_source_name")
         try:
             from evtx_tool.core.heavyweight.engine import _MANIFEST_FILENAME
             import json as _json
@@ -1662,22 +1681,23 @@ class ArrowTableModel(QAbstractTableModel):
             try:
                 if source_file:
                     row = con.execute(
-                        f"SELECT event_data_json FROM parquet_scan([{quoted}]) "
+                        f"SELECT event_data_json, {', '.join(_extra_cols)} FROM parquet_scan([{quoted}]) "
                         f"WHERE record_id = ? AND source_file = ?",
                         [record_id, source_file],
                     ).fetchone()
                 else:
                     row = con.execute(
-                        f"SELECT event_data_json FROM parquet_scan([{quoted}]) "
+                        f"SELECT event_data_json, {', '.join(_extra_cols)} FROM parquet_scan([{quoted}]) "
                         f"WHERE record_id = ?",
                         [record_id],
                     ).fetchone()
             finally:
                 con.close()
-            if row and row[0]:
-                val = row[0]
+            if row:
+                val = (row[0] or "{}", dict(zip(_extra_cols, row[1:])))
         except Exception as exc:
-            logger.debug("event_data lazy-load failed for record_id=%s source_file=%s: %s",
+            # The detail pane then shows no event data: say why in the log.
+            logger.warning("event_data lazy-load failed for record_id=%s source_file=%s: %s",
                          record_id, source_file, exc)
 
         # LRU eviction.
