@@ -17515,7 +17515,7 @@ class MainWindow(QMainWindow):
                 "Event ID", "Level", "Timestamp", "Computer",
                 "Channel", "User", "ATT&CK", "Source File",
             ]
-            with open(path, "w", newline="", encoding="utf-8") as f:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:   # BOM: Excel reads it as UTF-8 (Gemini 6-10)
                 writer = _safe_csv_writer(f)
                 writer.writerow(headers)
                 for ev in filtered:
@@ -17616,8 +17616,10 @@ class MainWindow(QMainWindow):
 
         # Determine format from extension + selected filter
         pl = path.lower()
-        is_stix  = pl.endswith(".json") and "STIX" in selected_filter
         is_misp  = pl.endswith(".json") and "MISP" in selected_filter
+        # A .json name is JSON: STIX unless MISP was chosen.  It got the plain
+        # text export when the filter was not one of the two (Gemini 6-10).
+        is_stix  = pl.endswith(".json") and not is_misp
         is_yara  = pl.endswith(".yar")
         is_bulk  = "Bulk" in selected_filter
         is_csv   = pl.endswith(".csv")
@@ -17668,7 +17670,7 @@ class MainWindow(QMainWindow):
                     ("Users", "users"), ("Computers", "computers"),
                 ]
                 count = 0
-                with open(path, "w", encoding="utf-8", newline="") as fh:
+                with open(path, "w", encoding="utf-8-sig", newline="") as fh:
                     writer = _safe_csv_writer(fh)
                     writer.writerow(["type", "value", "count", "first_seen",
                                      "last_seen", "score"])
@@ -20347,7 +20349,7 @@ class MainWindow(QMainWindow):
             ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
             fields = ["record_id", "event_id", "timestamp", "computer", "source_file"]
             if ext == "csv":
-                with open(path, "w", newline="", encoding="utf-8") as fh:
+                with open(path, "w", newline="", encoding="utf-8-sig") as fh:   # BOM: Excel reads it as UTF-8 (Gemini 6-10)
                     writer = _SafeDictWriter(fh, fieldnames=fields, extrasaction="ignore")
                     writer.writeheader()
                     writer.writerows(self._bookmarks)
