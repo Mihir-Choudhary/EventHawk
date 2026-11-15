@@ -362,7 +362,12 @@ def extract_iocs(events: list[dict], progress_fn: object = None) -> dict:
                 continue
             for part in val.replace(",", " ").split():
                 if "=" in part:
-                    part = part.split("=", 1)[1]
+                    algo, part = part.split("=", 1)
+                    # IMPHASH is a digest of the PE import table, not of the
+                    # file: as an "MD5" it became a false file-hash IOC
+                    # (Gemini audit 7-09).  Only file digests are kept.
+                    if algo.strip().lower() not in ("md5", "sha1", "sha256"):
+                        continue
                 found256 = _RE_SHA256.findall(part)
                 for h in found256:
                     _a(st_sha256, h.lower())
