@@ -8,6 +8,7 @@ after the worker emits its finished signal.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 
@@ -80,6 +81,7 @@ def _tz_offset_seconds() -> int:
     return 0
 
 
+@functools.lru_cache(maxsize=1)
 def _system_tz_name() -> "str | None":
     """Best-effort IANA name for the system timezone, e.g. "America/New_York".
 
@@ -128,11 +130,11 @@ def _system_tz_name() -> "str | None":
         import duckdb as _duckdb
         _con = _duckdb.connect()
         try:
-            try:
-                _con.execute("LOAD icu")
-            except Exception:
-                _con.execute("INSTALL icu")
-                _con.execute("LOAD icu")
+            # LOAD only.  "INSTALL icu" downloads the extension from the
+            # internet; an offline forensic tool must never do that on its
+            # own (Gemini audit 4-08).  Without ICU the fixed-offset fallback
+            # is used.
+            _con.execute("LOAD icu")
             _name = _con.execute(
                 "SELECT current_setting('TimeZone')").fetchone()[0]
         finally:
