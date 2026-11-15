@@ -26,8 +26,15 @@ def is_inbound_event(event, fields):
     eid = _eid(event)
     if "rdpclient" in channel:
         return False
+    provider = str(event.get("provider") or "").casefold()
     if "terminalservices" in channel:
+        # The channel's own provider only (Gemini audit 8-06): each
+        # TerminalServices channel is named after its provider.
+        if provider and provider != channel.split("/", 1)[0]:
+            return False
         return eid in LSM_IDS | RCM_IDS
+    if provider and provider != "microsoft-windows-security-auditing":
+        return False
     return channel == "security" and (
         eid in (4778, 4779) or
         (eid in (4624, 4634) and str(fields(event).get("LogonType", "")) == "10")

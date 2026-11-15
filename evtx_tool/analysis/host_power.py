@@ -63,13 +63,17 @@ _TRANSITION_SECS = 60.0
 _POWER_EIDS = frozenset({1, 12, 13, 41, 42, 109, 566, 1074, 1100, 4608, 4609, 6006, 6008})
 
 # The Juggernaut WHERE that loads exactly the events classify() can use.
+_SYS = "(channel IS NULL OR channel = '' OR lower(channel) = 'system')"
 POWER_SQL = (
-    "((event_id IN (12, 13) AND provider = 'Microsoft-Windows-Kernel-General')"
-    " OR (event_id IN (41, 42, 109, 566) AND provider = 'Microsoft-Windows-Kernel-Power')"
-    " OR (event_id = 1 AND provider = 'Microsoft-Windows-Power-Troubleshooter')"
-    " OR (event_id IN (6006, 6008) AND lower(provider) = 'eventlog')"
-    " OR (event_id = 1074 AND lower(provider) = 'user32')"
-    " OR (event_id IN (4608, 4609, 1100) AND lower(channel) = 'security'))"
+    f"((event_id IN (12, 13) AND provider = 'Microsoft-Windows-Kernel-General' AND {_SYS})"
+    f" OR (event_id IN (41, 42, 109, 566) AND provider = 'Microsoft-Windows-Kernel-Power' AND {_SYS})"
+    f" OR (event_id = 1 AND provider = 'Microsoft-Windows-Power-Troubleshooter' AND {_SYS})"
+    f" OR (event_id IN (6006, 6008) AND lower(provider) = 'eventlog' AND {_SYS})"
+    f" OR (event_id = 1074 AND lower(provider) = 'user32' AND {_SYS})"
+    " OR (event_id IN (4608, 4609) AND lower(channel) = 'security'"
+    "     AND (provider IS NULL OR provider = '' OR lower(provider) = 'microsoft-windows-security-auditing'))"
+    " OR (event_id = 1100 AND lower(channel) = 'security'"
+    "     AND (provider IS NULL OR provider = '' OR lower(provider) = 'microsoft-windows-eventlog')))"
 )
 
 _SHUTDOWN_RANK = {"Kernel-General 13": 5, "EventLog 6006": 4, "Security 1100": 3,
@@ -131,6 +135,13 @@ def classify(ev) -> "tuple | None":
         return None
     prov = str(ev.get("provider") or "").strip().lower()
     chan = str(ev.get("channel") or "").strip().lower()
+    # Each ID only from its own log (Gemini audit 8-06): the Security ones
+    # from Windows' auditing / log service, the others from the System log.
+    if eid in (4608, 4609, 1100):
+        if prov and prov != ("microsoft-windows-eventlog" if eid == 1100 else "microsoft-windows-security-auditing"):
+            return None
+    elif chan and chan != "system":
+        return None
     t = _dt(ev.get("timestamp") or ev.get("Timestamp"))
     if t is None:
         return None

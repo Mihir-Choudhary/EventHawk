@@ -35,7 +35,10 @@ def ev(eid, sec, sid="3", user="SYNTH\\alice", channel=LSM, **extra):
     data = {"SessionID": sid, "User": user, "Address": "192.0.2.5"}
     data.update(extra.pop("data", {}))
     result = dict(event_id=eid, timestamp=(BASE+timedelta(seconds=sec)).isoformat().replace("+00:00", "Z"),
-                  channel=channel, provider=channel.split("/")[0], computer="SYNTH-HOST",
+                  # Security's events come from Security-Auditing, as on the corpus
+                  # (Gemini audit 8-06: providers are checked now).
+                  channel=channel, provider=("Microsoft-Windows-Security-Auditing" if channel == "Security"
+                                             else channel.split("/")[0]), computer="SYNTH-HOST",
                   source_file="synthetic.evtx", record_id=sec*10+eid, event_data=data)
     result.update(extra)
     return result

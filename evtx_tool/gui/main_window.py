@@ -2750,11 +2750,16 @@ class _LogonSessionDialog(QDialog):
             t = _norm_ts(ev.get("timestamp", ""))
             return bool(t) and t > _norm_ts(off.get("timestamp", ""))
 
+        from evtx_tool.analysis.event_scope import in_scope as _in_scope, SECURITY_AUDITING as _SECA
         for ev in events:
             eid      = ev.get("event_id", 0)
             ed       = ev.get("event_data", {}) or {}
             computer = str(ev.get("computer", "") or "")
             boot_epoch = _boot_epoch.get(id(ev), 0)
+            # Security-Auditing's IDs only from it, in the Security log: an
+            # application writing 4624 elsewhere opened sessions (8-06).
+            if eid in (4624, 4634, 4647, 4672, 4688) and not _in_scope(ev, "security", (_SECA,)):
+                continue
 
             if eid == 4624:
                 lid = str(ed.get("TargetLogonId", "")).strip()
@@ -5224,6 +5229,9 @@ class _RemoteAssistanceDialog(QDialog):
             if _TS_CHAN in chan:
                 return None  # inbound events were handled before bucketing
             if _SEC_CHAN in chan:
+                from evtx_tool.analysis.event_scope import security_event as _sec_ev
+                if not _sec_ev(ev):
+                    return None          # not Windows' own auditing (8-06)
                 if eid == 4648:
                     # "A logon was attempted using explicit credentials" — the
                     # SOURCE side of an outbound RDP (logged when NLA is enabled

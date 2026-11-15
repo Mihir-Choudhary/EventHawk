@@ -70,13 +70,29 @@ PROVIDER_EIDS = {
     DP: (100, 200),
 }
 SECURITY_EIDS = (1100, 4608, 4609, 4616, 4800, 4801, 4802, 4803)
+# The log each provider writes these IDs to (checked on the corpus: each ID
+# in one channel).  Gemini audit 8-06: read from any channel or provider,
+# a third-party 4800 in Security or a Kernel-Power 42 elsewhere was read.
+_PROVIDER_CHANNEL = {DP: "microsoft-windows-diagnostics-performance/operational"}
+_SEC_PROVIDER = {1100: "microsoft-windows-eventlog"}       # else Security-Auditing
+
+
+def _sql_ch(ch):
+    return f"(channel IS NULL OR channel = '' OR lower(channel) = '{ch}')"
+
+
+_SEC_PROV_SQL = ("(provider IS NULL OR provider = '' OR (event_id = 1100 AND lower(provider) = "
+                 "'microsoft-windows-eventlog') OR (event_id <> 1100 AND lower(provider) = "
+                 "'microsoft-windows-security-auditing'))")
 
 # The Juggernaut WHERE for exactly the events relevant() accepts.
 ACTIVITY_SQL = "(" + " OR ".join(
-    [f"(lower(provider) = '{p}' AND event_id IN ({', '.join(map(str, ids))}))"
+    [f"(lower(provider) = '{p}' AND event_id IN ({', '.join(map(str, ids))}) "
+     f"AND {_sql_ch(_PROVIDER_CHANNEL.get(p, 'system'))})"
      for p, ids in PROVIDER_EIDS.items()]
-    + [f"(lower(channel) = 'security' AND event_id IN ({', '.join(map(str, SECURITY_EIDS))}))",
-       "(lower(channel) = 'security' AND event_id = 4624 AND ed_logon_type = '7')"]) + ")"
+    + [f"(lower(channel) = 'security' AND event_id IN ({', '.join(map(str, SECURITY_EIDS))}) "
+       f"AND {_SEC_PROV_SQL})",
+       f"(lower(channel) = 'security' AND event_id = 4624 AND ed_logon_type = '7' AND {_SEC_PROV_SQL})"]) + ")"
 
 # Codes as Windows renders them (Get-WinEvent on the test logs), else "code N".
 SLEEP_REASON = {0: "Button or Lid", 2: "Battery", 6: "Hibernate from Sleep - Fixed Timeout",
@@ -114,9 +130,13 @@ def _int(v, default=None):
 def relevant(ev) -> bool:
     """The Normal-mode twin of ACTIVITY_SQL."""
     eid = _int(ev.get("event_id"), -1)
-    if eid in PROVIDER_EIDS.get(_prov(ev), ()):
-        return True
-    if str(ev.get("channel") or "").strip().lower() == "security":
+    p = _prov(ev)
+    ch = str(ev.get("channel") or "").strip().lower()
+    if eid in PROVIDER_EIDS.get(p, ()):
+        return not ch or ch == _PROVIDER_CHANNEL.get(p, "system")
+    if ch == "security":
+        if p and p != _SEC_PROVIDER.get(eid, "microsoft-windows-security-auditing"):
+            return False
         if eid in SECURITY_EIDS:
             return True
         if eid == 4624:
