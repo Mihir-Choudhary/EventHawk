@@ -8512,9 +8512,10 @@ class _ExportScopeDialog(QDialog):
         """Returns 'view' | 'combined' | 'separate' | 'specific'."""
         return self._scope
 
-    def selected_files(self) -> set:
-        """Returns set of full file paths selected (only meaningful for 'specific')."""
-        return {fp for chk, fp in self._file_checks if chk.isChecked()}
+    def selected_files(self) -> list:
+        """The full paths ticked, in list order (only meaningful for 'specific').
+        A set gave a different file order on every run (Gemini audit 6-16)."""
+        return [fp for chk, fp in self._file_checks if chk.isChecked()]
 
     def specific_separate(self) -> bool:
         """'Specific files': True = one output per EVTX, False = one combined file."""
@@ -18563,6 +18564,11 @@ class MainWindow(QMainWindow):
                 data = _groups.get(fp)
                 if data:
                     export_events.extend(data["events"])
+            # One time line, as "All files combined" is: concatenating file by
+            # file left the files' events in blocks (Gemini audit 6-16).
+            from evtx_tool.core.time_window import ts_sort_key
+            export_events.sort(key=lambda e: (ts_sort_key(e.get("timestamp")), e.get("source_file") or "",
+                                              e.get("record_id") or 0))
             names = ", ".join(os.path.basename(fp) for fp in sorted(specific_files))
             export_label  = f"Selected Files ({len(specific_files)})"
             export_attack = self._derive_attack_summary(export_events)

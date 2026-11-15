@@ -166,7 +166,7 @@ def main() -> int:
           ticked(dlg) == {p for p in paths if p.endswith("Application.evtx")})
     dlg._inp_file_search.setText(""); app.processEvents()
     check("selected_files() returns exactly the ticked paths",
-          dlg.selected_files() == {p for p in paths if p.endswith("Application.evtx")})
+          set(dlg.selected_files()) == {p for p in paths if p.endswith("Application.evtx")})
     texts = [w.text() for w in dlg._files_box.findChildren(QPushButton)] + [dlg._lbl_file_count.text()]
     check("there is no separate 'highlighted' state left",
           not any("highlight" in t.lower() for t in texts) and not hasattr(dlg, "_hl_rows"), f"{texts}")

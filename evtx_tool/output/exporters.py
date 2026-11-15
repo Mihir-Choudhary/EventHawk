@@ -394,7 +394,7 @@ def _export_xml_lxml(events: list[dict], filepath: str) -> None:
             _v = ev.get(key)
             el.text = _xml_text("" if _v is None else _v)
         src_el = etree.SubElement(sys_el, "SourceFile")
-        src_el.text = _xml_text(os.path.basename(ev.get("source_file", "")))
+        src_el.text = _xml_text(ev.get("source_file") or "")   # full path, as CSV/JSON (Gemini 6-08)
         # Right after System, as the stdlib writer does, and for every event:
         # nested under "if ed:" it was lost for events with empty EventData
         # (Codex audit-5 E5-03).
@@ -484,7 +484,7 @@ def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
                               ("Task","task"),("Keywords","keywords"),("UserID","user_id")]:
                 _v = ev.get(key)   # 0 stays 0; a missing value is empty, never "None"
                 f.write(f"      <{tag}>{_esc('' if _v is None else _v)}</{tag}>\n")
-            f.write(f"      <SourceFile>{_esc(os.path.basename(ev.get('source_file','')))}</SourceFile>\n")
+            f.write(f"      <SourceFile>{_esc(ev.get('source_file') or '')}</SourceFile>\n")   # Gemini 6-08
             f.write("    </System>\n")
             _cc = ev.get("custom_columns")
             if _cc:
@@ -1206,9 +1206,13 @@ def export_html(
 
     suspicious_count = sum(1 for ev in events if ev.get("event_id", 0) in SUSPICIOUS_EVENT_IDS)
     ps_events        = sum(1 for ev in events if ev.get("event_id") == 4104)
-    chain_count      = len(chains) if chains else 0
-    ioc_count        = sum(v for k, v in (iocs or {}).get("summary", {}).items()
-                           if k != "summary" and isinstance(v, int))
+    # None = not analysed ("n/a"); an empty list/dict = analysed, none found.
+    # Showing 0 for "not run" read as "no chains / no IOCs" (Gemini 6-03), as
+    # the PDF already does.  IOCs are counted from the category lists, not a
+    # "summary" a caller may not supply (Gemini 6-18: the section vanished).
+    chain_count      = len(chains) if chains is not None else None
+    ioc_count        = (sum(len(v) for k_, v in iocs.items() if k_ != "summary" and isinstance(v, list))
+                        if iocs is not None else None)
 
     # ── Pre-pass: collect all tactics and tids for the tactic dropdown ────
     all_tactics: list[str] = []
@@ -1269,8 +1273,8 @@ def export_html(
             ("Suspicious Events",  f"{suspicious_count:,}"),
             ("Unique Event IDs",   f"{len(by_eid):,}"),
             ("Unique Computers",   f"{len(by_comp):,}"),
-            ("Attack Chains",      f"{chain_count:,}"),
-            ("IOCs Extracted",     f"{ioc_count:,}"),
+            ("Attack Chains",      f"{chain_count:,}" if chain_count is not None else "n/a"),
+            ("IOCs Extracted",     f"{ioc_count:,}" if ioc_count is not None else "n/a"),
             ("PS Script Events",   f"{ps_events:,}"),
         ]
         for label, num in stat_cards:
@@ -1348,7 +1352,7 @@ def export_html(
             f.write("</div>\n")
 
         # ── IOC Section ───────────────────────────────────────────────────
-        if iocs and ioc_count > 0:
+        if iocs and ioc_count:
             f.write("<div class='section' id='ioc-section'>\n")
             f.write(f"<h2>&#127756; IOC Summary "
                     f"<span style='color:#8b949e;font-size:0.85em;font-weight:normal'>"
