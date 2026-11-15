@@ -107,6 +107,13 @@ def iso_z(ts) -> str:
         s = s[:-1]
     elif s.endswith("+00:00"):
         s = s[:-6]
+    elif len(s) > 19 and s[-6] in "+-" and s[-3] == ":":
+        # Another offset: convert to UTC (Gemini audit 8-12: it was cut off,
+        # so 15:30+05:30 read as 15:30 UTC).
+        from evtx_tool.core.time_window import parse_event_ts
+        d = parse_event_ts(s)
+        if d is not None:
+            return d.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     base, _, frac = s.partition(".")
     return f"{base[:19]}.{(frac + '000000')[:6]}Z"
 

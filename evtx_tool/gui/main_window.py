@@ -5084,7 +5084,14 @@ class _RemoteAssistanceDialog(QDialog):
             1105,  # multi-transport disconnected
         })
 
+        from evtx_tool.core.time_window import parse_event_ts as _pets
+
         def _parse_ts(ts: str):
+            # Naive UTC.  Offsets are converted, and "+00:00" with no fraction
+            # parses (Gemini audit 8-12: "?" durations, +05:30 read as UTC).
+            d = _pets(ts)
+            if d is not None:
+                return d.replace(tzinfo=None)
             ts = str(ts or "").strip().rstrip("Z")
             for fmt in (
                 "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
