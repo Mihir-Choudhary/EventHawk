@@ -1371,13 +1371,13 @@ def build_combined_filter(base_filter: dict, profiles: list[dict]) -> dict:
         combined["profile_groups_also"] = also
     combined["profile_groups"] = groups
 
-    # Extended fields — only set if not already constrained by base filter
-    if all_computers:
-        combined.setdefault("computers", list(set(all_computers)))
-    if all_users:
-        combined.setdefault("users", list(set(all_users)))
-    if all_levels:
-        combined.setdefault("levels", list(set(all_levels)))
+    # Extended fields — only set if not already constrained by base filter.
+    # "Not constrained" is None (empty_filter) or [] (the Filter dialog), not
+    # only a missing key: setdefault() kept those, so every profile's
+    # computers / users / levels were silently dropped (Gemini audit 11-01).
+    for _key, _vals in (("computers", all_computers), ("users", all_users), ("levels", all_levels)):
+        if _vals and not combined.get(_key):
+            combined[_key] = list(dict.fromkeys(_vals))
     if all_conditions:
         existing = list(combined.get("conditions") or [])
         combined["conditions"] = existing + all_conditions
