@@ -189,12 +189,20 @@ class PickerDialog(QDialog):
         """Update filter and auto-select matching items (Excel-like behavior)."""
         self._proxy.setFilterFixedString(text)
         if not text:
-            # Search cleared — restore all items to checked
-            for row in range(self._model.rowCount()):
-                item = self._model.item(row, 0)
-                if item:
-                    item.setCheckState(Qt.CheckState.Checked)
+            # Search cleared: put back the ticks from before the search.  This
+            # ticked EVERY item, losing the analyst's selection (Gemini 3-12).
+            saved = getattr(self, "_ticks_before_search", None)
+            self._ticks_before_search = None
+            if saved is not None:
+                for row in range(self._model.rowCount()):
+                    item = self._model.item(row, 0)
+                    if item:
+                        item.setCheckState(saved.get(row, item.checkState()))
             return
+        if getattr(self, "_ticks_before_search", None) is None:
+            self._ticks_before_search = {
+                row: self._model.item(row, 0).checkState()
+                for row in range(self._model.rowCount()) if self._model.item(row, 0)}
         # Build set of source rows that are visible after filtering
         visible_source_rows = set()
         for proxy_row in range(self._proxy.rowCount()):

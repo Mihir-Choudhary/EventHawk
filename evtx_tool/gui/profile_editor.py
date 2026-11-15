@@ -276,13 +276,10 @@ class ProfileEditorDialog(QDialog):
             return [v.strip() for v in text.split(",") if v.strip()] if text.strip() else []
 
         def _split_int(text: str) -> list[int]:
-            result = []
-            for token in _split(text):
-                try:
-                    result.append(int(float(token)))
-                except ValueError:
-                    pass
-            return result
+            # Ranges and "!" exclusions, as the field's hint shows (Gemini
+            # 11-03); _on_save refuses what cannot be read.
+            from evtx_tool.core.filters import event_id_list_from_expression
+            return event_id_list_from_expression(text)[0]
 
         conditions = []
         for row in range(self._tbl_conditions.rowCount()):
@@ -336,8 +333,11 @@ class ProfileEditorDialog(QDialog):
 
         cmb = QComboBox()
         cmb.addItems(_OPERATORS)
-        if op_val in _OPERATORS:
-            cmb.setCurrentText(op_val)
+        if op_val and op_val not in _OPERATORS:
+            # Keep an operator this list lacks (from a file or a newer
+            # version) instead of turning it into "contains" (Gemini 3-12).
+            cmb.addItem(op_val)
+        cmb.setCurrentText(op_val)
         self._tbl_conditions.setCellWidget(row, 1, cmb)
 
         self._tbl_conditions.setItem(row, 2, QTableWidgetItem(val_val))
@@ -358,6 +358,13 @@ class ProfileEditorDialog(QDialog):
         p = self._get_profile_dict()
         if not p["name"]:
             QMessageBox.warning(self, "Validation Error", "Profile name is required.")
+            return
+        from evtx_tool.core.filters import event_id_list_from_expression
+        _ids, _errs = event_id_list_from_expression(self._inp_event_ids.text())
+        if _errs:
+            # Saving would drop them, and no Event IDs means EVERY Event ID.
+            QMessageBox.warning(self, "Validation Error",
+                                "Event IDs: " + "; ".join(_errs) + ".")
             return
 
         try:

@@ -214,6 +214,23 @@ def _eid_selected(eid, inc_ids, exc_ids) -> bool:
     return (eid in inc_ids if inc_ids else True) and eid not in exc_ids
 
 
+def event_id_list_from_expression(expr: str) -> "tuple[list[int], list[str]]":
+    """An Event ID expression ("4624-4630!4627") as the plain ID list a
+    profile stores, plus the problems that stop it being saved.
+
+    The Profile Editor and "profiles create" dropped anything that was not a
+    bare integer, and an empty list means EVERY Event ID (Gemini audit 11-03).
+    """
+    if not expr or not expr.strip():
+        return [], []
+    errors = [f"invalid Event ID token {t!r}" for t in validate_event_id_expression(expr)]
+    inc, exc = parse_event_id_expression(expr)
+    ids = sorted(inc - exc)
+    if not errors and not ids:
+        errors.append("the Event IDs exclude only ('!...'); a profile needs IDs to include")
+    return ids, errors
+
+
 def validate_event_id_expression(expr: str) -> list[str]:
     """Return the list of unparseable tokens in ``expr`` (empty when valid).
 

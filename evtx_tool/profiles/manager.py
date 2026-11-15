@@ -127,11 +127,18 @@ class ProfileManager:
         for e in profile["event_ids"]:
             if isinstance(e, (int, float)):
                 normalized_ids.append(int(e))
-            elif isinstance(e, str) and e.strip().rstrip(".0").isdigit():
+            elif isinstance(e, str):
+                # rstrip(".0") turned "0" into "" and dropped Event ID 0
+                # (Gemini audit 3-02).  A value that is not a whole number is
+                # logged, not dropped silently.
                 try:
-                    normalized_ids.append(int(float(e)))
-                except (ValueError, TypeError):
-                    pass
+                    f = float(e.strip())
+                    if not f.is_integer():
+                        raise ValueError(e)
+                    normalized_ids.append(int(f))
+                except (ValueError, TypeError, OverflowError):
+                    logger.warning("Profile %r: Event ID %r is not a number; ignored",
+                                   profile.get("name"), e)
         profile["event_ids"] = normalized_ids
 
         # Ensure optional fields

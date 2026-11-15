@@ -818,7 +818,11 @@ def profiles_show(name):
 def profiles_create(name, description, event_ids, sources, tags):
     """Create a new custom profile."""
     pm   = ProfileManager()
-    ids  = [int(x.strip()) for x in event_ids.split(",") if x.strip().isdigit()]
+    from evtx_tool.core.filters import event_id_list_from_expression
+    ids, errs = event_id_list_from_expression(event_ids)
+    if errs:
+        # A dropped token left [] -- every Event ID (Gemini audit 11-03).
+        raise click.BadParameter("; ".join(errs), param_hint="--event-ids")
     srcs = [s.strip() for s in sources.split(",") if s.strip()]
     tlst = [t.strip() for t in tags.split(",") if t.strip()]
     p    = pm.create({"name": name, "description": description,
