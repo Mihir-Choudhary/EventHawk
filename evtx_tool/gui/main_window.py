@@ -10783,8 +10783,10 @@ class MainWindow(QMainWindow):
         # ...and the applied profiles, as a Normal-mode tab does (a profile
         # ticked before Parse left later-opened JM tabs unfiltered: Codex
         # audit-5 E5-08).
-        if getattr(self, "_applied_profiles", None):
-            file_model.apply_filter(self._build_filter_config(base=None))
+        # And the active Advanced Filter: base=None dropped it, so a tab opened
+        # under "Filter Active" showed events it excludes (Gemini audit 3-11).
+        if getattr(self, "_applied_profiles", None) or self._adv_filter_cfg:
+            file_model.apply_filter(self._build_filter_config(base=self._adv_filter_cfg))
 
         file_view = self._create_configured_table(file_model)
         file_view.horizontalHeader().setSortIndicatorShown(False)
@@ -10942,8 +10944,8 @@ class MainWindow(QMainWindow):
         self._file_tabs[filepath] = state
         # A tab opened after Apply Profiles shows the same profiles as the rest
         # (it used to open unfiltered: Codex audit-3 P1).
-        if getattr(self, "_applied_profiles", None):
-            proxy.set_advanced_filter(self._build_filter_config(base=None))
+        if getattr(self, "_applied_profiles", None) or self._adv_filter_cfg:   # Gemini 3-11
+            proxy.set_advanced_filter(self._build_filter_config(base=self._adv_filter_cfg))
 
         # Bold the tree item
         self._update_tree_item_style(filepath, is_open=True)
