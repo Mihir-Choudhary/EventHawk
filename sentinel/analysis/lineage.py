@@ -64,6 +64,12 @@ class LineageTracker:
             # Process terminate — record exit time
             self._record_exit(ev)
             return None
+        if ev.event_id not in (4688, 1):
+            # Not a process creation (Sysmon 8 / 10, a logon ...): it must not
+            # register a process.  Sysmon 8 / 10 carry the TARGET image in
+            # parent_name, so registering them made lsass.exe the "parent" of
+            # the injector and of everything it started (Gemini audit 10-02).
+            return None
 
         # Process create — resolve parent, then register this process
         parent_name = self._resolve_parent(ev)

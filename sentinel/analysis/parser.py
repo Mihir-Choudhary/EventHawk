@@ -547,7 +547,8 @@ def _from_sysmon8(ts: datetime, host: str, eid: int, d: dict) -> RawEvent:
     tgt_path = d.get("TargetImage", "")
     return RawEvent(
         timestamp=ts, host=host, event_id=eid,
-        process_guid=d.get("SourceProcessGuid", ""),
+        # Sysmon 8 spells it SourceProcessGuid, Sysmon 10 SourceProcessGUID.
+        process_guid=d.get("SourceProcessGuid") or d.get("SourceProcessGUID", ""),
         pid=_int(d.get("SourceProcessId", "0")),
         ppid=0, parent_guid="",
         process_name=_basename(src_path),
@@ -570,7 +571,8 @@ def _from_sysmon10(ts: datetime, host: str, eid: int, d: dict) -> RawEvent:
     tgt_path = d.get("TargetImage", "")
     return RawEvent(
         timestamp=ts, host=host, event_id=eid,
-        process_guid=d.get("SourceProcessGuid", ""),
+        # Sysmon 8 spells it SourceProcessGuid, Sysmon 10 SourceProcessGUID.
+        process_guid=d.get("SourceProcessGuid") or d.get("SourceProcessGUID", ""),
         pid=_int(d.get("SourceProcessId", "0")),
         ppid=0, parent_guid="",
         process_name=_basename(src_path),
