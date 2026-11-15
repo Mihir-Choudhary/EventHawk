@@ -327,8 +327,13 @@ def field_catalog(ev: dict) -> list:
             continue
         out.append(("{" + name + "}", name, _render(v)))
     for i, (nm, v) in enumerate(data_items(ev.get("event_data")), 1):
-        if nm:
+        # By name only when the name reads back as that name: a numeric name
+        # is read as a POSITION and a "]" (or "{", "}") does not compile, so
+        # those get the positional token (Gemini audit 5-15).
+        if nm and not nm.strip().isdigit() and not any(c in nm for c in "[]{}") and nm == nm.strip():
             out.append(("{Data[" + nm + "]}", f"{nm}  (#{i})", _render(v)))
+        elif nm:
+            out.append(("{Data[" + str(i) + "]}", f"{nm}  (#{i})", _render(v)))
         else:
             out.append(("{Data[" + str(i) + "]}", f"Data #{i}", _render(v)))
     return out
