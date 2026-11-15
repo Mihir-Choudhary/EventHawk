@@ -230,6 +230,15 @@ class _FilterThread(QThread):
         direction = "ASC" if sort_asc else "DESC"
         if sort_col == "timestamp_utc":
             return f"timestamp_utc {direction}, record_id {direction}"
+        # Channel and Source File sort on what their cells show: the channel
+        # without "Microsoft-Windows-", the file name without its folder --
+        # as Normal mode does (Gemini audit 5-07).
+        if sort_col == "channel":
+            return (f"regexp_replace(channel, '^Microsoft-Windows-', '') {direction} NULLS LAST, "
+                    f"channel {direction}")
+        if sort_col == "source_file":
+            return (f"regexp_replace(source_file, '^.*[\\\\/]', '') {direction} NULLS LAST, "
+                    f"source_file {direction}")
         return f"{sort_col} {direction}"
 
     def _order_result(self, con, result, sort_col: str, sort_asc: bool):

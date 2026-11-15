@@ -761,7 +761,8 @@ class EventTableModel(QAbstractTableModel):
         2: lambda ev: ev.get("level_name") or "",       # None: a missing field
         3: lambda ev: ev.get("timestamp", ""),
         4: lambda ev: ev.get("computer") or "",
-        5: lambda ev: ev.get("channel") or "",
+        # The cell drops "Microsoft-Windows-"; sort on what it shows (Gemini 5-07).
+        5: lambda ev: (ev.get("channel") or "").removeprefix("Microsoft-Windows-"),
         6: lambda ev: ev.get("user_id", "") or "",
         7: lambda ev: (ev.get("attack_tags") or [{}])[0].get("tid", "") if ev.get("attack_tags") else "",
         8: lambda ev: _os.path.basename(ev.get("source_file") or ""),

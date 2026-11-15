@@ -171,11 +171,14 @@ def main() -> int:
         # ── 8. sorting on every sortable column ─────────────────────────
         for col, name in ((COL_TS, "timestamp_utc"), (COL_EID, "event_id"),
                           (COL_CHANNEL, "channel"), (COL_COMPUTER, "computer")):
+            # Channel sorts on the text its cell shows, without
+            # "Microsoft-Windows-" (Gemini audit 5-07).
+            shown = (lambda x: x.removeprefix("Microsoft-Windows-")) if name == "channel" else (lambda x: x)
             m.sort(col, Qt.SortOrder.AscendingOrder); settle()
-            v = [x for x in m._display_table[name].slice(0, 30000).to_pylist() if x is not None]
+            v = [shown(x) for x in m._display_table[name].slice(0, 30000).to_pylist() if x is not None]
             ok_a = v == sorted(v)
             m.sort(col, Qt.SortOrder.DescendingOrder); settle()
-            v2 = [x for x in m._display_table[name].slice(0, 30000).to_pylist() if x is not None]
+            v2 = [shown(x) for x in m._display_table[name].slice(0, 30000).to_pylist() if x is not None]
             check(f"8 sort {name} both directions",
                   ok_a and v2 == sorted(v2, reverse=True), f"asc_ok={ok_a}")
             check(f"8 sort {name} preserves the row count", m.rowCount() == total)
