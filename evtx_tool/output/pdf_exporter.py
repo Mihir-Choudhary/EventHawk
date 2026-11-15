@@ -108,12 +108,18 @@ def _font_of(ch: str) -> str | None:
     return r
 
 
+_PDF_ILLEGAL = __import__("re").compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff]")
+
+
 def _x(v) -> str:
     """Event text for a Paragraph: exact, never read as markup.  A "<" or "&"
     in a rule name, user, description or IOC value stopped the whole export
     (ReportLab parse error) or changed the text.  None reads as "".  Characters
     Helvetica cannot draw switch to a font that can (see _FALLBACK_FONTS)."""
     s = "" if v is None else str(v)
+    # XML 1.0 (ReportLab's markup) forbids C0 control bytes, which event
+    # strings may hold: shown as \xNN (Gemini audit 6-04).
+    s = _PDF_ILLEGAL.sub(lambda m: "\\x%02x" % ord(m.group()), s)
     try:
         s.encode("cp1252")
         return _xml_escape(s)          # the common case: Helvetica draws all of it

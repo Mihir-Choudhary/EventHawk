@@ -188,7 +188,7 @@ def csv_row(event: dict, ed_pos: dict, width: int) -> list:
     if "EventData" in ed_pos:                    # compact layout (see MAX_ED_COLUMNS)
         # Always valid JSON, "{}" for an event without data, so the column can
         # be parsed row by row.
-        row[ed_pos["EventData"]] = fast_dumps(ed)
+        row[ed_pos["EventData"]] = _safe_dumps(ed)
     elif isinstance(ed, dict):
         for k, v in ed.items():
             row[ed_pos[f"ED_{k}"]] = event_data_text(v)
@@ -206,7 +206,7 @@ def export_csv(events: list[dict], filepath: str, **_) -> int:
     headers = csv_headers({k for ev in events for k in (ev.get("event_data") or {})}, len(events),
                           list((events[0].get("custom_columns") or {}) if events else ()))
     pos, width = {h: i for i, h in enumerate(headers)}, len(headers)
-    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+    with open(filepath, "w", newline="", errors="backslashreplace", encoding="utf-8-sig") as f:
         writer = safe_csv_writer(f)
         writer.writerow(headers)
         count = 0
@@ -223,12 +223,12 @@ def export_json(events: list[dict], filepath: str, **_) -> int:
     # Perf fix #7: stream-write per-event instead of json.dump(entire_list).
     # Reduces peak memory from 2x events list to ~1x (no serialization buffer).
     os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
-    with open(filepath, "w", encoding="utf-8") as f:
+    with open(filepath, "w", errors="backslashreplace", encoding="utf-8") as f:
         f.write("[\n")
         for i, ev in enumerate(events):
             if i > 0:
                 f.write(",\n")
-            f.write(fast_dumps(ev, indent=2))
+            f.write(_safe_dumps(ev, indent=2))
         f.write("\n]\n")
     logger.info("JSON export: %d events -> %s", len(events), filepath)
     return len(events)
@@ -271,6 +271,27 @@ def _xml_text(v) -> str:
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
+def _scrub_surrogates(o):
+    """*o* with every lone UTF-16 surrogate written as the text "\\uXXXX"."""
+    if isinstance(o, str):
+        return _LONE_SURROGATE.sub(lambda m: "\\u%04x" % ord(m.group()), o)
+    if isinstance(o, dict):
+        return {_scrub_surrogates(k): _scrub_surrogates(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_scrub_surrogates(v) for v in o]
+    return o
+
+
+def _safe_dumps(obj, **kw) -> str:
+    """fast_dumps, but a lone surrogate (a broken WCHAR string in a log) is
+    written as text instead of aborting the export (Gemini audit 6-15).  The
+    scrub runs only when the plain dump fails, so it costs nothing normally."""
+    try:
+        return fast_dumps(obj, **kw)
+    except (TypeError, ValueError, UnicodeError):
+        return fast_dumps(_scrub_surrogates(obj), **kw)
+
+
 def event_data_text(v) -> str:
     """One event-data value as readable text: CSV cells, HTML report, search.
 
@@ -282,7 +303,9 @@ def event_data_text(v) -> str:
     if v is None:
         return ""
     if not isinstance(v, (dict, list, tuple)):
-        return str(v)
+        # A lone surrogate is shown as \uXXXX here too (Gemini 6-15; only
+        # containers were cleaned).
+        return _LONE_SURROGATE.sub(lambda m: "\\u%04x" % ord(m.group()), str(v))
     lines: list[str] = []
 
     def walk(x, name: str) -> None:
@@ -448,7 +471,7 @@ def _export_xml_stdlib(events: list[dict], filepath: str) -> None:
         return (f"<{el.tag}{attr}>{_esc(el.text) if el.text else ''}"
                 + "".join(_inline(k) for k in el) + f"</{el.tag}>")
 
-    with open(filepath, "w", encoding="utf-8", newline="") as f:
+    with open(filepath, "w", errors="backslashreplace", encoding="utf-8", newline="") as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
         f.write(f'<EVTXParserResults generated="{datetime.now(timezone.utc).isoformat()}" '
                 f'totalEvents="{len(events)}">\n')
@@ -1218,7 +1241,7 @@ def export_html(
     except Exception:
         _get_desc = None  # type: ignore[assignment]
 
-    with open(filepath, "w", encoding="utf-8") as f:
+    with open(filepath, "w", errors="backslashreplace", encoding="utf-8") as f:
 
         # ── Head ──────────────────────────────────────────────────────────
         f.write("<!DOCTYPE html><html lang='en'><head>")
@@ -1306,15 +1329,17 @@ def export_html(
                     f"<span style='color:#8b949e;font-size:0.85em;font-weight:normal'>"
                     f"({len(chains)} detected — {crit} critical, {high} high)</span></h2>\n")
             for chain in chains:       # every chain (it showed 50)
-                sev    = chain["severity"]
-                comps  = ", ".join(chain["computers"]) or "?"
-                users  = ", ".join(chain["users"]) or "?"
+                # Escaped: a custom / Hayabusa rule or a damaged timestamp can
+                # put any text here (Gemini audit 6-05).
+                sev    = _esc(str(chain.get("severity", "") or ""))
+                comps  = ", ".join(chain.get("computers") or []) or "?"
+                users  = ", ".join(chain.get("users") or []) or "?"
                 f.write(f"<div class='chain sev-{sev}'>\n")
                 f.write(f"<div class='chain-title'>{_esc(chain['rule_name'])}"
                         f"<span class='sev-badge {sev}'>{sev.upper()}</span></div>\n")
                 f.write(f"<div class='chain-meta'>"
                         f"Tactic: {_esc(chain['tactic'])} | "
-                        f"Time: {_fmt_ts(chain['first_ts'])} &rarr; {_fmt_ts(chain['last_ts'])} | "
+                        f"Time: {_esc(_fmt_ts(chain.get('first_ts')))} &rarr; {_esc(_fmt_ts(chain.get('last_ts')))} | "
                         f"Events: {chain['event_count']} | "
                         f"Computers: {_esc(comps)} | Users: {_esc(users)}"
                         f"</div>\n")
@@ -1409,7 +1434,10 @@ def export_html(
                             else:
                                 ti_color = "#8b949e"
                                 ti_label = verdict or "?"
-                            if link:
+                            # The verdict and link come from an outside service:
+                            # escape the text, and link only http(s) (Gemini 6-05).
+                            ti_label = _esc(ti_label)
+                            if link and str(link).lower().startswith(("https://", "http://")):
                                 ti_badge = (f"<a href='{_esc(link)}' style='color:{ti_color};"
                                             f"font-size:0.75em;margin-left:6px'>{ti_label}</a>")
                             else:
@@ -1500,7 +1528,7 @@ def export_html(
 
         _cc_titles = list((events[0].get("custom_columns") or {}) if events else ())
         f.write(f"<script>window._DCOLS={9 + len(_cc_titles)};"
-                f"window._CORE={fast_dumps(list(_DETAIL_CORE_LABELS))};</script>\n")
+                f"window._CORE={_safe_dumps(list(_DETAIL_CORE_LABELS))};</script>\n")
         f.write("<div id='ehLoading' style='background:#3a2a00;border:1px solid #e6a700;color:#ffd666;"
                 "padding:6px 10px;border-radius:4px;margin:6px 0;font-size:0.85em'>"
                 f"Loading {len(events):,} events&hellip; &#9654; already works on the rows shown; "
@@ -1538,7 +1566,7 @@ def export_html(
             # 100 rows took 38.7 s to load 41,648 events, every 1,000 rows
             # 20.5 s -- the same as putting all of it after the table.  No raw "<", ">" or "&" inside <script> (see _SD below).
             if _dd_buf:
-                f.write("<script>_DDp(" + fast_dumps([_st_new, _dd_buf]).replace("<", r"\u003c")
+                f.write("<script>_DDp(" + _safe_dumps([_st_new, _dd_buf]).replace("<", r"\u003c")
                         .replace(">", r"\u003e").replace("&", r"\u0026") + ");</script>\n")
                 _dd_buf.clear()
                 _st_new.clear()
@@ -1627,7 +1655,7 @@ def export_html(
                 ev.get('user_id', ''),
                 str(ev.get('record_id', '')),
                 "" if ev.get('event_record_id') is None else str(ev.get('event_record_id')),
-                ev.get('activity_id', ''),
+                ev.get('correlation_id', '') or '',   # the Activity ID's key (Gemini 6-14)
                 ev.get('opcode', ''),
                 ev.get('keywords', ''),
                 ev.get('source_file', ''),
@@ -1671,7 +1699,7 @@ def export_html(
             # became real markup (Codex audit-5b A5B-HTML-SCRIPT).  The JSON
             # escapes \u003c / \u003e / \u0026 are the same characters to
             # JSON and JavaScript.
-            f.write(fast_dumps(_build_search_string(ev))
+            f.write(_safe_dumps(_build_search_string(ev))
                     .replace("<", r"\u003c").replace(">", r"\u003e").replace("&", r"\u0026"))
         f.write("];</script>\n")
 
