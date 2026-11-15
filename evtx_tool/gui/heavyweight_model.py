@@ -1294,6 +1294,9 @@ class ArrowTableModel(QAbstractTableModel):
         # session_id and processor_id have no JM counterpart — omitted intentionally.
         # record_id is int64 in the schema.
         "record_id":      ("record_id",                      "int"),
+        # The XML EventRecordID (col 22); was missing, so a right-click filter
+        # on it lit the badge and filtered nothing (Gemini audit 3-03 / 5-02).
+        "event_record_id": ("event_record_id",               "int"),
     }
 
     def _quick_col_info(self, key: str) -> "tuple[str, str] | None":
@@ -1424,6 +1427,8 @@ class ArrowTableModel(QAbstractTableModel):
             # values (display-TZ dates) and this filter clause stay in sync.
             col_info = self._quick_col_info(qf["key"])
             if col_info is None:
+                # Not silent: the filter is in the list but cannot apply here.
+                logger.warning("Quick filter on %r has no Juggernaut column; NOT applied", qf["key"])
                 continue
             col, col_type = col_info
             key = (col, col_type, bool(qf["include"]))

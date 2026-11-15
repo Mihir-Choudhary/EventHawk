@@ -13759,7 +13759,12 @@ class MainWindow(QMainWindow):
                 return m.custom_col_index(int(key[7:])) if hasattr(m, "custom_col_index") else None
             except ValueError:
                 return None
-        return next((i for i, k in ColumnFilterPopup.FILTERABLE.items() if k == key), None)
+        hit = next((i for i, k in ColumnFilterPopup.FILTERABLE.items() if k == key), None)
+        if hit is None:
+            # Quick-filter-only columns (right-click, no dropdown) still mark
+            # their header (Gemini audit 5-02).
+            hit = {"processor_id": 14, "record_id": 20, "event_record_id": 22}.get(key)
+        return hit
 
     def _sync_col_filters(self) -> None:
         """Rebuild the tab's column-filter record from its actual quick filters,
@@ -15132,22 +15137,33 @@ class MainWindow(QMainWindow):
         }
         col_key = col_key_map.get(col)
         cell_val = index.data() or ""
+        shown_val = cell_val
 
         # Timestamp quick filter uses date portion only (YYYY-MM-DD) so the
         # popup groups by day and the filter is easy to read / match.
         if col_key == "timestamp_date":
-            cell_val = cell_val[:10]
+            cell_val = shown_val = cell_val[:10]
+        elif col_key in ("channel", "source_file") and ev.get(col_key):
+            # The cell SHOWS a short form ("Microsoft-Windows-" dropped, the
+            # folder dropped); the filter compares the event's own value, so
+            # filtering by the short form matched nothing (Gemini 3-15/5-01).
+            cell_val = str(ev.get(col_key))
+        if (col_key and _jm_active is not None
+                and _jm_active._quick_col_info(col_key) is None):
+            # Juggernaut has no column for it (Session ID, Processor ID):
+            # offering the filter would light the badge and filter nothing.
+            col_key = None
 
         menu = QMenu(self)
 
         # ── Quick Filter actions (ELE-style) ──────────────────────────────
         if col_key and cell_val:
             col_name = COLUMNS[col] if col < len(COLUMNS) else str(col)
-            act_include = menu.addAction(_menu_icon("filter"), f"Quick Filter: {col_name} = {cell_val}")
+            act_include = menu.addAction(_menu_icon("filter"), f"Quick Filter: {col_name} = {shown_val}")
             act_include.triggered.connect(
                 lambda checked=False, k=col_key, v=cell_val: self._apply_quick_filter(k, v, True)
             )
-            act_exclude = menu.addAction(_menu_icon("filter-x"), f"Quick Filter: {col_name} ≠ {cell_val}")
+            act_exclude = menu.addAction(_menu_icon("filter-x"), f"Quick Filter: {col_name} ≠ {shown_val}")
             act_exclude.triggered.connect(
                 lambda checked=False, k=col_key, v=cell_val: self._apply_quick_filter(k, v, False)
             )

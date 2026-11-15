@@ -43,6 +43,7 @@ _COL_MAP: dict[str, str] = {
     # processor_id / session_id have no JM counterpart — omitted intentionally.
     "correlation_id": "correlation_id",
     "record_id":      "CAST(record_id AS VARCHAR)",
+    "event_record_id": "CAST(event_record_id AS VARCHAR)",   # Gemini 3-03
 }
 
 
