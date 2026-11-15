@@ -56,6 +56,13 @@ def main() -> int:
     check("... and says the host restarted", rows and "restart" in rows[0]["notes"].lower(),
           rows[0]["notes"] if rows else "")
 
+    # 8-03: the restart logged under the host's FQDN still bounds the lock.
+    sd, bt = shutdown(2, 600), kernel_boot(H + ".corp.example", 3, 54000, start=53990)
+    sd["computer"] = H + ".corp.example"
+    rows = [r for r in locks([sec(1, 0, 4800, u), sd, bt, sec(4, 54060, 4801, u)]) if r["host"] == H]
+    check("a restart logged under the FQDN also stops the lock", len(rows) == 1 and rows[0]["end"] is None,
+          str([(r["end"], r["duration"]) for r in rows]))
+
     rows = locks([sec(1, 0, 4800, u),
                   sec(2, 300, 4624, {"TargetUserName": "alice", "TargetLogonId": "0x99", "LogonType": "7"})])
     check("an unlock logon (4624 type 7) ends the lock: 300 s", len(rows) == 1 and rows[0]["duration"]

@@ -201,13 +201,16 @@ def build(events) -> dict:
         h = str(ev.get("computer") or "").strip()
         hosts.setdefault(h.lower(), _Host(h)).events.append((t, ev))
     rows, points = [], []
+    # Restarts of every host, looked up by host key: a restart logged under
+    # the host's FQDN also bounds a lock logged under its short name (8-03).
+    _hp_all = HostPower([e for h in hosts.values() for _, e in h.events])
     for hk, host in sorted(hosts.items()):
         host.events.sort(key=lambda x: (x[0], _int(x[1].get("record_id"), 0) or 0))
         evs = [e for _, e in host.events]
         power = _power_rows(host, evs)
         screen = _screen_rows(host, power)
         _flag_conflicts(sorted(screen, key=_order))
-        mine = power + screen + _lock_rows(host, HostPower(evs).restarts.get(host_key(host.name), []))
+        mine = power + screen + _lock_rows(host, _hp_all.restarts.get(host_key(host.name), []))
         _clock_checks(host, mine)
         rows.extend(mine)
         points.extend(_points(host))
