@@ -251,44 +251,63 @@ class _LogonSessionIndex:
 
     _SKIP_IDS = frozenset({"0x0", "0", "", "0x00000000"})
 
+    @staticmethod
+    def _norm_lid(raw) -> str:
+        """A LogonId compared as a number: "0x4F120" == "0x4f120" == "0x0004f120"."""
+        t = str(raw or "").strip().lower()
+        try:
+            return hex(int(t, 16)) if t.startswith("0x") else (hex(int(t)) if t.isdigit() else t)
+        except ValueError:
+            return t
+
     def __init__(self, events: list[dict]):
-        # sessions: logon_id_str -> {"logon": ev|None, "privs": [], "procs": [], "logoff": ev|None}
+        # sessions: unique session key -> {"logon": ev|None, "privs": [], "procs": [], "logoff": ev|None}
+        #
+        # A LogonId is unique per HOST and boot, not globally: sessions are keyed
+        # by (computer, LogonId), and a 4624 that reuses a LogonId starts a NEW
+        # session.  Events attach to the session open for their key at their
+        # time (events are time-ordered), so a process never joins a logon on
+        # another host or a logon that came after it (Gemini audit 7-02: keyed
+        # by the raw LogonId text, a reused id replaced the earlier logon and
+        # took its processes).
         self.sessions: dict[str, dict] = {}
+        current: dict[tuple, str] = {}
+        counter = [0]
+
+        def _new(k: tuple) -> dict:
+            counter[0] += 1
+            sk = f"{k[0]}|{k[1]}|{counter[0]}"
+            current[k] = sk
+            return self.sessions.setdefault(sk, {"logon": None, "privs": [], "procs": [], "logoff": None})
+
+        def _get(k: tuple) -> dict:
+            sk = current.get(k)
+            return self.sessions[sk] if sk is not None else _new(k)
 
         for ev in events:
             eid = ev.get("event_id", 0)
+            if eid not in (4624, 4672, 4688, 4634):
+                continue
             ed  = ev.get("event_data", {}) or {}
-
+            field = "TargetLogonId" if eid in (4624, 4634) else "SubjectLogonId"
+            raw = str(ed.get(field, "")).strip()
+            if raw in self._SKIP_IDS:
+                continue
+            lid = self._norm_lid(raw)
+            if lid in ("0x0", "0"):
+                continue
+            k = (str(ev.get("computer") or "").strip().lower(), lid)
             if eid == 4624:
-                lid = str(ed.get("TargetLogonId", "")).strip()
-                if lid not in self._SKIP_IDS:
-                    sess = self.sessions.setdefault(
-                        lid, {"logon": None, "privs": [], "procs": [], "logoff": None}
-                    )
-                    # Keep most-recent logon for any recycled LogonId
-                    sess["logon"] = ev
-
+                sess = _get(k)
+                if sess["logon"] is not None:
+                    sess = _new(k)          # LogonId reused: a new session
+                sess["logon"] = ev
             elif eid == 4672:
-                lid = str(ed.get("SubjectLogonId", "")).strip()
-                if lid not in self._SKIP_IDS:
-                    self.sessions.setdefault(
-                        lid, {"logon": None, "privs": [], "procs": [], "logoff": None}
-                    )["privs"].append(ev)
-
+                _get(k)["privs"].append(ev)
             elif eid == 4688:
-                lid = str(ed.get("SubjectLogonId", "")).strip()
-                if lid not in self._SKIP_IDS:
-                    self.sessions.setdefault(
-                        lid, {"logon": None, "privs": [], "procs": [], "logoff": None}
-                    )["procs"].append(ev)
-
-            elif eid == 4634:
-                lid = str(ed.get("TargetLogonId", "")).strip()
-                if lid not in self._SKIP_IDS:
-                    sess = self.sessions.setdefault(
-                        lid, {"logon": None, "privs": [], "procs": [], "logoff": None}
-                    )
-                    sess["logoff"] = ev
+                _get(k)["procs"].append(ev)
+            else:
+                _get(k)["logoff"] = ev
 
 
 # ── Sysmon ProcessGuid correlation ────────────────────────────────────────────
