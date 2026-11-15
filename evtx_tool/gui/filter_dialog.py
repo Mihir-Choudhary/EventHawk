@@ -1314,6 +1314,18 @@ class FilterDialog(QDialog):
         if not any(c.isChecked() for c in self._level_checks.values()):
             errors.append("Event Types: tick at least one type (none ticked would match every event).")
 
+        # ── From later than To matches nothing, silently (Gemini audit 4-09).
+        _d_on, _t_on = self._chk_date_enable.isChecked(), self._chk_time_enable.isChecked()
+        if _d_on or _t_on:
+            _f, _t = self._dt_from.dateTime(), self._dt_to.dateTime()
+            if _d_on and _t_on and not self._chk_separately.isChecked():
+                _bad = _f > _t
+            else:
+                _bad = ((_d_on and _f.date() > _t.date())
+                        or (_t_on and _f.time() > _t.time()))
+            if _bad:
+                errors.append("Date/time: From is later than To, so nothing would match.")
+
         # ── Event ID expression ───────────────────────────────────────────
         eid_expr = self._inp_event_ids.text().strip()
         if eid_expr:

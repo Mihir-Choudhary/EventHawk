@@ -19410,6 +19410,21 @@ class MainWindow(QMainWindow):
            re-read COL_TS and re-render in the new timezone.
         4. Re-render the detail panel for the currently selected row (if any).
         """
+        _tz_unavailable = None
+        if self._tz_mode == "specific":
+            # Without tzdata (a frozen build) ZoneInfo cannot load the zone and
+            # every time would silently stay UTC while the status bar named the
+            # zone (Gemini audit 4-06).  Say so and show UTC, labelled UTC.
+            try:
+                from zoneinfo import ZoneInfo
+                ZoneInfo(self._tz_specific)
+            except Exception as _zexc:
+                _tz_unavailable = self._tz_specific
+                self._warn_blocking(
+                    "Time zone not available",
+                    f"The time zone {self._tz_specific!r} cannot be loaded on this "
+                    f"computer ({_zexc}).\n\nTimes are shown in UTC.")
+                self._tz_mode = "utc"
         set_tz_config(
             self._tz_mode,
             self._tz_specific,
@@ -19531,7 +19546,8 @@ class MainWindow(QMainWindow):
                 f"{abs(self._tz_custom_offset_min) % 60:02d}"
             ),
         }
-        self._set_status(f"Timezone: {_labels.get(self._tz_mode, self._tz_mode)}")
+        self._set_status(f"Timezone: {_labels.get(self._tz_mode, self._tz_mode)}"
+                         + (f" ({_tz_unavailable} not available)" if _tz_unavailable else ""))
 
     def _on_ts_precision_changed(self, digits: int) -> None:
         """Apply a new timestamp display precision (0/3/6) and refresh all views.
