@@ -7016,7 +7016,11 @@ class _JMExportWorker(QThread):
                     # (Codex release audit C3).  None stays None, 0 stays 0.
                     "level":          d.get("level"),
                     "level_name":     d.get("level_name") or "",
-                    "timestamp":      d.get("timestamp_utc") or "",
+                    # ISO-8601 UTC, as the CSV/JSON path and Normal mode write it:
+                    # the stored "YYYY-MM-DD HH:MM" form broke the HTML report's
+                    # From/To filter (" " sorts before "T") (Gemini 4-01 / 6-01).
+                    "timestamp":      (f"{d['timestamp_utc'].replace(' ', 'T')}Z"
+                                       if d.get("timestamp_utc") else ""),
                     "computer":       d.get("computer") or "",
                     "channel":        d.get("channel") or "",
                     "user_id":        d.get("user_id") or "",
