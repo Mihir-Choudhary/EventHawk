@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -66,13 +67,26 @@ def _ts_ge(a: str, b: str) -> bool:
     return ta >= tb
 
 
+# Events whose TargetUserName is the account that logged on / authenticated /
+# was locked out; their SubjectUserName is the local caller ("-" on a network
+# logon, HOST$ otherwise).  Taking the subject first made "-" one "user" across
+# every host (a false lateral-movement chain) (Gemini audit 7-01).
+_TARGET_USER_FIRST = frozenset({4624, 4625, 4634, 4647, 4648, 4740, 4768, 4769, 4771, 4776, 4778, 4779})
+
+
 def _get_user(ev: dict) -> str:
     ed = ev.get("event_data", {}) or {}
-    return (
-        ed.get("SubjectUserName") or
-        ed.get("TargetUserName") or
-        ed.get("UserName") or ""
-    ).lower()
+    try:
+        eid = int(ev.get("event_id") or 0)
+    except (TypeError, ValueError):
+        eid = 0
+    order = (("TargetUserName", "SubjectUserName", "UserName") if eid in _TARGET_USER_FIRST
+             else ("SubjectUserName", "TargetUserName", "UserName"))
+    for k in order:
+        v = str(ed.get(k) or "").strip()
+        if v and v != "-":          # "-" is "no account", never a user
+            return v.lower()
+    return ""
 
 
 def _get_logon_type(ev: dict) -> str:
@@ -114,6 +128,10 @@ def _is_system_user(user: str) -> bool:
         return True
     # Computer/machine accounts always end with $ in Active Directory
     if u.endswith("$"):
+        return True
+    # Windows' per-session virtual accounts: Window Manager (DWM-n) and Font
+    # Driver Host (UMFD-n), logged on with high privileges at every boot.
+    if re.fullmatch(r"(dwm|umfd)-\d+", u):
         return True
     return False
 
