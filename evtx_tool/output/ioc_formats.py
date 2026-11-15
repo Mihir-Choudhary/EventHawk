@@ -14,8 +14,11 @@ format_bulk_clipboard(iocs)   -> str  ("type:value\\n..." for clipboard)
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
+
+logger = logging.getLogger(__name__)
 from datetime import datetime, timezone
 
 # IOC types to skip in exports
@@ -77,9 +80,14 @@ _STIX_HASH_KEY = {
 }
 
 
+_HEX_LEN = {"md5": 32, "sha1": 40, "sha256": 64}
+
+
 def _stix_lit(value: str) -> str:
-    """A STIX pattern string literal body: backslash and quote escaped."""
-    return value.replace("\\", "\\\\").replace("'", "\\'")
+    """A STIX pattern string literal body: backslash, quote and line breaks
+    escaped (a raw CR / LF / TAB made the pattern invalid: Gemini 6-17)."""
+    return (value.replace("\\", "\\\\").replace("'", "\\'")
+            .replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t"))
 
 
 # Categories with no standard STIX 2.1 object: counted and reported, not dropped silently.
@@ -296,8 +304,13 @@ def export_yara(iocs: dict, filepath: str) -> int:
     for ioc_type in ("md5", "sha1", "sha256"):
         entries = iocs.get(ioc_type) or []
         for entry in entries:
-            value = _get_value(entry)
-            if not value:
+            value = (_get_value(entry) or "").strip().lower()
+            # YARA's hash functions return lowercase hex: an uppercase digest
+            # never matched; and only a real digest is written -- a quote
+            # broke the rule (Gemini audit 6-09).
+            if not _HEX_LEN.get(ioc_type) or len(value) != _HEX_LEN[ioc_type]                     or any(c not in "0123456789abcdef" for c in value):
+                if value:
+                    logger.warning("YARA export: %s %r is not a hex digest; not written", ioc_type, value[:80])
                 continue
             fn = {"md5": "md5", "sha1": "sha1", "sha256": "sha256"}[ioc_type]
             hash_conds.append(f'        hash.{fn}(0, filesize) == "{value}"')
@@ -323,8 +336,10 @@ def export_yara(iocs: dict, filepath: str) -> int:
 
     # URLs → string search (first 100)
     urls = iocs.get("urls") or []
-    _family("url", [(i, _get_value(en)) for i, en in enumerate(urls[:100])
-                    if _get_value(en) and len(_get_value(en)) <= 200])
+    # Drop over-long ones FIRST, then take 100: 100 long URLs crowded out
+    # every valid one (Gemini audit 6-17).
+    _ok_urls = [en for en in urls if _get_value(en) and len(_get_value(en)) <= 200][:100]
+    _family("url", [(i, _get_value(en)) for i, en in enumerate(_ok_urls)])
 
     # High-scoring commandlines (score > 50, first 50)
     cmdlines = iocs.get("commandlines") or []
