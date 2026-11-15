@@ -180,6 +180,34 @@ def _parse_eid_expr_cached(expr: str) -> "tuple[frozenset, frozenset]":
     return frozenset(inc), frozenset(exc)
 
 
+def condition_number(v) -> "float | None":
+    """A condition value or field value as a number, or None.
+
+    Accepts "0x"-hex integers, which is how Windows logs PIDs, handles and
+    status codes ("0x1bc"): float() refused them, so "greater than" never
+    matched (Gemini audit 3-16).  NaN and infinity are not numbers here.
+    """
+    import math
+    s = str(v).strip() if v is not None else ""
+    if not s:
+        return None
+    try:
+        f = float(s)
+        return f if math.isfinite(f) else None
+    except ValueError:
+        pass
+    t = s.lower()
+    neg = t.startswith("-")
+    t = t.lstrip("+-")
+    if t.startswith("0x"):
+        try:
+            n = int(t[2:], 16)
+            return float(-n if neg else n)
+        except ValueError:
+            return None
+    return None
+
+
 def _eid_selected(eid, inc_ids, exc_ids) -> bool:
     """Whether an Event ID expression selects *eid*: in the include set (or
     no include set) and not in the "!" set."""
@@ -578,10 +606,14 @@ def _conditions_pass(event: dict, conditions: "list[dict]", cs: bool) -> bool:
         primary = event.get(name)
         if primary is None:
             primary = ed_flat.get(name)
-        candidates: list[str] = [_low(str(primary) if primary is not None else "")]
         dual = _PARSE_TIME_DUAL_SOURCE.get(name)
-        if dual is not None:
-            candidates.append(_low(str(event.get(dual, "") or "")))
+        if primary is None and dual is not None:
+            # No EventData value: the System <Execution> one.  When EventData
+            # HAS one, it is the process the event is about; System's is the
+            # logging service (Sysmon, lsass): matching it too made "ProcessId
+            # equals 888" match every event Sysmon logged (Gemini 3-17).
+            primary = event.get(dual)          # an integer 0 stays "0"
+        candidates: list[str] = [_low(str(primary) if primary is not None else "")]
 
         # Pre-compute value variants for known fields (hex/decimal + symbolic)
         variants: "frozenset[str] | None" = None
@@ -682,34 +714,15 @@ def _conditions_pass(event: dict, conditions: "list[dict]", cs: bool) -> bool:
                     break
             if not hit:
                 return False
-        elif op == "greater than":
-            hit = False
-            try:
-                target = float(raw_val)
-            except (ValueError, TypeError):
+        elif op in ("greater than", "less than"):
+            target = condition_number(raw_val)
+            if target is None:
                 return False  # non-numeric threshold → no row matches
-            for fv in candidates:
-                try:
-                    if float(fv) > target:
-                        hit = True
-                        break
-                except (ValueError, TypeError):
-                    continue
-            if not hit:
-                return False
-        elif op == "less than":
-            hit = False
-            try:
-                target = float(raw_val)
-            except (ValueError, TypeError):
-                return False
-            for fv in candidates:
-                try:
-                    if float(fv) < target:
-                        hit = True
-                        break
-                except (ValueError, TypeError):
-                    continue
+            nums = [condition_number(fv) for fv in candidates]
+            if op == "greater than":
+                hit = any(n is not None and n > target for n in nums)
+            else:
+                hit = any(n is not None and n < target for n in nums)
             if not hit:
                 return False
         else:

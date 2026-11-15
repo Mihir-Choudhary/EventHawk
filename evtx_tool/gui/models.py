@@ -2229,11 +2229,12 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 primary = raw1 if raw1 is not None else raw2
                 # Explicit None check: a real value of 0/False/"" is falsy but
                 # must stay matchable (parity with JM json_extract_string).
-                candidates.append(str(primary) if primary is not None else "")
                 _dual = _FIELD_DUAL_SOURCE.get(name)
-                if _dual is not None:
-                    # Append the top-level column value alongside the event_data form
-                    candidates.append(str(ev.get(_dual, "") or ""))
+                if primary is None and _dual is not None:
+                    # System's <Execution> PID only when EventData has none:
+                    # EventData's is the process the event is about (Gemini 3-17).
+                    primary = ev.get(_dual)
+                candidates.append(str(primary) if primary is not None else "")
                 if not self._adv_case_sensitive:
                     candidates = [c.lower() for c in candidates]
                 cv = cond["value"]
@@ -2287,21 +2288,18 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                     pat = cond.get("compiled")
                     if pat and not _any_match(lambda fv: pat.search(fv) is not None):
                         return False
-                elif op == "greater than":
-                    def _gt(fv: str) -> bool:
-                        try:
-                            return float(fv) > float(cv)
-                        except ValueError:
-                            return False
-                    if not _any_match(_gt):
+                elif op in ("greater than", "less than"):
+                    # Hex ("0x1bc") is a number too (Gemini audit 3-16).
+                    from evtx_tool.core.filters import condition_number as _cn
+                    _t = _cn(cv)
+                    if _t is None:
                         return False
-                elif op == "less than":
-                    def _lt(fv: str) -> bool:
-                        try:
-                            return float(fv) < float(cv)
-                        except ValueError:
-                            return False
-                    if not _any_match(_lt):
+                    _gt = op == "greater than"
+
+                    def _cmp(fv: str, _t=_t, _gt=_gt) -> bool:
+                        n = _cn(fv)
+                        return n is not None and (n > _t if _gt else n < _t)
+                    if not _any_match(_cmp):
                         return False
                 else:
                     # Unknown operator — fail CLOSED (drop the event), matching

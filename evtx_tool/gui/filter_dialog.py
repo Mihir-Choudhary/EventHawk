@@ -1362,9 +1362,9 @@ class FilterDialog(QDialog):
             elif op_text in ("greater than", "less than"):
                 # DuckDB uses TRY_CAST so the query won't crash, but a
                 # non-numeric value silently matches zero rows — warn the user.
-                try:
-                    float(val_text)
-                except ValueError:
+                from evtx_tool.core.filters import condition_number
+                # "0x"-hex is a number; NaN / infinity are not (Gemini 3-16).
+                if condition_number(val_text) is None:
                     errors.append(
                         f"Condition #{row + 1} ({name_text} {op_text}): "
                         f"value {val_text!r} is not a number — "

@@ -535,6 +535,20 @@ def _display_local_ts_sql() -> str:
     return f"strftime({base} + INTERVAL ({off_sql}) MINUTE, '%Y-%m-%d %H:%M:%S')"
 
 
+def _sql_num(expr: str) -> str:
+    """*expr* as a number, "0x"-hex included (DuckDB casts hex to BIGINT, not
+    to DOUBLE); NaN / infinity are not numbers -- as core.filters.condition_number
+    (Gemini audit 3-16)."""
+    return (f"(CASE WHEN isfinite(TRY_CAST({expr} AS DOUBLE)) THEN TRY_CAST({expr} AS DOUBLE) "
+            f"ELSE TRY_CAST(TRY_CAST({expr} AS BIGINT) AS DOUBLE) END)")
+
+
+def _num_param(val) -> "float | None":
+    """The threshold as a number (None: the comparison matches nothing)."""
+    from evtx_tool.core.filters import condition_number
+    return condition_number(val)
+
+
 def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
     """
     Convert a FilterConfig dict to ``(where_clause, params)``.
@@ -1002,12 +1016,15 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             # ed_flat_json (flattened field map), NOT event_data_json (which is
             # the nested original), so a condition on a field nested inside a
             # container element resolves — matching normal mode.
-            base_exprs.append(f"json_extract_string(ed_flat_json, '$.{name}')")
-            # Some event_data names also have a top-level column counterpart
-            # (ProcessId / ThreadId) — query both.
             _dual = _FIELD_DUAL_SOURCE.get(name)
             if _dual is not None:
-                base_exprs.append(f"CAST({_dual} AS VARCHAR)")
+                # EventData's ProcessId / ThreadId when present, else the
+                # System <Execution> one (Gemini 3-17: both were matched, so
+                # the logging service's PID matched as if it were the event's).
+                base_exprs.append(f"COALESCE(json_extract_string(ed_flat_json, '$.{name}'), "
+                                  f"CAST({_dual} AS VARCHAR))")
+            else:
+                base_exprs.append(f"json_extract_string(ed_flat_json, '$.{name}')")
         elif "\x00" not in name:
             # Any other name (spaces, dots, quotes, backslashes, slashes...):
             # a JSON Pointer, '/<name>', which takes every character literally
@@ -1154,18 +1171,18 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
         elif op == "greater than":
             # DuckDB TRY_CAST — safe equivalent of SQLite's CAST (won't crash on non-numeric)
             sub = " OR ".join(
-                f"TRY_CAST({fe} AS DOUBLE) > TRY_CAST(? AS DOUBLE)" for fe in field_exprs
+                f"{_sql_num(fe)} > ?" for fe in field_exprs
             )
             clauses.append(f"({sub})" if n_fe > 1 else sub)
             for _ in range(n_fe):
-                params.append(val)
+                params.append(_num_param(val))
         elif op == "less than":
             sub = " OR ".join(
-                f"TRY_CAST({fe} AS DOUBLE) < TRY_CAST(? AS DOUBLE)" for fe in field_exprs
+                f"{_sql_num(fe)} < ?" for fe in field_exprs
             )
             clauses.append(f"({sub})" if n_fe > 1 else sub)
             for _ in range(n_fe):
-                params.append(val)
+                params.append(_num_param(val))
         else:
             # Unknown operator — fail CLOSED (match no rows) to mirror normal
             # mode's _conditions_pass, which returns False.  Without this a
