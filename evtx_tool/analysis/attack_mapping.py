@@ -158,7 +158,28 @@ def get_attack_tags(event_id: int, provider: str = "") -> list[dict]:
             # For non-Sysmon sources, skip low-number generic mappings
             # (event IDs 1-25 are only meaningful in Sysmon context)
             return []
+    # The other IDs mean what the map says only from the provider that
+    # defines them: a 1102 from the RDP client log is not "audit log cleared",
+    # a 7045 from an application is not a new service (Gemini audit 7-05).
+    # An event with no provider is not filtered (it cannot be told apart).
+    p = (provider or "").lower()
+    if p:
+        scope = _EID_PROVIDER.get(event_id)
+        if scope is None and 4600 <= event_id <= 4999:
+            scope = ("security-auditing",)
+        if scope is not None and not any(s in p for s in scope):
+            return []
     return ATTACK_MAP.get(event_id, [])
+
+
+# Providers that define the mapped Event IDs outside the Security range.
+_EID_PROVIDER: dict[int, tuple] = {
+    1102: ("eventlog",),                      # Security log cleared
+    517:  ("security",),                      # legacy (pre-Vista) Security log cleared
+    7045: ("service control manager",),
+    7040: ("service control manager",),
+    4104: ("powershell",),                    # Windows PowerShell and PowerShell 7
+}
 
 
 def enrich_with_attack(events: list[dict]) -> None:

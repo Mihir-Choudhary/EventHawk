@@ -386,7 +386,7 @@ _SIGMA_RULES: list[dict] = [
         "name":      "Sysmon: PowerShell Encoded Command",
         "selection": {
             "event_id": "1",
-            "channel_contains": "sysmon",
+            "provider_contains": "sysmon",   # not the channel: WEF forwards Sysmon into ForwardedEvents (Gemini 7-05)
             "Image_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
             "CommandLine_contains_any": ["-enc ", "-encodedcommand", " -e "],
         },
@@ -400,7 +400,7 @@ _SIGMA_RULES: list[dict] = [
         "name":      "Sysmon: PowerShell Download Cradle",
         "selection": {
             "event_id": "1",
-            "channel_contains": "sysmon",
+            "provider_contains": "sysmon",   # not the channel: WEF forwards Sysmon into ForwardedEvents (Gemini 7-05)
             "Image_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
             "CommandLine_contains_any": [
                 "downloadstring", "downloadfile", "webclient",
@@ -420,7 +420,7 @@ _SIGMA_RULES: list[dict] = [
         "name":      "Sysmon: PowerShell Invoke-Expression",
         "selection": {
             "event_id": "1",
-            "channel_contains": "sysmon",
+            "provider_contains": "sysmon",   # not the channel: WEF forwards Sysmon into ForwardedEvents (Gemini 7-05)
             "Image_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
             "CommandLine_contains_any": [
                 "iex(", "iex (", "| iex", "|iex",
@@ -437,7 +437,7 @@ _SIGMA_RULES: list[dict] = [
         "name":      "Sysmon: PowerShell ExecutionPolicy Bypass",
         "selection": {
             "event_id": "1",
-            "channel_contains": "sysmon",
+            "provider_contains": "sysmon",   # not the channel: WEF forwards Sysmon into ForwardedEvents (Gemini 7-05)
             "Image_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
             "CommandLine_contains_any": [
                 "bypass", "-nop ", "-noprofile", "-windowstyle hidden",
@@ -454,7 +454,7 @@ _SIGMA_RULES: list[dict] = [
         "name":      "Sysmon: PowerShell Generic",
         "selection": {
             "event_id": "1",
-            "channel_contains": "sysmon",
+            "provider_contains": "sysmon",   # not the channel: WEF forwards Sysmon into ForwardedEvents (Gemini 7-05)
             "Image_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
         },
         "filter_any": [
@@ -476,7 +476,7 @@ _SIGMA_RULES: list[dict] = [
         "name":      "Sysmon: Windows Command Shell",
         "selection": {
             "event_id": "1",
-            "channel_contains": "sysmon",
+            "provider_contains": "sysmon",   # not the channel: WEF forwards Sysmon into ForwardedEvents (Gemini 7-05)
             "Image_endswith": "\\cmd.exe",
         },
         "condition": "selection",
@@ -489,7 +489,7 @@ _SIGMA_RULES: list[dict] = [
         "name":      "Sysmon: Script Host (WScript / CScript)",
         "selection": {
             "event_id": "1",
-            "channel_contains": "sysmon",
+            "provider_contains": "sysmon",   # not the channel: WEF forwards Sysmon into ForwardedEvents (Gemini 7-05)
             "Image_endswith_any": ["\\wscript.exe", "\\cscript.exe"],
         },
         "condition": "selection",
@@ -502,7 +502,7 @@ _SIGMA_RULES: list[dict] = [
         "name":      "Sysmon: Generic Process Create",
         "selection": {
             "event_id": "1",
-            "channel_contains": "sysmon",
+            "provider_contains": "sysmon",   # not the channel: WEF forwards Sysmon into ForwardedEvents (Gemini 7-05)
         },
         "filter_any": [
             {"Image_endswith_any": [

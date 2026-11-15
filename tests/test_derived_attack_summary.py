@@ -40,6 +40,10 @@ def main() -> int:
         evs += _worker_parse_file({"filepath": f, "filter_config": empty_filter()})["events"]
         if len(evs) > 40_000:
             break
+    # A Security log too: its events are the ones that carry real ATT&CK tags.
+    sec = sorted(glob.glob(os.path.join(root, "**", "Security.evtx"), recursive=True), key=os.path.getsize)
+    if sec:
+        evs += _worker_parse_file({"filepath": sec[0], "filter_config": empty_filter()})["events"]
     ref = enrich_and_summarize(evs)
     got = MainWindow._derive_attack_summary(evs) or {}
     print(f"{len(evs)} events, {ref['total_tagged']} tagged, {len(ref['by_tactic'])} tactics")

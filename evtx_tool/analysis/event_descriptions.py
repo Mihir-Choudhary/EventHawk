@@ -233,8 +233,10 @@ _PS_DESC: dict[int, str] = {
     4105:  "PowerShell script block invocation started — marks the beginning "
            "of a tracked script block execution.",
     4106:  "PowerShell script block invocation completed — paired with 4105.",
-    53504: "PowerShell script block logging event (older format). Full script "
-           "content is recorded for forensic review.",
+    # Microsoft-Windows-PowerShell/Operational 53504 (Gemini audit 7-05: it was
+    # described as script-block logging).
+    53504: "Windows PowerShell started an IPC listening thread in a process "
+           "(PowerShell hosted or started in that process).",
 }
 
 # ── Task Scheduler event labels (Microsoft-Windows-TaskScheduler/Operational) ──
