@@ -242,6 +242,12 @@ def _split_evtx(filepath: str, n_parts: int, tmp_dir: str, tag: str = "0") -> li
         n_chunks = (size - _EVTX_HDR_BLOCK) // _EVTX_CHUNK_SZ
         if n_chunks < _EVTX_MIN_SPLIT or n_parts <= 1:
             return [filepath]
+        if (size - _EVTX_HDR_BLOCK) % _EVTX_CHUNK_SZ:
+            # A trailing partial chunk would not be copied into any shard;
+            # parse the file whole so nothing is cut off (Gemini audit 2-09).
+            logger.warning("%s ends in a partial chunk; parsing it unsplit",
+                           os.path.basename(filepath))
+            return [filepath]
 
         per = max(1, n_chunks // n_parts)
         sub_files: list[str] = []
@@ -747,7 +753,15 @@ def _hw_worker_stream(
         try:
             _passes = compile_filter(task["filter_config"])
         except Exception as exc:
-            logger.warning("compile_filter failed for %s: %s — proceeding unfiltered", src, exc)
+            # Fail closed: streaming every event as if it matched would hand
+            # the examiner unfiltered results labelled as filtered (Gemini 2-09).
+            logger.warning("compile_filter failed for %s: %s", src, exc)
+            out_queue.put(("DONE", src, {
+                "iterated": 0, "json_errors": 0, "extract_errors": 0,
+                "filtered": 0, "rows": 0,
+                "open_error": f"the filter could not be applied: {exc}",
+            }))
+            return
 
     try:
         parser = PyEvtxParser(fpath)
@@ -862,11 +876,10 @@ def _hw_worker_stream(
     # against `already_emitted` by record ID. Nothing in that depends on the
     # shard being a whole log.
     #
-    # The ORIGINAL objection was about expected-vs-actual ACCOUNTING, which is
-    # a different gate and is still `not is_split` below: a shard's header
-    # declares the original file's ranges, so `expected_record_count` on a
-    # shard would compare against the wrong total.
-    is_split = bool(task.get("is_split"))
+    # Expected-vs-actual accounting below runs for shards too: expected_ranges()
+    # reads the chunk headers IN the file it is given, and a shard holds only
+    # its own chunks, so its ranges are exactly the shard's (Gemini audit 2-02;
+    # it used to be skipped on every shard, hiding silent skips in >64 MB logs).
     n_salvaged = 0
     salvage_unrec = 0
     if stream_error:
@@ -900,21 +913,19 @@ def _hw_worker_stream(
         out_queue.put(("TUPLES", src, rows))
 
     # ── Expected-vs-actual accounting (detects silent single-record skips) ────
-    # Also unsplit-only, for the same header-range reason.
     missing_vs_expected = 0
-    if not is_split:
-        try:
-            from evtx_tool.core.chunk_salvage import expected_ranges
-            # Only IDs read inside the declared ranges count (see the Normal
-            # engine): records with no declared range cannot hide lost ones.
-            _ranges = expected_ranges(fpath)
-            _expected = sum(hi - lo + 1 for lo, hi in _ranges)
-            _got = emitted.count_within(_ranges)
-            if _expected > 0 and _got < _expected:
-                # ID-less undecodable records are already in json_errors.
-                missing_vs_expected = max(0, _expected - _got - n_idless)
-        except Exception:
-            pass
+    try:
+        from evtx_tool.core.chunk_salvage import expected_ranges
+        # Only IDs read inside the declared ranges count (see the Normal
+        # engine): records with no declared range cannot hide lost ones.
+        _ranges = expected_ranges(fpath)
+        _expected = sum(hi - lo + 1 for lo, hi in _ranges)
+        _got = emitted.count_within(_ranges)
+        if _expected > 0 and _got < _expected:
+            # ID-less undecodable records are already in json_errors.
+            missing_vs_expected = max(0, _expected - _got - n_idless)
+    except Exception:
+        pass
 
     log_fn = logger.warning if n_rows == 0 and n_iterated > 0 else logger.info
     log_fn(
@@ -1075,7 +1086,7 @@ class HeavyweightEngine:
                     all_tasks.append({
                         "filepath": s,
                         "filter_config": filter_config,
-                        "is_split": True,   # sub-file: skip salvage/expected accounting
+                        "is_split": len(subs) > 1,   # informational; [fp] when not split
                         # Keep the original FULL path (not basename) so two
                         # same-named files from different directories (e.g.
                         # host1/Security.evtx + host2/Security.evtx) never merge
