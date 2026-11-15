@@ -161,9 +161,11 @@ class ParseWorker(QThread):
             # Multi-key: timestamp, then source_file, then record_id — makes
             # same-timestamp ordering deterministic and reproducible across runs
             # (worker completion order previously leaked into display order).
+            # By instant, not text (Gemini audit 8-05): see ts_sort_key.
+            from evtx_tool.core.time_window import ts_sort_key
             events.sort(
                 key=lambda e: (
-                    e.get("timestamp", "") or "",
+                    ts_sort_key(e.get("timestamp")),
                     e.get("source_file", "") or "",
                     e.get("record_id", 0) or 0,
                 )

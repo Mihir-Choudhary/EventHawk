@@ -17887,7 +17887,8 @@ class MainWindow(QMainWindow):
             return
 
         # Sort chronologically
-        events.sort(key=lambda e: e.get("timestamp") or "")
+        from evtx_tool.core.time_window import ts_sort_key
+        events.sort(key=lambda e: ts_sort_key(e.get("timestamp")))   # by instant (Gemini 4-10)
 
         # ── Tab label ─────────────────────────────────────────────────────────
         if len(chains) == 1:
@@ -18324,7 +18325,8 @@ class MainWindow(QMainWindow):
             elif ok:
                 matched.append(e)
                 cache.append(sc)
-        order = sorted(range(len(matched)), key=lambda i: matched[i].get("timestamp") or "")
+        from evtx_tool.core.time_window import ts_sort_key
+        order = sorted(range(len(matched)), key=lambda i: ts_sort_key(matched[i].get("timestamp")))
         if order != list(range(len(matched))):
             matched = [matched[i] for i in order]
             cache = [cache[i] for i in order]

@@ -50,6 +50,22 @@ def parse_event_ts(raw) -> datetime | None:
     return dt
 
 
+def ts_sort_key(raw) -> str:
+    """A sort key for a stored event timestamp that orders by instant.
+
+    Text order is time order only for one fixed shape; "...00Z" sorts after
+    "...00.5Z" ('.' < 'Z') and an offset is not UTC (Gemini audit 4-10 /
+    8-05).  The corpus shape ("YYYY-MM-DDTHH:MM:SS.ffffffZ", every one of
+    8.3 million records) is returned as is, so the common case costs one
+    length test; anything else is parsed.  Unparseable or blank sorts first.
+    """
+    s = raw if isinstance(raw, str) else str(raw or "")
+    if len(s) == 27 and s[19] == "." and s[26] == "Z" and s[10] == "T":
+        return s
+    dt = parse_event_ts(s)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if dt else ""
+
+
 def window_bounds(anchor: datetime, before: timedelta,
                   after: timedelta) -> tuple[datetime, datetime]:
     return anchor - before, anchor + after
