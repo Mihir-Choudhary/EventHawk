@@ -998,7 +998,16 @@ class HeavyweightEngine:
 
     # ── main entry point ──────────────────────────────────────────────────────
 
-    def run(
+    def run(self, files: list[str], filter_config: dict | None = None) -> str:
+        """Parse *files* (see _run).  A stop() made before run() is honoured:
+        the flag is cleared only when the run ends (Gemini audit 2-08; it was
+        cleared at the start, so a stop that came first was lost)."""
+        try:
+            return self._run(files, filter_config)
+        finally:
+            self._stop.clear()
+
+    def _run(
         self,
         files: list[str],
         filter_config: dict | None = None,
@@ -1011,8 +1020,6 @@ class HeavyweightEngine:
           • N .parquet shard files (one per stream worker)
           • evtx_session.duckdb  — DuckDB database file (small; holds the VIEW)
         """
-        # Reset stop flag so run() is re-entrant if the engine is reused
-        self._stop.clear()
 
         # Dependency guard
         try:
@@ -1072,6 +1079,8 @@ class HeavyweightEngine:
         truncation_flags: dict[str, str] = {}
 
         for file_idx, fp in enumerate(files):
+            if self._stop.is_set():
+                break           # splitting a big log takes a while; stop here
             try:
                 from evtx_tool.core.parser import check_evtx_truncation
                 _trunc = check_evtx_truncation(fp)

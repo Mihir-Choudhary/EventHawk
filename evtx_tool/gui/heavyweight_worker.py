@@ -73,6 +73,10 @@ class HeavyweightParseWorker(QThread):
 
     def run(self) -> None:
         pq_dir = None
+        if self._stop_event.is_set():
+            # Stopped before it began: parse nothing (Gemini audit 2-08).
+            self.cancelled.emit()
+            return
         try:
             from evtx_tool.core.heavyweight.engine import HeavyweightEngine
             import logging as _logging
@@ -91,6 +95,8 @@ class HeavyweightParseWorker(QThread):
                 parquet_dir=pq_dir,
                 on_progress=self._emit_progress,
             )
+            if self._stop_event.is_set():
+                self._engine.stop()     # a stop between the check above and here
 
             result = self._engine.run(self._files, self._filter_config)
             self.parse_stats = getattr(self._engine, "last_parse_stats", {}) or {}
