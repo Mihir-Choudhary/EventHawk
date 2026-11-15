@@ -1909,7 +1909,10 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 elif key == "log":
                     ev_val = str(ev.get("log") or ev.get("channel", "")).lower()
                 else:
-                    ev_val = str(ev.get(key, "")).lower()
+                    # A missing value (None) is "", not the text "none", as in
+                    # Juggernaut's SQL (Gemini audit 3-14).
+                    _qv = ev.get(key)
+                    ev_val = ("" if _qv is None else str(_qv)).lower()
                 if ev_val in excl_set:
                     return False
         if self._quick_includes:
@@ -1923,7 +1926,10 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 elif key == "log":
                     ev_val = str(ev.get("log") or ev.get("channel", "")).lower()
                 else:
-                    ev_val = str(ev.get(key, "")).lower()
+                    # A missing value (None) is "", not the text "none", as in
+                    # Juggernaut's SQL (Gemini audit 3-14).
+                    _qv = ev.get(key)
+                    ev_val = ("" if _qv is None else str(_qv)).lower()
                 if ev_val not in incl_set:
                     return False
 
