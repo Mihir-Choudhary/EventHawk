@@ -318,10 +318,14 @@ def _run_pipeline(
             _emit_component("Correlation", 0)
             try:
                 from evtx_tool.analysis.correlator import correlate
+                _rule_errs: list = []
                 result = correlate(
                     events,
                     progress_fn=lambda pct: _emit_component("Correlation", pct),
+                    rule_errors=_rule_errs,
                 )
+                if _rule_errs:
+                    errors["Correlation rules"] = "; ".join(_rule_errs)
                 _emit_component("Correlation", 100)
                 return result
             except Exception as exc:
@@ -379,10 +383,14 @@ def _run_pipeline(
             _emit_component("Correlation", 0)
             try:
                 from evtx_tool.analysis.correlator import correlate
+                _rule_errs = []
                 chains = correlate(
                     events,
                     progress_fn=lambda pct: _emit_component("Correlation", pct),
+                    rule_errors=_rule_errs,
                 )
+                if _rule_errs:
+                    errors["Correlation rules"] = "; ".join(_rule_errs)
             except Exception as exc:
                 logger.warning("Correlation failed: %s", exc)
                 errors["Correlation"] = f"{type(exc).__name__}: {exc}"

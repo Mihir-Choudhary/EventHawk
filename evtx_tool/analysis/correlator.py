@@ -1363,7 +1363,8 @@ def _collapse_copies(events: list[dict]) -> list[dict]:
     return collapse_copies(events)[0]
 
 
-def correlate(events: list[dict], progress_fn: object = None) -> list[dict]:
+def correlate(events: list[dict], progress_fn: object = None,
+              rule_errors: "list[str] | None" = None) -> list[dict]:
     """
     Run all correlation rules against a list of events.
 
@@ -1413,6 +1414,10 @@ def correlate(events: list[dict], progress_fn: object = None) -> list[dict]:
             all_chains.extend(chains)
         except Exception as exc:
             logger.warning("Correlation rule %s failed: %s", rule_fn.__name__, exc)
+            # A failed rule's chains are missing: tell the caller, so the
+            # analysis is not shown as complete (it was only logged).
+            if rule_errors is not None:
+                rule_errors.append(f"{rule_fn.__name__}: {type(exc).__name__}: {exc}")
         rule_idx += 1
         if progress_fn:
             progress_fn(int(rule_idx / total_rules * 100))
@@ -1423,6 +1428,10 @@ def correlate(events: list[dict], progress_fn: object = None) -> list[dict]:
             all_chains.extend(chains)
         except Exception as exc:
             logger.warning("Correlation rule %s failed: %s", rule_fn.__name__, exc)
+            # A failed rule's chains are missing: tell the caller, so the
+            # analysis is not shown as complete (it was only logged).
+            if rule_errors is not None:
+                rule_errors.append(f"{rule_fn.__name__}: {type(exc).__name__}: {exc}")
         rule_idx += 1
         if progress_fn:
             progress_fn(int(rule_idx / total_rules * 100))
@@ -1433,6 +1442,10 @@ def correlate(events: list[dict], progress_fn: object = None) -> list[dict]:
             all_chains.extend(chains)
         except Exception as exc:
             logger.warning("GUID rule %s failed: %s", rule_fn.__name__, exc)
+            # A failed rule's chains are missing: tell the caller, so the
+            # analysis is not shown as complete (it was only logged).
+            if rule_errors is not None:
+                rule_errors.append(f"{rule_fn.__name__}: {type(exc).__name__}: {exc}")
         rule_idx += 1
         if progress_fn:
             progress_fn(int(rule_idx / total_rules * 100))

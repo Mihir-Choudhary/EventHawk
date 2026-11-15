@@ -294,7 +294,8 @@ class AnalysisWorker(QThread):
             self.progress.emit("Running correlation rules…")
             try:
                 from evtx_tool.analysis.correlator import correlate
-                chains = correlate(self._events)
+                self.rule_errors = []
+                chains = correlate(self._events, rule_errors=self.rule_errors)
             except Exception:
                 logger.warning("Correlation failed", exc_info=True)
 

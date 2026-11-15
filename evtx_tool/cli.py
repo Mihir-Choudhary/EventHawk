@@ -308,8 +308,12 @@ def _run_analysis(
     if do_correlate:
         from evtx_tool.analysis.correlator import correlate
         t0     = time.monotonic()
-        chains = correlate(events)
+        _rule_errs: list = []
+        chains = correlate(events, rule_errors=_rule_errs)
         elapsed = time.monotonic() - t0
+        for _re_msg in _rule_errs:
+            # Its chains are missing from what follows: say so.
+            console.print(f"[red]Correlation rule failed (its chains are missing): {_re_msg}[/red]")
         crit   = sum(1 for c in chains if c["severity"] == "critical")
         high   = sum(1 for c in chains if c["severity"] == "high")
         console.print(
