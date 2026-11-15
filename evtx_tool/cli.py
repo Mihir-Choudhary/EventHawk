@@ -295,6 +295,8 @@ def _run_analysis(
         from evtx_tool.analysis.ioc_extractor import extract_iocs
         t0   = time.monotonic()
         iocs = extract_iocs(events)
+        from evtx_tool.analysis.analysis_worker_proc import score_and_correlate_iocs
+        score_and_correlate_iocs(iocs)          # as the GUI does (Gemini 7-16)
         elapsed = time.monotonic() - t0
         s    = iocs.get("summary", {})
         console.print(

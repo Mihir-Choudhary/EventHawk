@@ -286,6 +286,8 @@ class AnalysisWorker(QThread):
             try:
                 from evtx_tool.analysis.ioc_extractor import extract_iocs
                 iocs = extract_iocs(self._events)
+                from evtx_tool.analysis.analysis_worker_proc import score_and_correlate_iocs
+                score_and_correlate_iocs(iocs)  # as the analysis process does (Gemini 7-16)
             except Exception:
                 logger.warning("IOC extraction failed", exc_info=True)
 

@@ -36,6 +36,39 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+
+_SKIP_IOC_KEYS = frozenset({"summary", "correlation"})
+
+
+def score_and_correlate_iocs(iocs: dict) -> None:
+    """Score every IOC and add the co-occurrence correlation, in place.
+
+    One function for the GUI's analysis process, the CLI and the GUI
+    AnalysisWorker: the last two skipped it, so their IOCs all scored 0 --
+    YARA then left out scored command lines and MISP set to_ids False
+    (Gemini audit 7-16)."""
+    if not iocs:
+        return
+    try:
+        from evtx_tool.analysis.ioc_scorer import score_ioc
+        for ioc_type, entries in iocs.items():
+            if ioc_type in _SKIP_IOC_KEYS or not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if isinstance(entry, dict):
+                    entry["score"], entry["score_reasons"] = score_ioc(
+                        ioc_type, entry.get("value", "")
+                    )
+            entries.sort(key=lambda e: e.get("score", 0) if isinstance(e, dict) else 0,
+                         reverse=True)
+    except Exception as exc:
+        logger.warning("IOC scoring failed: %s", exc)
+    try:
+        from evtx_tool.analysis.ioc_correlation import correlate_iocs
+        iocs["correlation"] = correlate_iocs(iocs)
+    except Exception as exc:
+        logger.warning("IOC correlation failed: %s", exc)
+
 def _setup_worker_file_logging() -> None:
     """
     Wire the root logger in this worker subprocess to a rotating log file in
@@ -191,31 +224,7 @@ def _run_pipeline(
     """Internal pipeline — separated so the outer try/except catches everything."""
 
     # ── IOC post-processing helper ───────────────────────────────────────
-    _SKIP_IOC_KEYS = frozenset({"summary", "correlation"})
-
-    def _score_and_correlate(iocs: dict) -> None:
-        """Apply suspicion scoring and co-occurrence correlation to IOC entries."""
-        if not iocs:
-            return
-        try:
-            from evtx_tool.analysis.ioc_scorer import score_ioc
-            for ioc_type, entries in iocs.items():
-                if ioc_type in _SKIP_IOC_KEYS or not isinstance(entries, list):
-                    continue
-                for entry in entries:
-                    if isinstance(entry, dict):
-                        entry["score"], entry["score_reasons"] = score_ioc(
-                            ioc_type, entry.get("value", "")
-                        )
-                entries.sort(key=lambda e: e.get("score", 0) if isinstance(e, dict) else 0,
-                             reverse=True)
-        except Exception as exc:
-            logger.warning("IOC scoring failed: %s", exc)
-        try:
-            from evtx_tool.analysis.ioc_correlation import correlate_iocs
-            iocs["correlation"] = correlate_iocs(iocs)
-        except Exception as exc:
-            logger.warning("IOC correlation failed: %s", exc)
+    _score_and_correlate = score_and_correlate_iocs
 
     # ── Count total steps for percentage progress ────────────────────────
     total_steps = 1  # metadata always runs
