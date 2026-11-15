@@ -459,6 +459,7 @@ def parse_cmd(
             tui.stop()
             time.sleep(0.4)
             tui.print_summary(all_events, state_snap)
+    n_failed = _print_engine_problems(engine)
 
     # ── Sort by timestamp (always -- required for timeline + correlation) ─
     if all_events:
@@ -497,6 +498,43 @@ def parse_cmd(
                 f"[dim]{len(all_events):,} events matched. "
                 f"Use --output to save.[/dim]"
             )
+    if n_failed:
+        # The events that were read are still exported / shown above; the exit
+        # code says the result is incomplete.
+        console.print(f"[red]{n_failed} file(s) could not be read: the results above do not include "
+                      f"them.[/red]")
+        raise SystemExit(1)
+
+
+def _print_engine_problems(engine, label: str = "") -> int:
+    """Print the engine's errors and non-benign warnings; return how many
+    files failed (at least 1 when there are errors).
+
+    The engine records a file it cannot open in state.errors / failed_files
+    and carries on; the GUI shows them, the command line printed nothing and
+    exited 0 (Gemini audit 11-02).
+    """
+    st = engine.state
+    errors = list(getattr(st, "errors", None) or [])
+    benign = set(getattr(st, "benign_warnings", None) or [])
+    warnings = [w for w in (getattr(st, "warnings", None) or []) if w not in benign]
+    prefix = f"{label}: " if label else ""
+    for e in errors:
+        console.print(f"{prefix}Error: {e}", style="red", markup=False)
+    for w in warnings:
+        console.print(f"{prefix}Warning: {w}", style="yellow", markup=False)
+    failed = int(getattr(st, "failed_files", 0) or 0)
+    return max(failed, 1 if errors else 0)
+
+
+def _diff_stop_if_unreadable(engine, side: str) -> None:
+    """A diff over a set with an unreadable log compares against events that
+    were never read: its event IDs come out as MISSING ("possible log
+    clearing?") or NEW.  Stop instead (Gemini audit 11-02)."""
+    if _print_engine_problems(engine, side):
+        console.print(f"[red]{side}: a log could not be read, so the comparison would report its events as "
+                      f"missing or new. Diff stopped.[/red]")
+        raise SystemExit(1)
 
 
 # ── diff command ──────────────────────────────────────────────────────────────
@@ -556,11 +594,13 @@ def diff_cmd(baseline, incident, profile, output, fmt, spike_factor, max_threads
     engine_b   = ProcessingEngine(max_workers=max_threads)
     base_events = engine_b.run(baseline_files, fc)
     console.print(f"[dim]  Baseline: {len(base_events):,} events[/dim]")
+    _diff_stop_if_unreadable(engine_b, "Baseline")
 
     console.print("[dim]Parsing incident...[/dim]")
     engine_i   = ProcessingEngine(max_workers=max_threads)
     inc_events  = engine_i.run(incident_files, fc)
     console.print(f"[dim]  Incident: {len(inc_events):,} events[/dim]")
+    _diff_stop_if_unreadable(engine_i, "Incident")
 
     # Count per event ID
     def _count_eids(evts: list[dict]) -> dict[int, int]:

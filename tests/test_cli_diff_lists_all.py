@@ -35,7 +35,9 @@ def main() -> int:
 
     class Engine:
         def __init__(self, *a, **k):
-            pass
+            # A clean run, as the real engine reports one (diff now checks it).
+            from types import SimpleNamespace
+            self.state = SimpleNamespace(errors=[], warnings=[], benign_warnings=[], failed_files=0)
 
         def run(self, files, fc):
             return next(runs)
