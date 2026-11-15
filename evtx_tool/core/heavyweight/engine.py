@@ -43,7 +43,7 @@ from typing import Callable
 
 import orjson
 
-from evtx_tool.core.record_json import load_record, unwrap_system_scalars
+from evtx_tool.core.record_json import load_record, pick_payload, unwrap_system_scalars
 
 from evtx_tool.core.filters import flatten_searchable_values, flatten_fields, event_description_text
 
@@ -306,7 +306,7 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes,
     try:
         event  = parsed.get("Event", parsed)
         system = unwrap_system_scalars(event.get("System") or {})   # Gemini 1-08
-        ed_raw = event.get("EventData") or event.get("UserData") or {}
+        ed_raw = pick_payload(event)   # Gemini 1-09
 
         # ── Flatten EventData ONCE (shared with normal mode) ──────────────────
         # flatten_fields() hoists nested container fields + named <Data> to a

@@ -72,6 +72,26 @@ def unwrap_system_scalars(system):
     return system if out is None else out
 
 
+def pick_payload(event):
+    """The event's data: <EventData>, or <UserData> when EventData is empty.
+
+    "EventData or UserData" picked an <EventData Name="..."/> that carries
+    only attributes (a non-empty dict) and threw the populated <UserData>
+    away; a scalar payload was dropped (Gemini audit 1-09).  Returns a dict;
+    a scalar payload (or a bare #text) is kept under "Data".
+    """
+    for key in ("EventData", "UserData"):
+        v = event.get(key)
+        if isinstance(v, dict):
+            if any(not str(k).startswith("#") for k in v):
+                return v
+            if v.get("#text") not in (None, ""):
+                return {"Data": v["#text"]}
+        elif v not in (None, ""):
+            return {"Data": v}
+    return {}
+
+
 def load_record(raw):
     """The record dict for pyevtx-rs JSON text *raw* (str or bytes), keeping
     every value of a repeated name (as a list, in order)."""

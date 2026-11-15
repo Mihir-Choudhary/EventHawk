@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .resource_monitor import ResourceMonitor, ResourceStats
-from .record_json import unwrap_system_scalars
+from .record_json import pick_payload, unwrap_system_scalars
 from .filters import passes_filter, compile_filter
 
 logger = logging.getLogger(__name__)
@@ -235,7 +235,7 @@ def _extract_event_inline(data: dict, record_id: int, timestamp: str, source_fil
     if isinstance(tc, dict):
         ts_str = tc.get("#attributes", {}).get("SystemTime", timestamp)
 
-    event_data_raw = event.get("EventData") or event.get("UserData") or {}
+    event_data_raw = pick_payload(event)   # Gemini 1-09
     event_data: dict = {}
     if isinstance(event_data_raw, dict):
         event_data = {k: v for k, v in event_data_raw.items() if not k.startswith("#")}
@@ -289,16 +289,16 @@ def _extract_event_inline(data: dict, record_id: int, timestamp: str, source_fil
         "event_id":       event_id,
         "qualifiers":     qualifiers,
         "timestamp":      ts_str,
-        "channel":        system.get("Channel", ""),
+        "channel":        system.get("Channel") or "",    # <Channel/> is null (Gemini 1-10)
         "provider":       pname,
         "event_source_name": event_source_name,   # same place as Juggernaut's export
         "provider_guid":  provider_guid,
-        "computer":       system.get("Computer", ""),
+        "computer":       system.get("Computer") or "",
         "level":          level,
         "level_name":     LEVEL_NAMES.get(level, str(level)),
         "task":           system.get("Task", 0),
         "opcode":         system.get("Opcode", 0),
-        "keywords":       system.get("Keywords", ""),
+        "keywords":       system.get("Keywords") or "",
         "version":        system.get("Version", 0),
         "process_id":     pid,
         "thread_id":      tid,
