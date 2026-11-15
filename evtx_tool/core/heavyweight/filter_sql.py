@@ -950,7 +950,9 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
                     params.append(term)
                     return f"regexp_matches({_texpr}, ?)"
                 else:
-                    params.append(term.lower())
+                    # As typed, with the 'i' flag: lowercasing the pattern
+                    # changed \S, \D, \W and (?P<x>) (Gemini audit 3-01).
+                    params.append(term)
                     return f"regexp_matches({_texpr}, ?, 'i')"
             else:
                 params.append(_lv(term))
@@ -1234,7 +1236,7 @@ def text_config_to_parquet_sql(fc: dict) -> "tuple[str, list[Any]]":
                 params.append(term)
                 return f"regexp_matches({_expr}, ?)"
             else:
-                params.append(term.lower())
+                params.append(term)      # as typed + 'i' (Gemini audit 3-01)
                 return f"regexp_matches({_expr}, ?, 'i')"
         else:
             params.append(_lv(term))

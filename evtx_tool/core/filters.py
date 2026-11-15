@@ -1076,7 +1076,9 @@ def _text_search_matches(event: dict, terms: list[str], mode: str,
         matchers = []
         for t in terms:
             try:
-                matchers.append(_re.compile(t if case_sensitive else t.lower(), flags))
+                # The pattern as typed, with IGNORECASE: lowercasing it turned
+                # \S into \s and (?P<x>) into a syntax error (Gemini 3-01).
+                matchers.append(_re.compile(t, flags))
             except _re.error:
                 matchers.append(None)
 
