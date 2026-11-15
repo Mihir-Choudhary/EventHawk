@@ -316,7 +316,10 @@ class SystemActivityDialog(QDialog):
         order = ["On", "Screen on", "Screen off", "Sleep", "Hibernate", "Sleep or hibernate", "Modern Standby",
                  "Locked", "Screen saver", "Shut down", "Off"]
         rank = {k: i for i, k in enumerate(order)}
-        who = host if host is not None else f"{len(self._res.get('hosts', []))} computer(s)"
+        # Escaped: the label is rich text and a Computer value is log data
+        # (Gemini audit 8-16).
+        import html as _html
+        who = _html.escape(host) if host is not None else f"{len(self._res.get('hosts', []))} computer(s)"
         lines, exact = [], []
         for layer in ("Power", "Screen", "Lock"):
             items = sorted(((lbl, v) for (ly, lbl), v in tot.items() if ly == layer),
