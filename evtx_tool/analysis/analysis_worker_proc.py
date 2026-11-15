@@ -397,6 +397,10 @@ def _run_pipeline(
             _emit_component("Correlation", 100)
 
     # ── 4. Hayabusa / Sigma rules ─────────────────────────────────────────
+    if do_hayabusa and not hayabusa_path:
+        # Asked for, but there is nothing to run: say so instead of a
+        # silent "no detections" (Gemini audit 7-14).
+        errors["Hayabusa"] = "Hayabusa was not found, so its Sigma rules were NOT run"
     if do_hayabusa and hayabusa_path and evtx_paths and not cancel_event.is_set():
         _emit_progress("Running Hayabusa rules…")   # one-time step count increment ✓
         _emit_component("Hayabusa", 0)

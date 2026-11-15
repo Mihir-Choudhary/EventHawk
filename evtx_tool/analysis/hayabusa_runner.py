@@ -201,7 +201,15 @@ def run_hayabusa(
         if progress_callback:
             progress_callback("Parsing Hayabusa results…")
 
-        return parse_hayabusa_jsonl(output_path, problems=problems)
+        dets = parse_hayabusa_jsonl(output_path, problems=problems)
+        _orig = _STAGED_ORIGINALS.get(tmp_dir) if tmp_dir else None
+        if _orig:
+            for d in dets:
+                sf = str(d.get("source_file") or "")
+                o = _orig.get(os.path.basename(sf.replace("\\", "/")).lower())
+                if o:
+                    d["source_file"] = o
+        return dets
 
     finally:
         # Cleanup temp files
@@ -210,10 +218,16 @@ def run_hayabusa(
         except OSError:
             pass
         if tmp_dir:
+            _STAGED_ORIGINALS.pop(tmp_dir, None)
             try:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
             except OSError:
                 pass
+
+
+# tmp_dir -> {staged file name: original path}, so detections name the log
+# the analyst selected, not "0000_Security.evtx" in %TEMP% (Gemini 7-14).
+_STAGED_ORIGINALS: dict = {}
 
 
 def _resolve_input(evtx_paths: list[str], problems: list | None = None) -> tuple[str, str, str | None]:
@@ -259,17 +273,23 @@ def _resolve_input(evtx_paths: list[str], problems: list | None = None) -> tuple
     # Otherwise isolate the selection in a folder under %TEMP%: links where
     # Windows allows them, else copies.  Never inside the evidence folder.
     tmp_dir = tempfile.mkdtemp(prefix="hayabusa_input_")
+    staged: dict = {}           # staged file name -> the original path
+    _STAGED_ORIGINALS[tmp_dir] = staged
     for i, src in enumerate(evtx_paths):
         if os.path.isfile(src):
             dst = os.path.join(tmp_dir, f"{i:04d}_{os.path.basename(src)}")
+            staged[os.path.basename(dst).lower()] = src
             try:
                 os.symlink(src, dst)
             except OSError:
                 # Hard link will fail across-drives, skip directly to copy
                 shutil.copy2(src, dst)
         elif os.path.isdir(src):
-            for f in Path(src).glob("*.evtx"):
-                dst = os.path.join(tmp_dir, f"{i:04d}_{f.name}")
+            # Sub-folders too, as a single selected folder is scanned (-d is
+            # recursive); glob("*.evtx") left them out (Gemini audit 7-14).
+            for j, f in enumerate(sorted(Path(src).rglob("*.evtx"))):
+                dst = os.path.join(tmp_dir, f"{i:04d}_{j:04d}_{f.name}")
+                staged[os.path.basename(dst).lower()] = str(f)
                 try:
                     os.symlink(str(f), dst)
                 except OSError:
