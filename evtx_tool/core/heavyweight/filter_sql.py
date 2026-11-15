@@ -929,9 +929,12 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
 
     # ── text_search ───────────────────────────────────────────────────────
     text_terms = fc.get("text_search")
+    if isinstance(text_terms, str):
+        text_terms = [text_terms]
+    # Blank terms are no terms (as in the Normal view): "" is in every text,
+    # so with Exclude it rejected every row (Gemini audit 3-10).
+    text_terms = [t for t in (text_terms or []) if str(t).strip()]
     if text_terms:
-        if isinstance(text_terms, str):
-            text_terms = [text_terms]
 
         mode = fc.get("search_mode", "AND").upper()
         text_regex = fc.get("text_regex", False)
@@ -1210,10 +1213,11 @@ def text_config_to_parquet_sql(fc: dict) -> "tuple[str, list[Any]]":
     filter_config_to_sql() (Arrow table path).
     """
     text_terms = fc.get("text_search")
-    if not text_terms:
-        return "1=1", []
     if isinstance(text_terms, str):
         text_terms = [text_terms]
+    text_terms = [t for t in (text_terms or []) if str(t).strip()]   # Gemini 3-10
+    if not text_terms:
+        return "1=1", []
 
     cs         = fc.get("case_sensitive", False)
     text_regex = fc.get("text_regex", False)

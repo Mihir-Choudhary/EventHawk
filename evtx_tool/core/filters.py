@@ -808,10 +808,13 @@ def passes_filter(event: dict, fc: dict) -> bool:
 
     # Source/Provider/Channel filter (honors source_exclude — parity with
     # filter_sql.py / models.py view; previously exclude was silently ignored)
+    # Case-sensitive honoured for the name lists, as in the Normal view and
+    # Juggernaut (both use it; this lowercased regardless: Gemini 3-10).
+    _cf = (lambda x: x) if fc.get("case_sensitive") else (lambda x: x.lower())
     if fc.get("sources"):
-        provider = (event.get("provider", "") or "").lower()
-        channel = (event.get("channel", "") or "").lower()
-        hit = any(s.lower() in provider or s.lower() in channel for s in fc["sources"])
+        provider = _cf(event.get("provider", "") or "")
+        channel = _cf(event.get("channel", "") or "")
+        hit = any(_cf(s) in provider or _cf(s) in channel for s in fc["sources"])
         if fc.get("source_exclude"):
             if hit:
                 return False
@@ -852,10 +855,12 @@ def passes_filter(event: dict, fc: dict) -> bool:
             str(ed.get("TargetUserName", "") or ""),
             str(ed.get("SubjectUserSid", "") or ""),
             str(ed.get("TargetUserSid", "") or ""),
-            str(ed.get("UserName", "") or ""),
             str(event.get("user_id", "") or ""),
-        ])).lower()
-        hit = any(u.lower() in user_str for u in fc["users"])
+        ]))
+        # The same five identity fields as the Normal view and Juggernaut
+        # (UserName was CLI-only: Gemini audit 3-10).
+        user_str = _cf(user_str)
+        hit = any(_cf(u) in user_str for u in fc["users"])
         if fc.get("user_exclude"):
             if hit:
                 return False
@@ -864,8 +869,8 @@ def passes_filter(event: dict, fc: dict) -> bool:
 
     # Computer filter (honors computer_exclude)
     if fc.get("computers"):
-        computer = (event.get("computer", "") or "").lower()
-        hit = any(c.lower() in computer for c in fc["computers"])
+        computer = _cf(event.get("computer", "") or "")
+        hit = any(_cf(c) in computer for c in fc["computers"])
         if fc.get("computer_exclude"):
             if hit:
                 return False
@@ -1196,12 +1201,15 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
         checks.append(lambda ev, _lvls=_levels: _level_passes(ev, _lvls))
 
     # Source/Provider/Channel (honors source_exclude)
+    # Name lists honour case_sensitive, as the Normal view and Juggernaut do
+    # (Gemini audit 3-10).
+    _cfc = (lambda x: x) if fc.get("case_sensitive") else (lambda x: x.lower())
     if fc.get("sources"):
-        _sources_lower = [s.lower() for s in fc["sources"]]
+        _sources_lower = [_cfc(s) for s in fc["sources"]]
         _src_excl = bool(fc.get("source_exclude"))
         def _check_source(ev, _srcs=_sources_lower, _ex=_src_excl):
-            prov = (ev.get("provider", "") or "").lower()
-            chan = (ev.get("channel", "") or "").lower()
+            prov = _cfc(ev.get("provider", "") or "")
+            chan = _cfc(ev.get("channel", "") or "")
             hit = any(s in prov or s in chan for s in _srcs)
             return (not hit) if _ex else hit
         checks.append(_check_source)
@@ -1209,10 +1217,10 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
     # Category (channel-name) (honors category_exclude). Distinct from
     # task_categories; set by the dialog and by profile channels.
     if fc.get("categories"):
-        _cats_lower = [str(c).lower() for c in fc["categories"]]
+        _cats_lower = [_cfc(str(c)) for c in fc["categories"]]
         _cat_excl = bool(fc.get("category_exclude"))
         def _check_category(ev, _cats=_cats_lower, _ex=_cat_excl):
-            chan = (ev.get("channel", "") or "").lower()
+            chan = _cfc(ev.get("channel", "") or "")
             hit = any(c in chan for c in _cats)
             return (not hit) if _ex else hit
         checks.append(_check_category)
@@ -1231,28 +1239,27 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
 
     # User/SID (honors user_exclude)
     if fc.get("users"):
-        _users_lower = [u.lower() for u in fc["users"]]
+        _users_lower = [_cfc(u) for u in fc["users"]]
         _usr_excl = bool(fc.get("user_exclude"))
         def _check_user(ev, _usrs=_users_lower, _ex=_usr_excl):
             ed = ev.get("event_data", {}) or {}
-            user_str = " ".join(filter(None, [
+            user_str = _cfc(" ".join(filter(None, [
                 str(ed.get("SubjectUserName", "") or ""),
                 str(ed.get("TargetUserName", "") or ""),
                 str(ed.get("SubjectUserSid", "") or ""),
                 str(ed.get("TargetUserSid", "") or ""),
-                str(ed.get("UserName", "") or ""),
                 str(ev.get("user_id", "") or ""),
-            ])).lower()
+            ])))
             hit = any(u in user_str for u in _usrs)
             return (not hit) if _ex else hit
         checks.append(_check_user)
 
     # Computer (honors computer_exclude)
     if fc.get("computers"):
-        _comps_lower = [c.lower() for c in fc["computers"]]
+        _comps_lower = [_cfc(c) for c in fc["computers"]]
         _comp_excl = bool(fc.get("computer_exclude"))
         def _check_computer(ev, _cs=_comps_lower, _ex=_comp_excl):
-            comp = (ev.get("computer", "") or "").lower()
+            comp = _cfc(ev.get("computer", "") or "")
             hit = any(c in comp for c in _cs)
             return (not hit) if _ex else hit
         checks.append(_check_computer)
