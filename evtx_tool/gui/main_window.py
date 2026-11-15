@@ -17020,7 +17020,11 @@ class MainWindow(QMainWindow):
             if _st is not None and _st.events:
                 if _st.iocs is None:
                     from evtx_tool.analysis.ioc_extractor import extract_iocs
+                    from evtx_tool.analysis.analysis_worker_proc import score_and_correlate_iocs
                     _mine = extract_iocs(_st.events)
+                    # Scored, sorted and correlated like the collection's
+                    # (Gemini audit 7-15); threat-intel verdicts copied below.
+                    score_and_correlate_iocs(_mine)
                     for _cat, _lst in _mine.items():
                         if not isinstance(_lst, list):
                             continue
@@ -17031,6 +17035,8 @@ class MainWindow(QMainWindow):
                                 for _k in ("score", "score_reasons", "threat_intel"):
                                     if _k in _g:
                                         _en[_k] = _g[_k]
+                        _lst.sort(key=lambda e: (-(e.get("score", 0) or 0), -(e.get("count", 0) or 0))
+                                  if isinstance(e, dict) else (0, 0))
                     _st.iocs = _mine
                 iocs = _st.iocs
         if not iocs:
@@ -17479,7 +17485,9 @@ class MainWindow(QMainWindow):
             return self._iocs
         if _st.iocs is None:
             from evtx_tool.analysis.ioc_extractor import extract_iocs
+            from evtx_tool.analysis.analysis_worker_proc import score_and_correlate_iocs
             _st.iocs = extract_iocs(_st.events)
+            score_and_correlate_iocs(_st.iocs)
         return _st.iocs
 
     def _export_tactic_csv(self, tactic: str) -> None:
