@@ -758,6 +758,25 @@ def _rule_privilege_escalation_chain(idx: _EventIndex) -> list[dict]:
     return chains
 
 
+def _is_rc4(enc) -> bool:
+    t = str(enc or "").strip().lower()
+    if t == "rc4":
+        return True
+    try:
+        return (int(t, 16) if t.startswith("0x") else int(t)) == 0x17
+    except ValueError:
+        return False
+
+
+def _status_ok(status) -> bool:
+    """A 4769 Status of success (0x0; a missing Status is taken as issued)."""
+    t = str(status if status is not None else "0").strip().lower()
+    try:
+        return (int(t, 16) if t.startswith("0x") else int(t)) == 0
+    except ValueError:
+        return False
+
+
 def _rule_kerberoasting(idx: _EventIndex) -> list[dict]:
     """
     3+ Event 4769 with TicketEncryptionType=0x17 (RC4) within 5 minutes.
@@ -766,7 +785,11 @@ def _rule_kerberoasting(idx: _EventIndex) -> list[dict]:
     chains: list[dict] = []
     rc4_tickets = [
         ev for ev in idx.get_by_eid(4769)
-        if _get_ticket_enc(ev) in ("0x17", "23", "rc4")
+        # RC4 however it is written ("0x17", "0x00000017", "23"), and only a
+        # ticket the KDC issued (Status 0x0): a failed request gives the
+        # attacker nothing to crack (Gemini audit 7-11).
+        if _is_rc4(_get_ticket_enc(ev))
+        and _status_ok((ev.get("event_data") or {}).get("Status"))
         # Requesting user must not be a machine/system account
         and not _is_system_user(_get_user(ev))
         # Service name (SPN) must not be a machine account or built-in principal.
@@ -1057,9 +1080,14 @@ def _rule_password_spray(idx: _EventIndex) -> list[dict]:
         user = _get_user(ev)
         if _is_system_user(user):
             continue
-        by_computer[ev.get("computer", "")].append(ev)
+        # And by source IP, as the rule says: grouped by computer only, twenty
+        # users' typos from twenty workstations read as one spray (Gemini 7-11).
+        # Failures with no source IP stay a group of their own.
+        _ip = str((ev.get("event_data") or {}).get("IpAddress") or "").strip()
+        _ip = "" if _ip in ("-", "::1", "127.0.0.1") else _ip.lower()
+        by_computer[(ev.get("computer", ""), _ip)].append(ev)
 
-    for computer, evts in by_computer.items():
+    for (computer, _src_ip), evts in by_computer.items():
         # Already sorted (perf fix #4)
         i = 0
         while i < len(evts):
