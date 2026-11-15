@@ -418,7 +418,8 @@ class NormalColValueWorker(QThread):
             return custom_value(ev, int(key[7:])).lower()
         if key == "log":
             return str(ev.get("log") or ev.get("channel", "")).lower()
-        return str(ev.get(key, "")).lower()
+        v = ev.get(key)
+        return ("" if v is None else str(v)).lower()   # None is not "none" (Gemini 3-14)
 
     @staticmethod
     def _display_date(raw_ts: str) -> str:
@@ -469,6 +470,11 @@ class NormalColValueWorker(QThread):
                 if self._col_key == "timestamp_date":
                     # Use display-timezone date so popup values match the table.
                     s = self._display_date(ev.get("timestamp", ""))
+                elif self._col_key == "timestamp_hour":
+                    # The date tree's hour level; read ev["timestamp_hour"],
+                    # which no event has, so it came back empty (Gemini 3-18).
+                    from evtx_tool.gui.models import display_hour
+                    s = display_hour(ev.get("timestamp", ""))
                 elif self._col_key == "log":
                     s = str(ev.get("log") or ev.get("channel", ""))
                 elif custom_id is not None:

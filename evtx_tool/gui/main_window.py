@@ -531,7 +531,8 @@ class ColumnFilterPopup(QDialog):
         11: "log",             # Log
         12: "process_id",      # Process ID
         13: "thread_id",       # Thread ID
-        15: "session_id",      # Session ID
+        # 15 Session ID: no parser fills session_id, so its popup was always
+        # empty (Gemini audit 3-18); not offered.
         19: "correlation_id",  # Correlation Id
         21: "provider",        # Provider
     }
