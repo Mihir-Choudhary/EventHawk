@@ -129,6 +129,12 @@ def build_inbound_sessions(events, fields):
             sid = str(data.get("LogonID") if eid in (4778, 4779) else data.get("TargetLogonId") or "").strip()
             if sid.casefold() in ("none", "0", "0x0", "-"):
                 sid = ""
+            # Compared as a number: "0x4F120" == "0x4f120" (Gemini audit 8-14).
+            elif sid.lower().startswith("0x"):
+                try:
+                    sid = hex(int(sid, 16))
+                except ValueError:
+                    pass
         elif lsm:
             namespace = "LSM SessionID"
             sid = str(data.get("SessionID") or data.get("TargetSession") or data.get("Session") or "").strip()
@@ -218,8 +224,17 @@ def build_inbound_sessions(events, fields):
         if unfilterable:flags.append(f"UNFILTERABLE_EVENTS:{unfilterable}")
         if any(str(r["data"].get("Address", "")).upper() == "LOCAL" for r in records):flags.append("LOCAL_CONSOLE")
         if any(str(r["data"].get("SessionName", "")).casefold() == "console" for r in records):flags.append("LOCAL_CONSOLE")
-        remote = next((str(r["data"].get("Address") or r["data"].get("IpAddress") or r["data"].get("ClientAddress") or "").strip() for r in records if r["data"].get("Address") or r["data"].get("IpAddress") or r["data"].get("ClientAddress")), "")
-        if remote.upper() in ("LOCAL", "-", "::1", "127.0.0.1"):remote = ""
+        # Remote IP only from an IP literal; Remote host a logged name (an
+        # address that is a name, else the 4778/4779 ClientName), else the IP
+        # as before (Gemini audit 8-14: a host name filled Remote IP, and
+        # ClientName was never read).
+        _addrs = [str(r["data"].get(k) or "").strip() for r in records for k in ("Address", "IpAddress", "ClientAddress")]
+        _addrs = [a for a in _addrs if a and a.upper() not in ("LOCAL", "-", "::1", "127.0.0.1", "UNKNOWN")]
+        from evtx_tool.core.host_identity import is_ip_literal as _is_ip
+        remote_ip = next((a for a in _addrs if _is_ip(a)), "")
+        _names = [a for a in _addrs if not _is_ip(a)] + [
+            str(r["data"].get("ClientName") or "").strip() for r in records]
+        remote = next((n for n in _names if n and n not in ("-", "Unknown")), "") or remote_ip
         display = str(records[0]["event"].get("computer") or "").strip() or "(unknown)"
         label = lambda r: f"EID {_eid(r['event'])} ({row['key'][1]})"
         proof = f"Start: {label(a) if a else 'not logged'}; End: {label(b) if b else 'not logged'}"
@@ -229,7 +244,7 @@ def build_inbound_sessions(events, fields):
         else:proof += "; observation only"
         out = dict(type="RDP Session",session_key=f"{row['key'][1]}:{row['key'][2]}",computer=display,
                    start_ts=_fmt(at),end_ts=_fmt(bt),start_ts_full=_fmt(at,True),end_ts_full=_fmt(bt,True),
-                   duration=duration,duration_secs=seconds,user=row["user"],remote_host=remote,remote_ip=remote,
+                   duration=duration,duration_secs=seconds,user=row["user"],remote_host=remote,remote_ip=remote_ip,
                    control="Unknown",status="Completed" if proved else "Partial (no start)" if b else "Start logged (no end)" if a else "Detected",
                    event_count=len(records),filterable_event_count=len(pairs),unfilterable_event_count=unfilterable,
                    flags=flags,evidence=proof,source_log="; ".join(sorted({PureWindowsPath(str(e.get('source_file') or '')).name for e in physical if e.get('source_file')})),related_keys=pairs,
