@@ -16344,9 +16344,10 @@ class MainWindow(QMainWindow):
                     ")"
                 ]
                 _params = [logon_id, logon_id]
-            if _computer:
-                _where_parts.append("computer = ?")
-                _params.append(_computer)
+            if "computer" in (session_info or {}):
+                # A blank Computer is a host too (8-10): match it, NULL included.
+                _where_parts.append("coalesce(computer, '') = ?")
+                _params.append(_computer or "")
             # timestamp_utc is stored as TEXT in the shards.  Comparing it with
             # a TIMESTAMP made DuckDB refuse the query ("Cannot compare values
             # of type VARCHAR and type TIMESTAMP") on every session with a time

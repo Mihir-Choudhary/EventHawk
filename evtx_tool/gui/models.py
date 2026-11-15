@@ -1972,8 +1972,10 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         if self._session_logon_id:
             # Scope to the originating host first (prevents false matches when
             # different machines share the same LUID in a multi-host load).
-            if self._session_computer:
-                if ev.get("computer", "") != self._session_computer:
+            # "" is a host too (a log with a blank Computer): only None means
+            # no host scope (Gemini audit 8-10: "" skipped the check).
+            if self._session_computer is not None:
+                if (ev.get("computer") or "") != self._session_computer:
                     return False
             ed = ev.get("event_data", {}) or {}
             # Check both fields independently — an event belongs to the session
