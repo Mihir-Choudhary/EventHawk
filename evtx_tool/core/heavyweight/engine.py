@@ -1241,6 +1241,12 @@ class HeavyweightEngine:
             shard_idx += 1
             accum_rows.clear()
 
+        # Tasks per source file, and DONEs received per source file: a worker
+        # that dies (crash, OOM kill) never sends DONE for the task it held.
+        from collections import Counter as _Counter
+        tasks_per_src = _Counter(t.get("original_file") or t["filepath"] for t in all_tasks)
+        done_per_src: "_Counter[str]" = _Counter()
+        workers_gone = False
         try:
             while done_tasks < total_tasks:
                 if self._stop.is_set():
@@ -1250,10 +1256,19 @@ class HeavyweightEngine:
                 try:
                     kind, src, data = out_queue.get(timeout=1.0)
                 except queue.Empty:
+                    # Every worker has ended but tasks are unreported: they
+                    # died with them.  One more empty wait drains what they
+                    # sent first, then stop waiting (Gemini audit 2-07: this
+                    # loop used to wait forever).
+                    if workers_gone:
+                        break
+                    if not any(_w.is_alive() for _w in workers):
+                        workers_gone = True
                     continue
 
                 if kind == "DONE":
                     done_tasks += 1
+                    done_per_src[src] += 1
                     if isinstance(data, dict):
                         agg = parse_stats.setdefault(src, {
                             "iterated": 0, "json_errors": 0,
@@ -1287,6 +1302,18 @@ class HeavyweightEngine:
                             approx_done = max(0, int(done_tasks / total_tasks * len(files)))
                             self._on_progress(approx_done, len(files), total_events, eps)
 
+            if workers_gone and done_tasks < total_tasks:
+                for _src, _n in tasks_per_src.items():
+                    _lost = _n - done_per_src.get(_src, 0)
+                    if _lost <= 0:
+                        continue
+                    _msg = (f"a worker process ended before finishing this file "
+                            f"({_lost} of {_n} part(s) not read); its events are incomplete")
+                    logger.error("Parse integrity: %s: %s", os.path.basename(_src), _msg)
+                    parse_stats.setdefault(_src, {
+                        "iterated": 0, "json_errors": 0,
+                        "extract_errors": 0, "filtered": 0, "rows": 0,
+                    })["stream_error"] = _msg
         finally:
             stop_evt.set()              # release any worker still blocked
             # Join with ONE shared deadline while draining out_queue.  A worker
