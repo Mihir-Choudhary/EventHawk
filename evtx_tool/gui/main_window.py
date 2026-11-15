@@ -2726,10 +2726,13 @@ class _LogonSessionDialog(QDialog):
         _boot_epoch: dict[int, int] = {}
         _epoch_by_computer: dict[str, int] = {}
         _boots_by_computer: dict[str, list[str]] = {}   # start times, in epoch order
+        # Per host key, so a boot logged as "host" or "HOST.corp" splits a
+        # LogonId of "HOST" too (Gemini audit 8-03).
+        from evtx_tool.analysis.host_power import host_key as _host_key
         for _pos, _ev in sorted(enumerate(events), key=lambda item: (
-            str(item[1].get("computer") or "").casefold(), _boot_ts(item[1]), item[0]
+            _host_key(item[1].get("computer")), _boot_ts(item[1]), item[0]
         )):
-            _computer = str(_ev.get("computer") or "")
+            _computer = _host_key(_ev.get("computer"))
             _epoch = _epoch_by_computer.get(_computer, 0)
             if _is_boot(_ev):
                 _epoch += 1
@@ -2910,7 +2913,7 @@ class _LogonSessionDialog(QDialog):
                 filt_end, filt_incl = scope_end_ts, scope_end_inclusive
                 if not explicit_end_norm:
                     _bounds = [t for t in (next_start_ts,) if t]
-                    _boots = _boots_by_computer.get(computer, [])
+                    _boots = _boots_by_computer.get(_host_key(computer), [])
                     _ep = sess.get("boot_epoch", 0)
                     if _ep < len(_boots) and _boots[_ep]:
                         _bounds.append(_boots[_ep])
@@ -4038,7 +4041,10 @@ class _WifiHistoryDialog(QDialog):
                 ev.get("computer") or ev.get("Computer") or
                 ev.get("source_file") or ev.get("SourceFile") or ""
             ).lower()
-            entry = {"eid": eid, "ts": ts, "ts_full": ts_full, "ed": ed, "computer": computer}
+            entry = {"eid": eid, "ts": ts, "ts_full": ts_full, "ed": ed, "computer": computer,
+                     # the Computer value itself (blank stays blank) for the
+                     # restart check: "computer" falls back to the file path
+                     "host": str(ev.get("computer") or ev.get("Computer") or "")}
 
             if eid in (8001, 8004):
                 connect_ev.append(entry)
@@ -4053,7 +4059,8 @@ class _WifiHistoryDialog(QDialog):
             return []
         def _apply_power(sess: dict, end_full: "str | None") -> None:
             """Adjust *sess* for restarts of its host during it (see host_power)."""
-            res = _power.assess(sess["computer"], sess.get("connect_ts_full") or sess["connect_ts"], end_full)
+            res = _power.assess(sess.get("host", sess["computer"]),
+                                sess.get("connect_ts_full") or sess["connect_ts"], end_full)
             if res is None:
                 return
             kind = res["kind"]
@@ -4125,6 +4132,7 @@ class _WifiHistoryDialog(QDialog):
                     # Low fix: carry computer into session so 11001/11006
                     # enrichment can constrain by host in merged datasets.
                     "computer":          computer,
+                    "host":              w["host"],
                     "connect_ts":        ts,
                     "connect_ts_full":   ts_full,
                     "disconnect_ts":     "",
@@ -5687,6 +5695,9 @@ class _RemoteAssistanceDialog(QDialog):
                     open_list.append((dt, bucket))
 
             bucket["_events"].append(ev)
+            # The Computer value itself (blank stays blank) for the restart
+            # check: the display falls back to the file name (8-03).
+            bucket.setdefault("_power_host", _comp_val)
 
             # Timestamps
             if dt is not None:
@@ -6058,6 +6069,7 @@ class _RemoteAssistanceDialog(QDialog):
                 "type":          type_label,
                 "session_key":   bkt["_key"],
                 "computer":      bkt.get("_computer_display") or bkt["_computer"],
+                "power_host":    bkt.get("_power_host", ""),
                 "start_ts":      start_ts,
                 "end_ts":        end_ts,
                 # Full-precision copies for display only.  start_ts/end_ts stay
@@ -6100,7 +6112,8 @@ class _RemoteAssistanceDialog(QDialog):
                 continue
             if s.get("duration_secs", -1) < 0 and _end is not None:
                 continue                     # no duration to adjust
-            res = _power.assess(s.get("computer"), _start, _end if s.get("duration_secs", -1) >= 0 else None)
+            res = _power.assess(s.get("power_host", s.get("computer")), _start,
+                                _end if s.get("duration_secs", -1) >= 0 else None)
             if res is None:
                 continue
             s["notes"] = res["note"]

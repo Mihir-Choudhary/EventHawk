@@ -125,7 +125,9 @@ def main() -> int:
     # this data has no shutdown or startup, so every note must be empty.
     check("no session here has a restart note", not any(r.get("notes") for r in s),
           str([r.get("notes") for r in s if r.get("notes")][:1]))
-    unchanged = [{k:v for k,v in row.items() if k not in ("row_ref", "continuity", "notes")}
+    # "power_host" (Gemini audit 8-03, the Computer value the restart check
+    # uses) is newer than GOLDEN too.
+    unchanged = [{k:v for k,v in row.items() if k not in ("row_ref", "continuity", "notes", "power_host")}
                  for row in s if row["type"] != "RDP Session"]
     for row in unchanged:
         if row["session_key"].startswith("__syn_"):

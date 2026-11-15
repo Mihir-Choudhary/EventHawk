@@ -107,8 +107,16 @@ def _eid(ev) -> int:
         return 0
 
 
+def host_key(raw) -> str:
+    """The key restarts are matched on: the short host name, casefolded; a
+    blank Computer is "(unknown)" (Gemini audit 8-03: the raw lowercased value
+    missed "HOST.corp.example" vs "HOST", and blank hosts were dropped)."""
+    from evtx_tool.core.host_identity import name_key
+    return name_key(raw)[1]
+
+
 def _host(ev) -> str:
-    return str(ev.get("computer") or ev.get("Computer") or "").strip().lower()
+    return host_key(ev.get("computer") or ev.get("Computer") or "")
 
 
 def _data(ev) -> dict:
@@ -211,9 +219,7 @@ class HostPower:
             c = classify(ev)
             if c is None:
                 continue
-            h = _host(ev)
-            if h:
-                marks.setdefault(h, []).append(c)
+            marks.setdefault(_host(ev), []).append(c)
         self.restarts: dict[str, list[dict]] = {}
         self.sleeps: dict[str, list[tuple]] = {}
         # Kernel-Power 42 with no logged wake time, per host.
@@ -324,7 +330,7 @@ class HostPower:
         if s is None:
             return None
         inside, uncertain = [], []
-        for r in self.restarts.get(str(host or "").strip().lower(), ()):
+        for r in self.restarts.get(host_key(host), ()):
             lo, hi, _lbl = r["boot"]
             if hi <= s or (e is not None and lo >= e):
                 continue                                  # wholly before / after
@@ -374,7 +380,7 @@ class HostPower:
             periods.append((sd[0], bhi, sd[2], blabel, "down"))
         # A sleep inside the session whose wake time is not logged: the time
         # asleep cannot be measured, so neither can the session.
-        for a in self.unknown_sleeps.get(str(host or "").strip().lower(), ()):
+        for a in self.unknown_sleeps.get(host_key(host), ()):
             if s + timedelta(seconds=_TRANSITION_SECS) < a < e - timedelta(seconds=_TRANSITION_SECS):
                 return {"kind": "uncertain_sleep",
                         "note": (f"Host went to sleep at {_ts(a)} (Kernel-Power 42) during the session, and its "
@@ -382,7 +388,7 @@ class HostPower:
                                  f"Kernel-Power 107 is written with the clock from before the sleep): "
                                  f"no duration.")}
         # Sleeps.
-        for lo, hi, lbl in self.sleeps.get(str(host or "").strip().lower(), ()):
+        for lo, hi, lbl in self.sleeps.get(host_key(host), ()):
             if hi <= s or lo >= e:
                 continue
             if lo > s and hi < e:
@@ -439,7 +445,7 @@ class HostPower:
                           for a, b, sa, sb, k in merged if k != "asleep_end")
         downs += "".join(f"{'; ' if downs else ''}asleep from {_ts(a)} ({sa}) until the disconnect was logged"
                          for a, b, sa, sb, k in merged if k == "asleep_end")
-        conf = self.sleep_conflicts.get(str(host or "").strip().lower(), [])
+        conf = self.sleep_conflicts.get(host_key(host), [])
         extra = "".join(f" Kernel-Power 566 places a sleep from {_ts(a5)} to {_ts(b5)}; Power-Troubleshooter 1 "
                         f"gives {_ts(pa)} to {_ts(pb)}: the two disagree, and the Power-Troubleshooter 1 "
                         f"times are used."

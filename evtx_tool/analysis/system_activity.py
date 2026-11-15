@@ -49,7 +49,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta
 
-from evtx_tool.analysis.host_power import HostPower, _dt, fmt_secs
+from evtx_tool.analysis.host_power import HostPower, _dt, fmt_secs, host_key
 
 KG = "microsoft-windows-kernel-general"
 KP = "microsoft-windows-kernel-power"
@@ -342,7 +342,7 @@ def _modern_standby(host):
 
 def _power_rows(host, evs):
     hp = HostPower(evs)
-    restarts = hp.restarts.get(host.name.strip().lower(), [])
+    restarts = hp.restarts.get(host_key(host.name), [])
     low = _low_power(host) + _modern_standby(host)
     off, on = [], []
     shutdowns_after = []
