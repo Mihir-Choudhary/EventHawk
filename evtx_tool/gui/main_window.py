@@ -6873,7 +6873,9 @@ class _JMExportWorker(QThread):
         event_source_name is kept although Normal mode does not capture it:
         dropping a value the log holds would lose evidence.
         """
-        import orjson as _json      # what the parser wrote it with; ~3x json.loads
+        # orjson when installed (~3x json.loads), the stdlib otherwise: a bare
+        # `import orjson` failed every JM CSV/JSON export without it.
+        from evtx_tool.core._json_compat import fast_loads as _loads
         (rid, eid, q, ts, ch, prov, esn, pg, comp, lvl, lvln, task, op, kw, ver,
          pid, tid, corr, uid, ed, sf, xrid) = r
         return {
@@ -6886,7 +6888,7 @@ class _JMExportWorker(QThread):
             "correlation_id": corr or "", "user_id": uid or "",
             # Written by the parser as JSON; a record that cannot be read
             # fails the export loudly rather than going out without its data.
-            "event_data": _json.loads(ed) if ed else {},
+            "event_data": _loads(ed) if ed else {},
             "source_file": sf or "",
         }
 
@@ -6896,15 +6898,22 @@ class _JMExportWorker(QThread):
         # EventData (and the header fields the Arrow table does not load) come
         # from the Parquet shards: a 1:1 composite-key LEFT JOIN keeps the
         # exact filtered, ordered row set (no dup, no loss) while streaming.
-        if self._shard_paths:
-            src = (f"FROM events e LEFT JOIN (SELECT record_id AS _jrid, source_file AS _jsf, "
-                   f"event_data_json AS _ed, qualifiers AS _q, provider_guid AS _pg, "
-                   f"version AS _ver FROM parquet_scan({self._shard_paths})) p "
-                   f"ON e.record_id = p._jrid AND e.source_file = p._jsf "
-                   f"WHERE {self._where_sql}")
-        else:
-            src = (f"FROM events e, (SELECT NULL AS _ed, NULL AS _q, NULL AS _pg, NULL AS _ver) p "
-                   f"WHERE {self._where_sql}")
+        # Without the shards (or with an event missing from them) every such
+        # event would go out with no EventData and the export would report
+        # success: refuse instead (Gemini audit 6-02).
+        self._require_shards(con)
+        src = (f"FROM events e LEFT JOIN (SELECT record_id AS _jrid, source_file AS _jsf, "
+               f"event_data_json AS _ed, qualifiers AS _q, provider_guid AS _pg, "
+               f"version AS _ver FROM parquet_scan({self._shard_paths})) p "
+               f"ON e.record_id = p._jrid AND e.source_file = p._jsf "
+               f"WHERE {self._where_sql}")
+        n_missing = con.execute(
+            f"SELECT count(*) FROM events e LEFT JOIN (SELECT record_id AS _jrid, source_file AS _jsf "
+            f"FROM parquet_scan({self._shard_paths})) p "
+            f"ON e.record_id = p._jrid AND e.source_file = p._jsf "
+            f"WHERE ({self._where_sql}) AND p._jrid IS NULL", self._params).fetchone()[0]
+        if n_missing:
+            raise RuntimeError(self._missing_data_message(n_missing))
         cols = ", ".join(self._EVENT_COLS)
         written = 0
         if self._ext == "csv":
@@ -6961,6 +6970,22 @@ class _JMExportWorker(QThread):
                 fh.write("\n]\n")
         return written
 
+    def _require_shards(self, con) -> None:
+        """The event data must be readable: a shard list, and every shard in it."""
+        if not self._shard_paths:
+            n = con.execute(f"SELECT count(*) FROM events WHERE {self._where_sql}", self._params).fetchone()[0]
+            if n:
+                raise RuntimeError(
+                    "The event data of this Juggernaut session cannot be found (its Parquet shard list "
+                    "is missing or unreadable), so the export would have no EventData. Re-parse the "
+                    "logs and export again.")
+
+    @staticmethod
+    def _missing_data_message(n: int) -> str:
+        return (f"{n:,} of the events to export have no record in this Juggernaut session's Parquet "
+                f"shards (removed or damaged), so they would go out without their EventData. Re-parse "
+                f"the logs and export again.")
+
     # ── HTML / XML: reconstruct dicts, then hand to the exporter ──────────
     def _run_reconstructed(self, con) -> int:
         from evtx_tool.output.exporters import export
@@ -7012,33 +7037,35 @@ class _JMExportWorker(QThread):
         if self._cancel:
             return len(events)
 
-        # Enrich event_data from Parquet shards (Arrow table holds metadata only)
-        if self._shard_paths and events:
-            try:
-                import json as _json_ed
-                import pyarrow as _pa_ed
-                key_tbl = _pa_ed.table({
-                    "k_src": [ev["source_file"] or "" for ev in events],
-                    "k_rid": [ev["record_id"] for ev in events],
-                })
-                con.register("_export_keys", key_tbl)
-                ed_rows = con.execute(
-                    f"SELECT p.source_file, p.record_id, p.event_data_json "
-                    f"FROM parquet_scan({self._shard_paths}) p "
-                    f"INNER JOIN _export_keys k "
-                    f"  ON p.source_file = k.k_src AND p.record_id = k.k_rid"
-                ).fetchall()
-                ed_map = {(r[0], r[1]): r[2] for r in ed_rows if r[2]}
-                for ev in events:
-                    ed_json = ed_map.get((ev["source_file"], ev["record_id"]))
-                    if ed_json:
-                        try:
-                            ev["event_data"] = _json_ed.loads(ed_json)
-                        except Exception:
-                            pass
-            except Exception as exc:
-                logger.warning(
-                    "HTML/XML export: could not load event_data from Parquet: %s", exc)
+        # Enrich event_data from Parquet shards (Arrow table holds metadata only).
+        # Mandatory, not best effort: a read error, a missing shard or an event
+        # missing from the shards used to be logged and the file written with
+        # empty EventData, reported as a success (Gemini audit 6-02).
+        if events:
+            self._require_shards(con)
+            import pyarrow as _pa_ed
+            from evtx_tool.core._json_compat import fast_loads as _loads_ed
+            key_tbl = _pa_ed.table({
+                "k_src": [ev["source_file"] or "" for ev in events],
+                "k_rid": [ev["record_id"] for ev in events],
+            })
+            con.register("_export_keys", key_tbl)
+            ed_rows = con.execute(
+                f"SELECT p.source_file, p.record_id, p.event_data_json "
+                f"FROM parquet_scan({self._shard_paths}) p "
+                f"INNER JOIN _export_keys k "
+                f"  ON p.source_file = k.k_src AND p.record_id = k.k_rid"
+            ).fetchall()
+            ed_map = {(r[0], r[1]): r[2] for r in ed_rows}
+            n_missing = sum(1 for ev in events if (ev["source_file"], ev["record_id"]) not in ed_map)
+            if n_missing:
+                raise RuntimeError(self._missing_data_message(n_missing))
+            for ev in events:
+                ed_json = ed_map[(ev["source_file"], ev["record_id"])]
+                if ed_json:
+                    # A record whose EventData cannot be read fails the export
+                    # loudly, as in CSV / JSON, rather than going out without it.
+                    ev["event_data"] = _loads_ed(ed_json)
         if self._cancel:
             return len(events)
         if self._custom:
