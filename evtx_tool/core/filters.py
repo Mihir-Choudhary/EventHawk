@@ -180,6 +180,12 @@ def _parse_eid_expr_cached(expr: str) -> "tuple[frozenset, frozenset]":
     return frozenset(inc), frozenset(exc)
 
 
+def _eid_selected(eid, inc_ids, exc_ids) -> bool:
+    """Whether an Event ID expression selects *eid*: in the include set (or
+    no include set) and not in the "!" set."""
+    return (eid in inc_ids if inc_ids else True) and eid not in exc_ids
+
+
 def validate_event_id_expression(expr: str) -> list[str]:
     """Return the list of unparseable tokens in ``expr`` (empty when valid).
 
@@ -789,16 +795,11 @@ def passes_filter(event: dict, fc: dict) -> bool:
     expr = fc.get("event_id_expr")
     if isinstance(expr, str) and expr:  # str guard: a malformed non-str config is skipped, not crashed
         inc_ids, exc_ids = _parse_eid_expr_cached(expr)  # memoised — see helper
-        eid = event["event_id"]
-        if inc_ids:
-            in_inc = eid in inc_ids
-            if fc.get("event_id_exclude", False):
-                if in_inc:
-                    return False
-            elif not in_inc:
+        if inc_ids or exc_ids:
+            # Exclude inverts what the WHOLE expression selects, its "!" part
+            # included (Gemini audit 3-13: only the include part was inverted).
+            if _eid_selected(event["event_id"], inc_ids, exc_ids) == bool(fc.get("event_id_exclude", False)):
                 return False
-        if exc_ids and eid in exc_ids:
-            return False
 
     # Level filter (use truthiness so empty list [] means "no filter").
     # Handles level ints, name strings, and Audit Success/Failure keywords.
@@ -1182,17 +1183,9 @@ def compile_filter(fc: dict) -> Callable[[dict], bool]:
         _inc_ids, _exc_ids = _parse_eid_expr_cached(_eid_expr)
         _eid_excl = bool(fc.get("event_id_exclude", False))
         def _check_eid_expr(ev, _inc=_inc_ids, _exc=_exc_ids, _ex=_eid_excl):
-            eid = ev["event_id"]
-            if _inc:
-                in_inc = eid in _inc
-                if _ex:
-                    if in_inc:
-                        return False
-                elif not in_inc:
-                    return False
-            if _exc and eid in _exc:
-                return False
-            return True
+            if not (_inc or _exc):
+                return True
+            return _eid_selected(ev["event_id"], _inc, _exc) != _ex   # Gemini 3-13
         checks.append(_check_eid_expr)
 
     # Level (ints, name strings, and Audit Success/Failure keyword outcomes)

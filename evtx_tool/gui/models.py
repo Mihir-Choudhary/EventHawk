@@ -2005,16 +2005,11 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         eid = ev.get("event_id")
         if eid is not None:
             eid_int = int(eid)
-            if self._adv_eid_include:
-                in_inc = eid_int in self._adv_eid_include
-                if self._adv_eid_exclude_mode:
-                    if in_inc:
-                        return False
-                else:
-                    if not in_inc:
-                        return False
-            if self._adv_eid_exclude:
-                if eid_int in self._adv_eid_exclude:
+            if self._adv_eid_include or self._adv_eid_exclude:
+                # Exclude inverts the whole expression, "!" part included
+                # (Gemini audit 3-13).
+                _sel = ((eid_int in self._adv_eid_include) if self._adv_eid_include else True)                     and eid_int not in self._adv_eid_exclude
+                if _sel == bool(self._adv_eid_exclude_mode):
                     return False
             # Profile-contributed lists (see set_advanced_filter), ANDed like
             # filter_sql's "event_id IN" / "NOT IN".

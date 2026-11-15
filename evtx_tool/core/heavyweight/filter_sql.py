@@ -604,17 +604,18 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             inc_ids, exc_ids = parse_event_id_expression(expr)
             is_exclude_mode = fc.get("event_id_exclude", False)
 
+            # What the expression selects; Exclude inverts ALL of it, the "!"
+            # part included (Gemini audit 3-13).
+            sel: list[str] = []
             if inc_ids:
-                ph = ", ".join("?" * len(inc_ids))
-                if is_exclude_mode:
-                    clauses.append(f"event_id NOT IN ({ph})")
-                else:
-                    clauses.append(f"event_id IN ({ph})")
+                sel.append(f"event_id IN ({', '.join('?' * len(inc_ids))})")
                 params.extend(sorted(inc_ids))
             if exc_ids:
-                ph = ", ".join("?" * len(exc_ids))
-                clauses.append(f"event_id NOT IN ({ph})")
+                sel.append(f"event_id NOT IN ({', '.join('?' * len(exc_ids))})")
                 params.extend(sorted(exc_ids))
+            if sel:
+                _sel_sql = " AND ".join(sel)
+                clauses.append(f"NOT ({_sel_sql})" if is_exclude_mode else f"({_sel_sql})")
         except Exception as exc:
             logger.warning("filter_sql: failed to parse event_id_expr %r: %s", expr, exc)
 
