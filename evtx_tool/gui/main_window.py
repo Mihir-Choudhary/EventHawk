@@ -9879,7 +9879,8 @@ class MainWindow(QMainWindow):
 
         # ── Merged-mode table (always exists) ────────────────────────────
         self._event_model  = EventTableModel()
-        self._proxy_model  = EventFilterProxyModel()
+        self._proxy_model = EventFilterProxyModel()
+        self._proxy_model.filter_failed.connect(self._on_jm_filter_failed)   # Gemini 3-07
         self._wire_filter_feedback(self._proxy_model )
         self._proxy_model.setSourceModel(self._event_model)
 
@@ -10882,6 +10883,7 @@ class MainWindow(QMainWindow):
 
         model = EventTableModel()
         proxy = EventFilterProxyModel()
+        proxy.filter_failed.connect(self._on_jm_filter_failed)   # Gemini 3-07
         self._wire_filter_feedback(proxy)
         proxy.setSourceModel(model)
 
@@ -17880,6 +17882,7 @@ class MainWindow(QMainWindow):
 
         model = EventTableModel()
         proxy = EventFilterProxyModel()
+        proxy.filter_failed.connect(self._on_jm_filter_failed)   # Gemini 3-07
         self._wire_filter_feedback(proxy)
         proxy.setSourceModel(model)
 
@@ -18307,6 +18310,7 @@ class MainWindow(QMainWindow):
 
         model = EventTableModel()
         proxy = EventFilterProxyModel()
+        proxy.filter_failed.connect(self._on_jm_filter_failed)   # Gemini 3-07
         self._wire_filter_feedback(proxy)
         proxy.setSourceModel(model)
         table = self._create_configured_table(proxy)

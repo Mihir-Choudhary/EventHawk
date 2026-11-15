@@ -1053,6 +1053,10 @@ class EventFilterProxyModel(QSortFilterProxyModel):
     # including ones added later.
     filtering_started  = Signal()
     filtering_finished = Signal()
+    # A filter part that cannot be applied (e.g. a condition regex from a
+    # profile that does not compile): the view shows MORE rows than asked,
+    # and the window must say so (Gemini audit 3-07; as Juggernaut's E5-05).
+    filter_failed      = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1575,6 +1579,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
         # We freeze the resulting set so the per-row hot path is O(1) membership.
         from evtx_tool.core.heavyweight.filter_sql import expand_condition_value
         raw_conds = cfg.get("conditions") or []
+        _bad_regex: list[str] = []
         prepped: list[dict] = []
         for c in raw_conds:
             name = c.get("name", "")
@@ -1595,9 +1600,14 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 try:
                     flags = 0 if cs else _re.IGNORECASE
                     entry["compiled"] = _re.compile(val, flags)
-                except _re.error:
+                except _re.error as _rx_err:
                     entry["compiled"] = None
+                    _bad_regex.append(f"{name}: {val!r} ({_rx_err})")
             prepped.append(entry)
+        if _bad_regex:
+            self.filter_failed.emit(
+                "These condition regular expressions are invalid and were NOT applied:\n"
+                + "\n".join(_bad_regex))
         self._adv_conditions = prepped
         from evtx_tool.core.filters import condition_groups
         self._adv_cond_groups = condition_groups(prepped)

@@ -331,14 +331,15 @@ class _FilterThread(QThread):
         # Phase 2 — condition filter via Parquet
         shards = self._get_shard_paths()
         if not shards:
-            logger.warning("_FilterThread: no Parquet shards — returning metadata-only result")
-            return self._full_table.take(row_ids)
+            # Raise: the caller reports it, so the view is never taken for
+            # filtered when the conditions were not applied (Gemini 3-07).
+            raise RuntimeError("no Parquet shard list: the field conditions cannot be applied")
 
         cond_sql, cond_params = filter_config_to_sql(conditions_cfg)
         if cond_sql == "1=1":
             return self._full_table.take(row_ids)
 
-        quoted = ", ".join(f"'{p}'" for p in shards)
+        quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in shards)   # Gemini 3-07
         try:
             con2 = duckdb.connect()
             # Composite (record_id, source_file) key prevents cross-file matches
@@ -427,11 +428,7 @@ class _FilterThread(QThread):
         # Phase 2 — CONTAINS + optional conditions via Parquet
         shards = self._get_shard_paths()
         if not shards:
-            logger.warning(
-                "_FilterThread: no Parquet shards for full-text search — "
-                "returning metadata-only result (event_data_json not searched)"
-            )
-            return self._full_table.take(row_ids)
+            raise RuntimeError("no Parquet shard list: the event data cannot be searched")
 
         # text_search_cfg may be a single config or several (the Advanced
         # Filter's term and the quick toolbar term are independent legs and
@@ -465,7 +462,7 @@ class _FilterThread(QThread):
             phase2_where  = text_sql
             phase2_params = text_params
 
-        quoted = ", ".join(f"'{p}'" for p in shards)
+        quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in shards)   # Gemini 3-07
         try:
             con2 = duckdb.connect()
             # Composite (record_id, source_file) key — prevents cross-file row matches
