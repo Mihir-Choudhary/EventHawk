@@ -277,7 +277,7 @@ _SIGMA_RULES: list[dict] = [
         "name":      "Process Create: PowerShell",
         "selection": {
             "event_id": "4688",
-            "NewProcessName_endswith": "\\powershell.exe",
+            "NewProcessName_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
         },
         "condition": "selection",
         "tags": [{"tactic": "Execution", "tid": "T1059.001",
@@ -360,7 +360,7 @@ _SIGMA_RULES: list[dict] = [
         "selection": {"event_id": "4688"},
         "filter_any": [
             {"NewProcessName_endswith_any": [
-                "\\powershell.exe", "\\cmd.exe", "\\wscript.exe",
+                "\\powershell.exe", "\\pwsh.exe", "\\cmd.exe", "\\wscript.exe",
                 "\\cscript.exe", "\\mshta.exe", "\\conhost.exe",
                 "\\svchost.exe", "\\dllhost.exe", "\\msiexec.exe",
                 "\\spoolsv.exe", "\\wermgr.exe", "\\tiworker.exe",
@@ -387,7 +387,7 @@ _SIGMA_RULES: list[dict] = [
         "selection": {
             "event_id": "1",
             "channel_contains": "sysmon",
-            "Image_endswith": "\\powershell.exe",
+            "Image_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
             "CommandLine_contains_any": ["-enc ", "-encodedcommand", " -e "],
         },
         "condition": "selection",
@@ -401,7 +401,7 @@ _SIGMA_RULES: list[dict] = [
         "selection": {
             "event_id": "1",
             "channel_contains": "sysmon",
-            "Image_endswith": "\\powershell.exe",
+            "Image_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
             "CommandLine_contains_any": [
                 "downloadstring", "downloadfile", "webclient",
                 "invoke-webrequest", "iwr ", "system.net.webclient",
@@ -421,7 +421,7 @@ _SIGMA_RULES: list[dict] = [
         "selection": {
             "event_id": "1",
             "channel_contains": "sysmon",
-            "Image_endswith": "\\powershell.exe",
+            "Image_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
             "CommandLine_contains_any": [
                 "iex(", "iex (", "| iex", "|iex",
                 "invoke-expression",
@@ -438,7 +438,7 @@ _SIGMA_RULES: list[dict] = [
         "selection": {
             "event_id": "1",
             "channel_contains": "sysmon",
-            "Image_endswith": "\\powershell.exe",
+            "Image_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
             "CommandLine_contains_any": [
                 "bypass", "-nop ", "-noprofile", "-windowstyle hidden",
                 "-executionpolicy bypass",
@@ -455,7 +455,7 @@ _SIGMA_RULES: list[dict] = [
         "selection": {
             "event_id": "1",
             "channel_contains": "sysmon",
-            "Image_endswith": "\\powershell.exe",
+            "Image_endswith": ["\\powershell.exe", "\\pwsh.exe", "\\pwsh.exe"],   # PowerShell 7 too (Gemini 7-12)
         },
         "filter_any": [
             {"CommandLine_contains_any": [
@@ -506,7 +506,7 @@ _SIGMA_RULES: list[dict] = [
         },
         "filter_any": [
             {"Image_endswith_any": [
-                "\\powershell.exe", "\\cmd.exe",
+                "\\powershell.exe", "\\pwsh.exe", "\\cmd.exe",
                 "\\wscript.exe", "\\cscript.exe",
                 "\\conhost.exe", "\\svchost.exe",
             ]},

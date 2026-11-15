@@ -100,6 +100,7 @@ _SUPPRESS_PAIRS: frozenset[tuple[str, str]] = frozenset({
     ("ccmexec.exe",           "cscript.exe"),
     ("ccmexec.exe",           "msiexec.exe"),
     ("ccmexec.exe",           "powershell.exe"),
+    ("ccmexec.exe",           "pwsh.exe"),
     ("ccmexec.exe",           "conhost.exe"),
     # System idle / registry
     ("registry",              "smss.exe"),
@@ -120,7 +121,7 @@ _LINEAGE_RULES: list[dict] = [
             "onenote.exe", "msaccess.exe", "visio.exe", "mspub.exe",
         },
         "children": {
-            "powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe",
+            "powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe",
             "mshta.exe", "regsvr32.exe", "rundll32.exe", "certutil.exe",
             "bitsadmin.exe", "curl.exe", "wget.exe", "wmic.exe",
         },
@@ -138,7 +139,7 @@ _LINEAGE_RULES: list[dict] = [
             "tomcat.exe", "tomcat9.exe", "java.exe",
         },
         "children": {
-            "powershell.exe", "cmd.exe", "whoami.exe", "net.exe", "net1.exe",
+            "powershell.exe", "pwsh.exe", "cmd.exe", "whoami.exe", "net.exe", "net1.exe",
             "ipconfig.exe", "systeminfo.exe", "certutil.exe", "wscript.exe",
         },
         "tags": [{
@@ -155,7 +156,7 @@ _LINEAGE_RULES: list[dict] = [
             "oracle.exe", "postgres.exe", "mongod.exe",
         },
         "children": {
-            "powershell.exe", "cmd.exe", "whoami.exe",
+            "powershell.exe", "pwsh.exe", "cmd.exe", "whoami.exe",
             "net.exe", "net1.exe", "certutil.exe",
         },
         "tags": [{
@@ -169,7 +170,7 @@ _LINEAGE_RULES: list[dict] = [
     {
         "parents": {"wmiprvse.exe", "wmiapsrv.exe"},
         "children": {
-            "powershell.exe", "cmd.exe", "mshta.exe",
+            "powershell.exe", "pwsh.exe", "cmd.exe", "mshta.exe",
             "wscript.exe", "cscript.exe",
         },
         "tags": [{
@@ -183,7 +184,7 @@ _LINEAGE_RULES: list[dict] = [
     {
         "parents": {"mshta.exe"},
         "children": {
-            "powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe",
+            "powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe",
             "regsvr32.exe", "rundll32.exe",
         },
         "tags": [{
@@ -195,7 +196,7 @@ _LINEAGE_RULES: list[dict] = [
     },
     # Shell → certutil (download cradle)
     {
-        "parents": {"powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe"},
+        "parents": {"powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe"},
         "children": {"certutil.exe"},
         "tags": [{
             "tactic": "Command and Control",
@@ -206,7 +207,7 @@ _LINEAGE_RULES: list[dict] = [
     },
     # Shell → regsvr32 (LOLBin)
     {
-        "parents": {"powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe"},
+        "parents": {"powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe"},
         "children": {"regsvr32.exe"},
         "tags": [{
             "tactic": "Defense Evasion",
@@ -217,7 +218,7 @@ _LINEAGE_RULES: list[dict] = [
     },
     # Shell → rundll32 (LOLBin)
     {
-        "parents": {"powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe"},
+        "parents": {"powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe"},
         "children": {"rundll32.exe"},
         "tags": [{
             "tactic": "Defense Evasion",
@@ -228,7 +229,7 @@ _LINEAGE_RULES: list[dict] = [
     },
     # Shell → mshta (LOLBin)
     {
-        "parents": {"powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe"},
+        "parents": {"powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe"},
         "children": {"mshta.exe"},
         "tags": [{
             "tactic": "Defense Evasion",
@@ -239,7 +240,7 @@ _LINEAGE_RULES: list[dict] = [
     },
     # Shell → bitsadmin (download LOLBin)
     {
-        "parents": {"powershell.exe", "cmd.exe"},
+        "parents": {"powershell.exe", "pwsh.exe", "cmd.exe"},
         "children": {"bitsadmin.exe"},
         "tags": [{
             "tactic": "Command and Control",
@@ -250,7 +251,7 @@ _LINEAGE_RULES: list[dict] = [
     },
     # Shell → wmic (LOLBin lateral movement / execution)
     {
-        "parents": {"powershell.exe", "cmd.exe"},
+        "parents": {"powershell.exe", "pwsh.exe", "cmd.exe"},
         "children": {"wmic.exe"},
         "tags": [{
             "tactic": "Execution",

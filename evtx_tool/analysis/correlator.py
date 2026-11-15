@@ -315,18 +315,18 @@ class _LogonSessionIndex:
 # Known-bad parent→child spawn pairs (process basename → set of suspicious children).
 # Flagging office/browser spawning shells is one of the strongest phishing indicators.
 _SUSPICIOUS_SPAWN: dict[str, frozenset] = {
-    "winword.exe":  frozenset({"cmd.exe","powershell.exe","wscript.exe","cscript.exe","mshta.exe","wmic.exe"}),
-    "excel.exe":    frozenset({"cmd.exe","powershell.exe","wscript.exe","cscript.exe","mshta.exe","wmic.exe"}),
-    "powerpnt.exe": frozenset({"cmd.exe","powershell.exe","wscript.exe","cscript.exe","mshta.exe"}),
-    "outlook.exe":  frozenset({"cmd.exe","powershell.exe","wscript.exe","cscript.exe","mshta.exe"}),
-    "iexplore.exe": frozenset({"cmd.exe","powershell.exe","mshta.exe","wscript.exe","cscript.exe"}),
-    "msedge.exe":   frozenset({"cmd.exe","powershell.exe","mshta.exe"}),
-    "chrome.exe":   frozenset({"cmd.exe","powershell.exe","mshta.exe"}),
-    "acrord32.exe": frozenset({"cmd.exe","powershell.exe","wscript.exe"}),
-    "acrobat.exe":  frozenset({"cmd.exe","powershell.exe","wscript.exe"}),
-    "mshta.exe":    frozenset({"cmd.exe","powershell.exe","wscript.exe","cscript.exe"}),
-    "wscript.exe":  frozenset({"cmd.exe","powershell.exe","mshta.exe"}),
-    "cscript.exe":  frozenset({"cmd.exe","powershell.exe","mshta.exe"}),
+    "winword.exe":  frozenset({"cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe","mshta.exe","wmic.exe"}),
+    "excel.exe":    frozenset({"cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe","mshta.exe","wmic.exe"}),
+    "powerpnt.exe": frozenset({"cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe","mshta.exe"}),
+    "outlook.exe":  frozenset({"cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe","mshta.exe"}),
+    "iexplore.exe": frozenset({"cmd.exe","powershell.exe","pwsh.exe","mshta.exe","wscript.exe","cscript.exe"}),
+    "msedge.exe":   frozenset({"cmd.exe","powershell.exe","pwsh.exe","mshta.exe"}),
+    "chrome.exe":   frozenset({"cmd.exe","powershell.exe","pwsh.exe","mshta.exe"}),
+    "acrord32.exe": frozenset({"cmd.exe","powershell.exe","pwsh.exe","wscript.exe"}),
+    "acrobat.exe":  frozenset({"cmd.exe","powershell.exe","pwsh.exe","wscript.exe"}),
+    "mshta.exe":    frozenset({"cmd.exe","powershell.exe","pwsh.exe","wscript.exe","cscript.exe"}),
+    "wscript.exe":  frozenset({"cmd.exe","powershell.exe","pwsh.exe","mshta.exe"}),
+    "cscript.exe":  frozenset({"cmd.exe","powershell.exe","pwsh.exe","mshta.exe"}),
 }
 
 
