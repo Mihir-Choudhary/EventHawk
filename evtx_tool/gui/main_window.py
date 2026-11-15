@@ -16892,11 +16892,19 @@ class MainWindow(QMainWindow):
         Compute a lightweight ATT&CK summary dict from an event list.
         Returns None if no events have attack_tags.
         """
+        # The same summary attack_mapping.enrich_and_summarize builds at parse
+        # time: tactic names as MITRE writes them (the HTML/PDF reports look
+        # them up so; lowercasing left the reports without tactic cards) and
+        # total_tagged = events with a tag, not tags (Gemini audit 6-13 / 7-06).
         by_tactic: dict[str, int] = {}
         by_technique: dict[str, dict] = {}
+        total = 0
         for ev in events:
-            for tag in (ev.get("attack_tags") or []):
-                tactic = tag.get("tactic", "").lower()
+            tags = ev.get("attack_tags") or []
+            if tags:
+                total += 1
+            for tag in tags:
+                tactic = tag.get("tactic", "") or ""
                 tid    = tag.get("tid", "")
                 name   = tag.get("name", "") or tag.get("technique_name", "") or tid
                 if tactic:
@@ -16905,7 +16913,6 @@ class MainWindow(QMainWindow):
                     if tid not in by_technique:
                         by_technique[tid] = {"name": name, "tactic": tactic, "count": 0}
                     by_technique[tid]["count"] += 1
-        total = sum(by_tactic.values())
         if total == 0:
             return None
         return {"total_tagged": total, "by_tactic": by_tactic, "by_technique": by_technique}
