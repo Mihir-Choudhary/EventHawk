@@ -83,7 +83,18 @@ def _collect_evtx_files(paths: list[str], recursive: bool = True) -> list[str]:
             files.append(str(path))
         elif "*" in p or "?" in p:
             import glob as _glob
-            files.extend(sorted(_glob.glob(p, recursive=recursive)))
+            matches = sorted(_glob.glob(p, recursive=recursive))
+            # Only regular .evtx files are event logs: a text file or a folder
+            # matched by the wildcard must not reach the engine (Gemini 1-04).
+            logs = [m for m in matches
+                    if os.path.isfile(m) and m.lower().endswith(".evtx")]
+            files.extend(logs)
+            if not matches:
+                console.print(f"[yellow]Warning: {p} matched nothing[/yellow]")
+            elif len(logs) < len(matches):
+                console.print(
+                    f"[yellow]Warning: {p}: {len(matches) - len(logs)} match(es) "
+                    f"skipped (not .evtx files)[/yellow]")
         else:
             console.print(f"[yellow]Warning: {p} not found or not an EVTX file[/yellow]")
     seen: set[str] = set()
