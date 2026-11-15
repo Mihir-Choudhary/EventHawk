@@ -9,10 +9,11 @@ Artifact layout under a user-chosen directory:
     artifact_checksums.json — HMAC-SHA256 checksums for all pickle files
     baseline.db             — SQLite: full normalized event store (for TED offline)
 
-Security note: pickle files are protected by HMAC-SHA256 checksums stored in
-artifact_checksums.json.  The HMAC key is derived from the artifact directory's
-absolute path (deterministic, zero-config for local use).  Set the environment
-variable SENTINEL_ARTIFACT_KEY to a hex string to use a custom key instead.
+Security note: the pickle files and baseline_meta.json are protected by HMAC-SHA256
+checksums stored in artifact_checksums.json.  The key is an HMAC of the artifact
+directory's path under the analyst's own secret (%LOCALAPPDATA%\\EventHawk\\
+sentinel_artifact.key).  Set SENTINEL_ARTIFACT_KEY to a hex string of at least 16
+bytes to use a custom key instead.
 """
 from __future__ import annotations
 
@@ -43,6 +44,10 @@ _CHECKSUM_FILE   = "artifact_checksums.json"
 _DB_FILE         = "baseline.db"
 
 _PICKLE_FILES = (_FREQ_FILE, _TRIE_FILE, _FUSE_FILE)
+# Files covered by artifact_checksums.json.  The meta file holds the tier
+# boundaries: unsigned, editing suppress_max silenced every alert (Gemini 10-01).
+_SIGNED_FILES = _PICKLE_FILES + (_META_FILE,)
+_MIN_ENV_KEY_BYTES = 16
 
 
 # ── HMAC helpers ───────────────────────────────────────────────────────────────
@@ -100,9 +105,15 @@ def _artifact_key(directory: Path) -> bytes:
     env_key = os.environ.get("SENTINEL_ARTIFACT_KEY", "")
     if env_key:
         try:
-            return bytes.fromhex(env_key)
+            k = bytes.fromhex(env_key)
         except ValueError:
             logger.warning("SENTINEL_ARTIFACT_KEY is not valid hex; falling back to the stored secret")
+        else:
+            # A blank value gave an EMPTY key, and 1 byte was accepted (Gemini 10-01).
+            if len(k) >= _MIN_ENV_KEY_BYTES:
+                return k
+            logger.warning("SENTINEL_ARTIFACT_KEY is shorter than %d bytes; falling back to the stored "
+                           "secret", _MIN_ENV_KEY_BYTES)
     return hmac.new(_user_secret(), str(directory.resolve()).encode(), hashlib.sha256).digest()
 
 
@@ -139,7 +150,7 @@ def _verify_checksums(directory: Path, key: bytes) -> None:
     with open(checksum_path, encoding="utf-8") as fh:
         stored: dict[str, str] = json.load(fh)
 
-    for fname in _PICKLE_FILES:
+    for fname in _SIGNED_FILES:
         fpath = directory / fname
         if not fpath.exists():
             continue
@@ -199,10 +210,10 @@ def save_artifacts(
         pickle.dump(fuse, fh, protocol=pickle.HIGHEST_PROTOCOL)
     logger.info("Saved fuse_filter → %s", fuse_path)
 
-    # Compute and save HMAC-SHA256 checksums for all pickle files
+    # Compute and save HMAC-SHA256 checksums for the pickles and the meta file
     checksums = {
         fname: _hmac_file(directory / fname, key)
-        for fname in _PICKLE_FILES
+        for fname in _SIGNED_FILES
     }
     _save_checksums(directory, checksums)
 
@@ -305,6 +316,10 @@ def load_artifacts(directory: Path) -> tuple[
 ]:
     from sentinel.models import BaselineMeta, TierBoundaries
 
+    # Verify checksums before reading anything: the meta file is signed too.
+    key = _artifact_key(directory)
+    _verify_checksums(directory, key)
+
     meta_path = directory / _META_FILE
     with open(meta_path, encoding="utf-8") as fh:
         raw = json.load(fh)
@@ -320,10 +335,6 @@ def load_artifacts(directory: Path) -> tuple[
         baseline_process_dist=raw["baseline_process_dist"],
         input_file_hashes=raw.get("input_file_hashes", {}),
     )
-
-    # Verify checksums before deserializing pickles
-    key = _artifact_key(directory)
-    _verify_checksums(directory, key)
 
     # S1: Use restricted unpickler — only allows Sentinel's own classes
     freq_model = _safe_pickle_load(directory / _FREQ_FILE)
