@@ -41,7 +41,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
-import orjson
+try:
+    import orjson as _orjson
+
+    def _dumps_compact(obj) -> str:
+        return _orjson.dumps(obj).decode()
+except ImportError:      # optional; requirements.txt promises a stdlib fallback (Gemini 2-06)
+    import json as _json_std
+
+    def _dumps_compact(obj) -> str:
+        # Same text orjson writes: no spaces, non-ASCII kept.
+        return _json_std.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 from evtx_tool.core.record_json import load_record, pick_payload, unwrap_system_scalars
 
@@ -445,7 +455,7 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes,
                          if not (isinstance(k, str) and k.startswith("#"))}
         else:
             _ed_clean = {}
-        ed_json = orjson.dumps(_ed_clean).decode() if _ed_clean else None
+        ed_json = _dumps_compact(_ed_clean) if _ed_clean else None
 
         return (
             record_id, eid, level, level_name, ts_db,
@@ -469,7 +479,7 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes,
             # Flattened {field: value} JSON for nested-aware field-conditions
             # (json_extract).  Same flatten_fields() normal mode uses → field
             # conditions resolve nested fields identically.  Parquet-only.
-            (orjson.dumps(flat_ed).decode() if flat_ed else None),
+            (_dumps_compact(flat_ed) if flat_ed else None),
             provider_guid,
             _safe_int(system.get("Version")),   # normal mode: Version, default 0
             event_description_text({
