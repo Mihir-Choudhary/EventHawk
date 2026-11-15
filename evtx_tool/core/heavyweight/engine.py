@@ -757,6 +757,7 @@ def _hw_worker_stream(
     # ── Diagnostic counters ───────────────────────────────────────────────
     n_iterated       = 0
     n_json_errors    = 0
+    n_idless         = 0   # undecodable records (exception objects, no record ID)
     n_extract_nones  = 0   # parse/extract ERRORS only (skipped records)
     n_filtered       = 0   # valid events rejected by the pre-filter
     n_rows           = 0
@@ -775,6 +776,17 @@ def _hw_worker_stream(
         identical extraction/filter logic and identical counters.
         """
         nonlocal n_json_errors, n_extract_nones, n_filtered, first_json_err, first_extract_err
+        nonlocal n_idless
+        if isinstance(record, Exception):
+            # pyevtx-rs yields an exception OBJECT for a record it cannot
+            # decode.  Count it as unparsed and go on: raising here used to
+            # abort the whole stream (Gemini audit 2-01).
+            n_json_errors += 1
+            n_idless += 1
+            if first_json_err is None:
+                first_json_err = str(record)
+                logger.warning("[%s] Undecodable record (#%d): %s", src, n_iterated, record)
+            return 0
         rid = record.get("event_record_id")
         if rid is not None:
             emitted.add(rid)
@@ -862,6 +874,9 @@ def _hw_worker_stream(
                 except StopIteration as _stop:
                     _ss = _stop.value or {}
                     salvage_unrec = _ss.get("chunks_unrecoverable", 0)
+                    _unread = _ss.get("records_unreadable", 0)
+                    n_json_errors += _unread
+                    n_idless += _unread
                     break
                 if stop_event.is_set():
                     break
@@ -891,7 +906,8 @@ def _hw_worker_stream(
             _expected = sum(hi - lo + 1 for lo, hi in _ranges)
             _got = emitted.count_within(_ranges)
             if _expected > 0 and _got < _expected:
-                missing_vs_expected = _expected - _got
+                # ID-less undecodable records are already in json_errors.
+                missing_vs_expected = max(0, _expected - _got - n_idless)
         except Exception:
             pass
 

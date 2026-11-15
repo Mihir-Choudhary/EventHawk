@@ -195,6 +195,12 @@ def iter_events(filepath: str) -> Generator[dict, None, None]:
     parser = _RustParser(filepath)
     skipped = 0
     for record in parser.records_json():
+        if isinstance(record, Exception):
+            # pyevtx-rs yields an exception OBJECT for a record it cannot
+            # decode; count it and go on to the next record (Gemini 1-03).
+            skipped += 1
+            logger.debug("Skipping undecodable record in %s: %s", filepath, record)
+            continue
         try:
             data = load_record(record["data"])   # keeps repeated names (FO-1)
             yield _extract_from_json(data, record["event_record_id"], record["timestamp"], filepath)

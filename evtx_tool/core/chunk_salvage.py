@@ -287,7 +287,9 @@ def salvage_records_json(
 
     stats = {"salvaged": 0, "chunks_parsed": 0, "chunks_skipped": 0,
              "chunks_unrecoverable": 0, "damaged_chunk_headers": 0,
-             "unranged_chunks": 0}
+             "unranged_chunks": 0,
+             # undecodable records inside an otherwise readable chunk
+             "records_unreadable": 0}
 
     idx = read_chunk_index(filepath)
     stats["damaged_chunk_headers"] = len(idx["damaged"])
@@ -332,6 +334,11 @@ def salvage_records_json(
                     parser = PyEvtxParser(tmp_path)
                     try:
                         for rec in parser.records_json():
+                            if isinstance(rec, Exception):
+                                # One undecodable record: count it, keep the
+                                # rest of the chunk (Gemini 1-03 / 2-01).
+                                stats["records_unreadable"] += 1
+                                continue
                             rid = rec["event_record_id"]
                             if ((already_emitted is not None and already_emitted.contains(rid))
                                     or yielded.contains(rid)):

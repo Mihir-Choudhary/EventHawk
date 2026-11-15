@@ -96,9 +96,18 @@ def _worker_parse_file(task: dict) -> dict:
         # PARTIAL results already parsed instead of discarding everything.
         # Previously the outer except returned events=[]: one bad chunk at
         # position 179/180 threw away 99% of perfectly good records.
+        # Records the parser could not decode at all come back as exception
+        # objects with no record ID.  They are counted in `skipped`; because
+        # their IDs never reach `emitted`, the expected-vs-actual check would
+        # count them a second time, so they are subtracted there (Gemini 1-03).
+        idless_skipped = 0
         try:
             for record in parser.records_json():
                 total += 1
+                if isinstance(record, Exception):
+                    skipped += 1
+                    idless_skipped += 1
+                    continue
                 try:
                     emitted.add(record["event_record_id"])
                     data = load_record(record["data"])   # keeps repeated names (FO-1)
@@ -130,6 +139,9 @@ def _worker_parse_file(task: dict) -> dict:
                     except StopIteration as _stop:
                         _sstats = _stop.value or {}
                         salvage_unrecoverable = _sstats.get("chunks_unrecoverable", 0)
+                        _unread = _sstats.get("records_unreadable", 0)
+                        skipped += _unread
+                        idless_skipped += _unread
                         break
                     total += 1
                     salvaged += 1
@@ -167,7 +179,7 @@ def _worker_parse_file(task: dict) -> dict:
             _expected = sum(hi - lo + 1 for lo, hi in _ranges)
             _got = emitted.count_within(_ranges)
             if _expected > 0 and _got < _expected:
-                missing_vs_expected = _expected - _got
+                missing_vs_expected = max(0, _expected - _got - idless_skipped)
         except Exception:
             pass
 
