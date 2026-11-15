@@ -43,7 +43,7 @@ from typing import Callable
 
 import orjson
 
-from evtx_tool.core.record_json import load_record
+from evtx_tool.core.record_json import load_record, unwrap_system_scalars
 
 from evtx_tool.core.filters import flatten_searchable_values, flatten_fields, event_description_text
 
@@ -160,7 +160,12 @@ def _safe_int(val, default: int = 0) -> int:
         # Juggernaut than in normal mode. No such record exists in the sample
         # corpus (210,234 dict EventIDs, all with "#text"), so this closes a
         # latent parity gap rather than a live bug.
-        return int(val.get("#text", default) or val.get("Value", default) or default)
+        # "is not None", not "or": {"#text": 0} is 0 (LogAlways), not the
+        # default; an empty or non-numeric #text gives the default instead of
+        # raising and dropping the event (Gemini audit 2-03).
+        val = val.get("#text") if val.get("#text") is not None else val.get("Value")
+        if val is None or val == "":
+            return default
     try:
         return int(val)
     except (ValueError, TypeError):
@@ -296,7 +301,7 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes,
     """
     try:
         event  = parsed.get("Event", parsed)
-        system = event.get("System") or {}
+        system = unwrap_system_scalars(event.get("System") or {})   # Gemini 1-08
         ed_raw = event.get("EventData") or event.get("UserData") or {}
 
         # ── Flatten EventData ONCE (shared with normal mode) ──────────────────

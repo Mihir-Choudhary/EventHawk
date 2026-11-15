@@ -42,6 +42,36 @@ def _keep_repeats(pairs):
     return out
 
 
+# <System> children that are plain values, but which pyevtx-rs renders as
+# {"#attributes": {...}, "#text": value} when the tag carries attributes.
+_SYSTEM_SCALARS = ("Level", "Task", "Opcode", "Keywords", "Version",
+                   "Channel", "Computer")
+
+
+def unwrap_system_scalars(system):
+    """Return *system* with attributed scalar tags replaced by their #text.
+
+    Without this, an attributed Level read as 4 (Information) whatever it
+    was, and Computer / Channel / Keywords stayed dicts (Gemini audit
+    1-08).  The input is not modified; it is returned as is when nothing
+    needs unwrapping (the normal case: no record in the corpus has one).
+    """
+    if not isinstance(system, dict):
+        return system
+    out = None
+    for k in _SYSTEM_SCALARS:
+        v = system.get(k)
+        if isinstance(v, dict):
+            if out is None:
+                out = dict(system)
+            t = v.get("#text")
+            if t is None:
+                out.pop(k, None)
+            else:
+                out[k] = t
+    return system if out is None else out
+
+
 def load_record(raw):
     """The record dict for pyevtx-rs JSON text *raw* (str or bytes), keeping
     every value of a repeated name (as a list, in order)."""

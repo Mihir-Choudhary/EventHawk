@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from .resource_monitor import ResourceMonitor, ResourceStats
+from .record_json import unwrap_system_scalars
 from .filters import passes_filter, compile_filter
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,7 @@ def _extract_event_inline(data: dict, record_id: int, timestamp: str, source_fil
 
     event = data.get("Event", {})
     system = event.get("System", {})
+    system = unwrap_system_scalars(system)   # attributed tags (Gemini 1-08)
 
     provider_attrs = system.get("Provider", {})
     pname = ""

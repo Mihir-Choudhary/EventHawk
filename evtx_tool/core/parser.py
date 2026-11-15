@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Generator, Iterator
 
 from evtx_tool.core._json_compat import fast_loads
-from evtx_tool.core.record_json import load_record
+from evtx_tool.core.record_json import load_record, unwrap_system_scalars
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,7 @@ def _extract_from_json(data: dict, record_id: int, timestamp: str, source_file: 
     """Extract structured fields from a pyevtx-rs JSON record dict."""
     event = data.get("Event", {})
     system = event.get("System", {})
+    system = unwrap_system_scalars(system)   # attributed tags (Gemini 1-08)
 
     provider_attrs = system.get("Provider", {})
     if isinstance(provider_attrs, dict):
