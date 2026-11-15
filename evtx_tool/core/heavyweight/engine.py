@@ -38,6 +38,8 @@ import struct
 import tempfile
 import threading
 import time
+import re as _re
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
@@ -56,6 +58,9 @@ except ImportError:      # optional; requirements.txt promises a stdlib fallback
 from evtx_tool.core.record_json import load_record, pick_payload, unwrap_system_scalars
 
 from evtx_tool.core.filters import flatten_searchable_values, flatten_fields, event_description_text
+
+# A trailing "+HH:MM" / "-HH:MM" UTC offset on an ISO timestamp.
+_TZ_OFFSET_RE = _re.compile(r"[+-]\d\d:\d\d$")
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +309,8 @@ def _split_evtx(filepath: str, n_parts: int, tmp_dir: str, tag: str = "0") -> li
 # ── Tier 4: Fused extract-filter-convert ─────────────────────────────────────
 
 def _extract_and_filter(parsed: dict, source_file: str, _passes,
-                        record_number: "int | None" = None) -> "tuple | bool | None":
+                        record_number: "int | None" = None,
+                        record_ts: "str | None" = None) -> "tuple | bool | None":
     """
     Single-pass extract → filter → row-tuple conversion.
 
@@ -339,6 +345,10 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes,
             ts_str = (tc.get("#attributes") or {}).get("SystemTime", "") or tc.get("SystemTime", "")
         else:
             ts_str = str(tc)
+        if not ts_str and record_ts:
+            # No <TimeCreated>: the record header's own timestamp, as Normal
+            # mode uses (Gemini audit 2-05; this stored NULL).
+            ts_str = str(record_ts)
 
         prov = system.get("Provider") or {}
         if isinstance(prov, dict):
@@ -373,6 +383,9 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes,
                 "task":       task_val,
                 "timestamp":  ts_str,
                 "event_data": flat_ed,
+                # Normal mode's filter sees these too (Gemini audit 2-05).
+                "keywords":   str(system.get("Keywords", "") or ""),
+                "event_source_name": event_source_name,
             }
             if not _passes(filter_dict):
                 return False   # False = filtered out; None = parse error
@@ -386,6 +399,15 @@ def _extract_and_filter(parsed: dict, source_file: str, _passes,
         # comparison == chronological comparison for both DuckDB and Arrow sorts.
         # Missing timestamps are stored as NULL (previously a 1970-01-01 epoch
         # sentinel that sorted to the top and looked like real data).
+        if ts_str and _TZ_OFFSET_RE.search(ts_str):
+            # A "+05:30"-style offset: convert to UTC.  Padding or cutting the
+            # text below turned it into "...+05:300" or dropped the offset
+            # without converting (Gemini audit 2-05).
+            try:
+                _dt = datetime.fromisoformat(ts_str).astimezone(timezone.utc)
+                ts_str = _dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                pass
         if ts_str:
             ts_db = ts_str.replace("T", " ").replace("Z", "")[:26]
             _n = len(ts_db)
@@ -829,7 +851,7 @@ def _hw_worker_stream(
                 )
             return 0
 
-        row = _extract_and_filter(parsed, src, _passes, rid)
+        row = _extract_and_filter(parsed, src, _passes, rid, record.get("timestamp"))
         if row is False:            # valid event, rejected by pre-filter
             n_filtered += 1
             return 0
