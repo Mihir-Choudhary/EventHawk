@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -1731,10 +1732,53 @@ def export(
     if fmt not in EXPORT_FORMATS:
         raise ValueError(f"Unknown format '{fmt}'. Supported: {', '.join(EXPORT_FORMATS)}")
 
+    _refuse_evtx_destination(filepath)
     fn = EXPORT_FORMATS[fmt]
-    # Only pass extra kwargs to exporters that accept them (HTML + PDF)
-    if fmt in ("html", "pdf"):
-        return fn(events, filepath,
-                  attack_summary=attack_summary, iocs=iocs,
-                  chains=chains)
-    return fn(events, filepath)
+    # Written to a temporary file next to the destination, then moved over it:
+    # an export that fails half way leaves the destination as it was (absent,
+    # or the previous report), never a truncated file (Gemini audit 6-11).
+    dest_dir = os.path.dirname(os.path.abspath(filepath))
+    os.makedirs(dest_dir, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".eventhawk_export_", suffix="." + fmt, dir=dest_dir)
+    os.close(fd)
+    try:
+        # Only pass extra kwargs to exporters that accept them (HTML + PDF)
+        if fmt in ("html", "pdf"):
+            n = fn(events, tmp,
+                   attack_summary=attack_summary, iocs=iocs,
+                   chains=chains)
+        else:
+            n = fn(events, tmp)
+        os.replace(tmp, filepath)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return n
+
+
+_EVTX_MAGIC = b"ElfFile\x00"
+
+
+def _refuse_evtx_destination(filepath: str) -> None:
+    """Never write an export over an event log.
+
+    exports used to fall back to JSON for an unknown extension, so
+    ``parse case.evtx -o case.evtx`` replaced the evidence with JSON text
+    (Gemini audit 6-11).  A path ending in .evtx is refused, and so is any
+    existing file that holds an EVTX log, whatever its name.
+    """
+    if Path(filepath).suffix.lower() == ".evtx":
+        raise ValueError(f"Refusing to export to '{filepath}': a .evtx path is an event log, not an "
+                         f"export (choose .csv, .json, .xml, .html or .pdf)")
+    try:
+        with open(filepath, "rb") as f:
+            head = f.read(len(_EVTX_MAGIC))
+    except (FileNotFoundError, IsADirectoryError, PermissionError):
+        return
+    except OSError:
+        return
+    if head == _EVTX_MAGIC:
+        raise ValueError(f"Refusing to export to '{filepath}': that file is an EVTX event log")
