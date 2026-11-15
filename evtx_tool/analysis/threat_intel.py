@@ -117,56 +117,75 @@ def _vt_parse_response(data: dict) -> dict:
 
 # ── Offline data loaders ──────────────────────────────────────────────────────
 
+_HEX = set("0123456789abcdefABCDEF")
+
+
+def _guess_type(val: str) -> str:
+    """The IOC type of a bare value (Gemini audit 7-08: IPv4 was tested after
+    "contains a dot", so every IP became a domain, and so did a path)."""
+    import re
+    v = val.strip()
+    if len(v) in (32, 40, 64) and set(v) <= _HEX:
+        return {32: "md5", 40: "sha1", 64: "sha256"}[len(v)]
+    if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", v):
+        return "ipv4"
+    if ":" in v and re.fullmatch(r"[0-9A-Fa-f:.]+", v) and v.count(":") >= 2:
+        return "ipv6"
+    if v.lower().startswith(("http://", "https://")):
+        return "urls"
+    if "\\" in v or re.match(r"^[A-Za-z]:[\\/]", v):
+        return "processes" if v.lower().endswith(".exe") else "filepaths"
+    if "." in v and " " not in v:
+        return "domains"
+    return "unknown"
+
+
+_HEADER_WORDS = {"type", "value", "ioc", "indicator", "verdict", "count", "score", "first_seen",
+                 "last_seen", "note", "hash", "ip", "domain", "url"}
+
+
 def _load_csv(filepath: str) -> dict[str, dict[str, str]]:
     """
     Load a CSV file.  Accepted formats:
-      - type,value,verdict[,note]     (3+ columns)
-      - value,verdict                 (2 columns — type guessed from value)
-      - hash                          (1 column — treated as malicious hash)
+      - a header naming its columns (type / value / verdict, any order and any
+        extra columns -- EventHawk's own "type,value,count,..." IOC export too)
+      - type,value,verdict[,note]     (3+ columns, no header)
+      - value,verdict                 (2 columns -- type guessed from value)
+      - value                         (1 column -- treated as malicious)
+    A first row is a header only when its cells are column names: csv.Sniffer
+    took the first IOC of a headerless file for one and dropped it (7-08).
     Returns dict: {ioc_type: {value: verdict_str}}
     """
     result: dict[str, dict[str, str]] = {}
 
     def _add(ioc_type: str, val: str, verdict: str) -> None:
-        result.setdefault(ioc_type, {})[val.lower()] = verdict
-
-    def _guess_type(val: str) -> str:
-        v = val.strip()
-        if len(v) == 64:
-            return "sha256"
-        if len(v) == 40:
-            return "sha1"
-        if len(v) == 32:
-            return "md5"
-        if "." in v and not v.startswith("http"):
-            return "domains"
-        if v.startswith("http"):
-            return "urls"
-        import re
-        if re.match(r'^\d+\.\d+\.\d+\.\d+$', v):
-            return "ipv4"
-        return "unknown"
+        if val:
+            result.setdefault(ioc_type, {})[val.lower()] = verdict or "malicious"
 
     with open(filepath, newline="", encoding="utf-8-sig") as fh:
-        sample = fh.read(512)
-        fh.seek(0)
-        has_header = csv.Sniffer().has_header(sample) if sample else False
-        reader = csv.reader(fh)
-        if has_header:
-            next(reader, None)
-        for row in reader:
-            row = [c.strip() for c in row]
-            if not row:
-                continue
-            if len(row) >= 3:
-                _add(row[0].lower(), row[1], row[2])
-            elif len(row) == 2:
-                ioc_type = _guess_type(row[0])
-                _add(ioc_type, row[0], row[1])
-            elif len(row) == 1 and row[0]:
-                ioc_type = _guess_type(row[0])
-                _add(ioc_type, row[0], "malicious")
-
+        rows = [[c.strip() for c in r] for r in csv.reader(fh)]
+    rows = [r for r in rows if any(r)]
+    if not rows:
+        return result
+    head = [c.lower() for c in rows[0]]
+    if head and all(c in _HEADER_WORDS or not c for c in head) and any(c in ("value", "ioc", "indicator", "hash", "ip", "domain", "url") for c in head):
+        col = {name: k for k, name in enumerate(head)}
+        vi = next((col[n] for n in ("value", "ioc", "indicator", "hash", "ip", "domain", "url") if n in col), 0)
+        ti = col.get("type")
+        di = col.get("verdict")
+        for r in rows[1:]:
+            val = r[vi] if vi < len(r) else ""
+            typ = (r[ti].lower() if ti is not None and ti < len(r) and r[ti] else _guess_type(val))
+            ver = r[di] if di is not None and di < len(r) else "malicious"
+            _add(typ, val, ver)
+        return result
+    for row in rows:
+        if len(row) >= 3:
+            _add(row[0].lower(), row[1], row[2])
+        elif len(row) == 2:
+            _add(_guess_type(row[0]), row[0], row[1])
+        elif len(row) == 1 and row[0]:
+            _add(_guess_type(row[0]), row[0], "malicious")
     return result
 
 
@@ -176,30 +195,12 @@ def _load_txt(filepath: str) -> dict[str, dict[str, str]]:
     Lines starting with # are comments.
     """
     result: dict[str, dict[str, str]] = {}
-    import re
-    ip_re = re.compile(r'^\d+\.\d+\.\d+\.\d+$')
-
     with open(filepath, encoding="utf-8-sig") as fh:
         for line in fh:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            if len(line) == 64:
-                ioc_type = "sha256"
-            elif len(line) == 40:
-                ioc_type = "sha1"
-            elif len(line) == 32:
-                ioc_type = "md5"
-            elif ip_re.match(line):
-                ioc_type = "ipv4"
-            elif line.startswith("http"):
-                ioc_type = "urls"
-            elif "." in line:
-                ioc_type = "domains"
-            else:
-                ioc_type = "unknown"
-            result.setdefault(ioc_type, {})[line.lower()] = "malicious"
-
+            result.setdefault(_guess_type(line), {})[line.lower()] = "malicious"
     return result
 
 
@@ -218,6 +219,14 @@ def _load_stix(filepath: str) -> dict[str, dict[str, str]]:
         "file:hashes.'MD5'":    "md5",
         "file:hashes.'SHA-1'":  "sha1",
         "file:hashes.'SHA-256'": "sha256",
+        # What export_stix writes for the other categories: a bundle
+        # EventHawk exported loaded none of them back (Gemini audit 7-08).
+        "process:command_line":        "commandlines",
+        "windows-registry-key:key":    "registry",
+        "user-account:account_login":  "users",
+        "user-account:user_id":        "users",
+        "process:name":                "processes",
+        "file:name":                   "file:name",     # processes AND paths, see below
     }
     import re as _re
     _val_re = _re.compile(r"=\s*'([^']+)'")
@@ -240,7 +249,9 @@ def _load_stix(filepath: str) -> dict[str, dict[str, str]]:
         # Determine type from pattern prefix
         for prefix, ioc_type in _PATTERN_MAP.items():
             if prefix in pattern:
-                result.setdefault(ioc_type, {})[val.lower()] = verdict
+                # export_stix writes both processes and file paths as file:name
+                for t in (("processes", "filepaths") if ioc_type == "file:name" else (ioc_type,)):
+                    result.setdefault(t, {})[val.lower()] = verdict
                 break
 
     return result
@@ -415,6 +426,11 @@ class ThreatIntelChecker:
                 else:
                     result = None
 
+                if result and result.get("verdict") == "unsupported":
+                    # Not a type VirusTotal can look up: not checked (7-08).
+                    stats["not_checked"] += 1
+                    entry["threat_intel"] = result
+                    continue
                 stats["checked"] += 1
                 if result:
                     entry["threat_intel"] = result
