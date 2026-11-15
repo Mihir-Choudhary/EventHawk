@@ -31,6 +31,20 @@ def record_identity(ev: dict) -> tuple | None:
             str(rid).strip())
 
 
+# <System> fields a true copy shares with its original.  Two records that
+# match on identity and event_data but differ in one of these are different
+# records, and both are evidence (Gemini audit 1-05).
+_SYSTEM_CONTENT = ("provider", "event_source_name", "level", "task", "opcode",
+                   "keywords", "version", "user_id", "process_id", "thread_id",
+                   "correlation_id")
+
+
+def _same_content(a: dict, b: dict) -> bool:
+    if (a.get("event_data") or {}) != (b.get("event_data") or {}):
+        return False
+    return all(a.get(f) == b.get(f) for f in _SYSTEM_CONTENT)
+
+
 def collapse_copies(events: list[dict]) -> tuple[list[dict], dict[int, list[dict]]]:
     """Return (events with copies removed, {id(kept event): [its copies]}).
 
@@ -56,7 +70,7 @@ def collapse_copies(events: list[dict]) -> tuple[list[dict], dict[int, list[dict
             first[ident] = [ev]
             out.append(ev)
             continue
-        kept = next((k for k in variants if (k.get("event_data") or {}) == (ev.get("event_data") or {})), None)
+        kept = next((k for k in variants if _same_content(k, ev)), None)
         if kept is not None:
             copies.setdefault(id(kept), []).append(ev)
         else:
