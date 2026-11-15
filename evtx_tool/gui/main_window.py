@@ -2725,6 +2725,7 @@ class _LogonSessionDialog(QDialog):
 
         _boot_epoch: dict[int, int] = {}
         _epoch_by_computer: dict[str, int] = {}
+        _boots_by_computer: dict[str, list[str]] = {}   # start times, in epoch order
         for _pos, _ev in sorted(enumerate(events), key=lambda item: (
             str(item[1].get("computer") or "").casefold(), _boot_ts(item[1]), item[0]
         )):
@@ -2733,7 +2734,18 @@ class _LogonSessionDialog(QDialog):
             if _is_boot(_ev):
                 _epoch += 1
                 _epoch_by_computer[_computer] = _epoch
+                _boots_by_computer.setdefault(_computer, []).append(_norm_ts(_ev.get("timestamp", "")))
             _boot_epoch[id(_ev)] = _epoch
+
+        def _closed_before(sess: "dict | None", ev: dict) -> bool:
+            """*ev* comes after *sess*'s 4634: the LogonId was destroyed, so the
+            event is not this session's (Gemini audit 8-07).  A 4647 is only the
+            user's request: logoff work still runs under the session."""
+            off = (sess or {}).get("logoff")
+            if off is None or off.get("event_id") != 4634:
+                return False
+            t = _norm_ts(ev.get("timestamp", ""))
+            return bool(t) and t > _norm_ts(off.get("timestamp", ""))
 
         for ev in events:
             eid      = ev.get("event_id", 0)
@@ -2745,7 +2757,15 @@ class _LogonSessionDialog(QDialog):
                 lid = str(ed.get("TargetLogonId", "")).strip()
                 if lid in self._SKIP_IDS:
                     continue
-                sess = _new_session(computer, lid, boot_epoch)
+                # A 4672 written before its 4624 in the same second already
+                # opened a partial session: that is this logon (8-07).
+                prev = _latest_session(computer, lid, boot_epoch)
+                _t = _norm_ts(ev.get("timestamp", ""))
+                if (prev is not None and prev["logon"] is None and prev["logoff"] is None
+                        and not prev["procs"] and _t and prev["first_seen_ts"] == _t):
+                    sess = prev
+                else:
+                    sess = _new_session(computer, lid, boot_epoch)
                 sess["logon"] = ev
                 _touch_session(sess, ev)
                 linked_raw = str(ed.get("TargetLinkedLogonId", "")).strip()
@@ -2757,8 +2777,9 @@ class _LogonSessionDialog(QDialog):
                 lid = str(ed.get("SubjectLogonId", "")).strip()
                 if lid in self._SKIP_IDS:
                     continue
-                sess = (_latest_session(computer, lid, boot_epoch)
-                        or _new_session(computer, lid, boot_epoch))
+                sess = _latest_session(computer, lid, boot_epoch)
+                if sess is None or _closed_before(sess, ev):
+                    sess = _new_session(computer, lid, boot_epoch)
                 sess["privs"].append(ev)
                 _touch_session(sess, ev)
                 continue
@@ -2767,20 +2788,35 @@ class _LogonSessionDialog(QDialog):
                 lid = str(ed.get("SubjectLogonId", "")).strip()
                 if lid in self._SKIP_IDS:
                     continue
-                sess = (_latest_session(computer, lid, boot_epoch)
-                        or _new_session(computer, lid, boot_epoch))
+                sess = _latest_session(computer, lid, boot_epoch)
+                if sess is None or _closed_before(sess, ev):
+                    sess = _new_session(computer, lid, boot_epoch)
                 sess["procs"].append(ev)
                 _touch_session(sess, ev)
                 continue
 
-            if eid == 4634:
+            if eid in (4634, 4647):
+                # 4647: the user logged off (Gemini audit 8-07: ignored, so a
+                # session ended by it read "no logoff").  Windows then writes
+                # 4634 when the session is destroyed; that 4634 replaces the
+                # 4647 as the end.  A 4647 after a 4634 in the same second
+                # adds nothing to the end.
                 lid = str(ed.get("TargetLogonId", "")).strip()
                 if lid in self._SKIP_IDS:
                     continue
                 sess = _latest_session(computer, lid, boot_epoch)
-                if sess is None or sess.get("logoff") is not None:
-                    sess = _new_session(computer, lid, boot_epoch)
-                sess["logoff"] = ev
+                off = (sess or {}).get("logoff")
+                if eid == 4647:
+                    if (sess is None or _closed_before(sess, ev)
+                            or (off is not None and off.get("event_id") == 4647)):
+                        sess = _new_session(computer, lid, boot_epoch)
+                        off = None
+                    if off is None:
+                        sess["logoff"] = ev
+                else:
+                    if sess is None or (off is not None and off.get("event_id") != 4647):
+                        sess = _new_session(computer, lid, boot_epoch)
+                    sess["logoff"] = ev
                 _touch_session(sess, ev)
 
         # ── Post-pass: resolve TargetLinkedLogonId sibling pairs ──────────
@@ -2866,6 +2902,20 @@ class _LogonSessionDialog(QDialog):
                     scope_end_ts = candidate_end
                     scope_end_ts_full = candidate_end_full
                     scope_end_inclusive = bool(scope_end_ts)
+                # The End column keeps the last event seen; the filter scope of a
+                # session with no logoff does not: the session may have gone on,
+                # and its later events (a 4698 under the same LogonId) were
+                # hidden (8-07).  It ends at the next logon of this LogonId or
+                # the host's next start, whichever comes first, else stays open.
+                filt_end, filt_incl = scope_end_ts, scope_end_inclusive
+                if not explicit_end_norm:
+                    _bounds = [t for t in (next_start_ts,) if t]
+                    _boots = _boots_by_computer.get(computer, [])
+                    _ep = sess.get("boot_epoch", 0)
+                    if _ep < len(_boots) and _boots[_ep]:
+                        _bounds.append(_boots[_ep])
+                    filt_end = min(_bounds) if _bounds else ""
+                    filt_incl = False
 
                 # Duration only when the log proves BOTH ends: the logon and its
                 # logoff.  The scope end above (last event seen, or the next
@@ -2906,8 +2956,8 @@ class _LogonSessionDialog(QDialog):
                     "end_ts":              scope_end_ts,
                     "end_ts_full":         scope_end_ts_full,   # raw, display precision only
                     "scope_start_ts":      scope_start_ts,
-                    "scope_end_ts":        scope_end_ts,
-                    "scope_end_inclusive": scope_end_inclusive,
+                    "scope_end_ts":        filt_end,
+                    "scope_end_inclusive": filt_incl,
                     "duration":            duration,
                     "logoff_ts":           explicit_end_ts,     # raw; "" when no logoff is logged
                     "last_seen_ts_full":   sess["last_seen_ts_raw"] or explicit_end_ts,
@@ -2939,7 +2989,8 @@ class _LogonSessionDialog(QDialog):
             _starts = [t for t in (_sd["scope_start_ts"], _sib["scope_start_ts"]) if t]
             _ends   = [t for t in (_sd["scope_end_ts"],   _sib["scope_end_ts"])   if t]
             _union_start = min(_starts) if _starts else ""
-            _union_end   = max(_ends)   if _ends   else ""
+            # One sibling still open: the union is open too.
+            _union_end   = max(_ends) if len(_ends) == 2 else ""
             _sd_end = _sd.get("scope_end_ts") or ""
             _sib_end = _sib.get("scope_end_ts") or ""
             if _sd_end and _sib_end:
@@ -2952,10 +3003,6 @@ class _LogonSessionDialog(QDialog):
                         bool(_sd.get("scope_end_inclusive"))
                         or bool(_sib.get("scope_end_inclusive"))
                     )
-            elif _sd_end:
-                _union_end_inclusive = bool(_sd.get("scope_end_inclusive"))
-            elif _sib_end:
-                _union_end_inclusive = bool(_sib.get("scope_end_inclusive"))
             else:
                 _union_end_inclusive = False
             _sd["linked_scope_start_ts"] = _union_start
@@ -16154,7 +16201,7 @@ class MainWindow(QMainWindow):
                 f"SELECT source_file, record_id, event_id, computer, timestamp_utc, event_data_json, "
                 f"       channel, provider "
                 f"FROM parquet_scan({shard_list}) "
-                f"WHERE event_id IN (4624, 4634, 4672, 4688) "
+                f"WHERE event_id IN (4624, 4634, 4647, 4672, 4688) "
                 f"   OR (event_id = 4608 AND lower(channel) = 'security') "
                 f"   OR (event_id = 12 AND provider = 'Microsoft-Windows-Kernel-General') "
                 f"ORDER BY timestamp_utc"
@@ -16167,7 +16214,7 @@ class MainWindow(QMainWindow):
                                 f"Failed to query Parquet shards:\n{exc}")
             return
 
-        if not any(r[2] in (4624, 4634, 4672, 4688) for r in _rows):
+        if not any(r[2] in (4624, 4634, 4647, 4672, 4688) for r in _rows):
             if busy:
                 busy.dismiss()
             QMessageBox.information(
@@ -16199,10 +16246,10 @@ class MainWindow(QMainWindow):
                 "_record_id":  rec_id,
                 "_source_file": src_file or "",
             })
-            if ev_id not in (4624, 4634, 4672, 4688):
+            if ev_id not in (4624, 4634, 4647, 4672, 4688):
                 continue                     # a start: a boundary, not a session event
             # Collect logon_id → composite key mapping
-            if ev_id in (4624, 4634):
+            if ev_id in (4624, 4634, 4647):
                 lid = str(ed.get("TargetLogonId", "")).strip()
             else:
                 lid = str(ed.get("SubjectLogonId", "")).strip()
@@ -16248,7 +16295,9 @@ class MainWindow(QMainWindow):
                 _lei = bool((session_info or {}).get("linked_scope_end_inclusive"))
                 if _ls and (not _start_ts or _ls < _start_ts):
                     _start_ts = _ls
-                if _le:
+                if "linked_scope_end_ts" in (session_info or {}) and not _le:
+                    _end_ts = ""             # a sibling still open: so is the union (8-07)
+                elif _le:
                     if not _end_ts or _le > _end_ts:
                         _end_ts = _le
                         _end_inclusive = _lei
@@ -16462,7 +16511,9 @@ class MainWindow(QMainWindow):
             _lei = bool((session_info or {}).get("linked_scope_end_inclusive"))
             if _ls and (not scope_start_ts or _ls < scope_start_ts):
                 scope_start_ts = _ls
-            if _le:
+            if "linked_scope_end_ts" in (session_info or {}) and not _le:
+                scope_end_ts = None          # a sibling still open: so is the union (8-07)
+            elif _le:
                 if not scope_end_ts or _le > scope_end_ts:
                     scope_end_ts = _le
                     scope_end_inclusive = _lei
