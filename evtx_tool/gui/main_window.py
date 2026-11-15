@@ -19488,6 +19488,21 @@ class MainWindow(QMainWindow):
                 self._hw_model.layoutChanged.emit()
             except Exception:
                 pass
+            # A Timestamp quick filter is a DISPLAYED date: its SQL is built
+            # for the zone in force when it was set, so rebuild it for the new
+            # zone (Gemini audit 4-04: the view kept the old zone's rows).
+            _jm_models = [self._hw_model] + list(getattr(self, "_jm_file_models", []))
+            _jm_models += [st.model for st in self._file_tabs.values()
+                           if hasattr(getattr(st, "model", None), "_rebuild_quick_where")]
+            for _m in dict.fromkeys(_jm_models):
+                try:
+                    if _m.has_quick_filters() and any(
+                            qf.get("key") in ("timestamp_date", "timestamp_hour")
+                            for qf in _m.get_quick_filters()):
+                        _m._rebuild_quick_where()
+                        _m._invalidate()
+                except Exception:
+                    logger.exception("time zone change: quick filter rebuild failed")
 
         # Re-render detail panel if a row is currently selected
         try:
@@ -19506,9 +19521,11 @@ class MainWindow(QMainWindow):
             "local":    "Local",
             "utc":      "UTC",
             "specific": self._tz_specific,
+            # Sign, then whole hours and minutes of the magnitude: floor
+            # division labelled -30 min "UTC-1:30" (Gemini audit 4-07).
             "custom": (
-                f"UTC{'+' if self._tz_custom_offset_min >= 0 else ''}"
-                f"{self._tz_custom_offset_min // 60:02d}:"
+                f"UTC{'+' if self._tz_custom_offset_min >= 0 else '-'}"
+                f"{abs(self._tz_custom_offset_min) // 60:02d}:"
                 f"{abs(self._tz_custom_offset_min) % 60:02d}"
             ),
         }
