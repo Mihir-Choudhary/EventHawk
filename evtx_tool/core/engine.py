@@ -724,6 +724,14 @@ class ProcessingEngine:
                 done_files=self.state.done_files + 1,  # BUG 3 fix: count failed files in progress
             )
             self.state.append_error(msg)
+            # Done here: falling through counted the file done a second time,
+            # so progress passed 100% (Gemini audit 1-11).
+            if self._on_progress:
+                try:
+                    self._on_progress(self.state.snapshot())
+                except Exception:
+                    pass
+            return
 
         events: list[dict] = result.get("events", [])
         total_rec: int = result.get("total_records", 0)

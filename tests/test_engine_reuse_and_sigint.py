@@ -5,6 +5,9 @@ for good (Ctrl+C never raised KeyboardInterrupt again in that process), a second
 run() raised "threads can only be started once" and left is_running=True, and
 errors from the first run stayed in state for the second.
 
+Gemini audit 1-11 (Medium), same test: a file that failed to open was
+counted in done_files twice, so progress passed 100%.
+
 Expected: constructing an engine does not change the SIGINT handler, and it is
 the caller's handler again after run(); a second run() parses the same events;
 an error from run 1 is not reported by run 2; is_running is False after each.
@@ -52,6 +55,9 @@ def main() -> int:
     check("the caller's SIGINT handler is back after run()", signal.getsignal(signal.SIGINT) is mine)
     check("run 1 reports the unreadable file", eng.state.failed_files >= 1 or e1, f"errors {len(e1)}")
     check("is_running is False after run 1", eng.state.is_running is False)
+    # Gemini audit 1-11: a file that fails to open was counted done twice.
+    check("each file is counted done once (a failed file too)", eng.state.done_files == len(files) + 1,
+          f"done {eng.state.done_files} of {len(files) + 1}")
     try:
         r2 = eng.run(files, empty_filter())
         err = ""
