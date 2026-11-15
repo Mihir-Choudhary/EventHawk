@@ -5537,6 +5537,11 @@ class _RemoteAssistanceDialog(QDialog):
                 ed.get("IpAddress") or ed.get("Source") or ""
             )
 
+            # A Classic RA start (EID 16) begins a new session: it never joins
+            # one that already ended, or two completed sessions merged into
+            # one row spanning the gap between them (Gemini audit 8-01).
+            _fresh_start = type_label == "Classic RA" and eid in _RA_START_EIDS
+
             # ── Bucket selection ──────────────────────────────────────────
             if type_label == _OB_TYPE:
                 # Source-side RDP is reconstructed by the RDPClient state machine
@@ -5553,7 +5558,7 @@ class _RemoteAssistanceDialog(QDialog):
                 best_idx = -1
                 if dt is not None:
                     for _i, (_ldt, _bkt) in enumerate(key_list):
-                        if _ldt is None:
+                        if _ldt is None or (_fresh_start and _bkt.get("_has_end")):
                             continue
                         _delta = (dt - _ldt).total_seconds()
                         _max_corr = (
@@ -5582,7 +5587,7 @@ class _RemoteAssistanceDialog(QDialog):
                 if best_bkt is not None:
                     bucket = best_bkt
                     key_list[best_idx] = (dt, best_bkt)   # advance last_dt
-                elif dt is None and key_list:
+                elif dt is None and key_list and not (_fresh_start and key_list[-1][1].get("_has_end")):
                     # No timestamp — attach to most recent bucket with this key.
                     bucket = key_list[-1][1]
                 else:
@@ -5606,7 +5611,7 @@ class _RemoteAssistanceDialog(QDialog):
                     best_delta2: "float | None" = None
                     best_idx2 = -1
                     for _i, (_ldt, _bkt) in enumerate(open_list):
-                        if _ldt is None:
+                        if _ldt is None or (_fresh_start and _bkt.get("_has_end")):
                             continue
                         _delta = (dt - _ldt).total_seconds()
                         if 0 <= _delta <= _CORR_SECS:
@@ -5622,7 +5627,7 @@ class _RemoteAssistanceDialog(QDialog):
                             if _bk_tuple[0] != computer or _bk_tuple[1] != type_label:
                                 continue
                             for _ldt, _bkt in _kl:
-                                if _ldt is None:
+                                if _ldt is None or (_fresh_start and _bkt.get("_has_end")):
                                     continue
                                 _delta = (dt - _ldt).total_seconds()
                                 if 0 <= _delta <= _CORR_SECS:
