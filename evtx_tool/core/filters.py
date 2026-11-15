@@ -384,22 +384,32 @@ def _level_passes(event: dict, levels) -> bool:
     return False
 
 
+import re as _re_ts
+_TS_RE = _re_ts.compile(
+    r"^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?)?\s*(Z|z|[+-]\d{2}:?\d{2})?$")
+
+
 def _parse_ts(ts_str: str | None) -> datetime | None:
     if not ts_str:
         return None
-    # Strip timezone suffix robustly: remove Z, and strip +HH:MM / -HH:MM offsets
-    # Also strip sub-second precision. Keep only the first 19 chars of the datetime portion.
-    import re as _re
-    ts_clean = _re.sub(r"[Zz]$", "", ts_str)          # strip trailing Z
-    ts_clean = _re.sub(r"[+-]\d{2}:\d{2}$", "", ts_clean)  # strip ±HH:MM
-    ts_clean = ts_clean.split(".")[0][:19]             # strip microseconds, cap at 19 chars
+    # "YYYY-MM-DD[(T| )HH:MM:SS[.fff]][Z|±HH:MM|±HHMM]", to whole seconds UTC.
+    # An offset is CONVERTED: it used to be cut off and the local wall time
+    # read as UTC (hours wrong), and a bare date parsed to None, so the bound
+    # was ignored and everything passed (Gemini audit 4-03).
+    m = _TS_RE.match(str(ts_str).strip())
+    if not m:
+        return None
+    day, clock, tz = m.group(1), m.group(2) or "00:00:00", m.group(3)
     try:
-        return datetime.strptime(ts_clean, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(f"{day}T{clock}", "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
     except ValueError:
-        try:
-            return datetime.strptime(ts_clean, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        except ValueError:
-            return None
+        return None
+    if tz and tz not in ("Z", "z"):
+        from datetime import timedelta as _tdo
+        sign = -1 if tz[0] == "-" else 1
+        hh, mm = int(tz[1:3]), int(tz[-2:])
+        dt -= sign * _tdo(hours=hh, minutes=mm)
+    return dt
 
 
 def _date_mode(fc: dict) -> str:
