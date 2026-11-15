@@ -15462,7 +15462,10 @@ class MainWindow(QMainWindow):
                                  min_rows=self._LOGON_BUSY_MIN_ROWS) as busy:
                 self._on_show_logon_sessions_jm(busy)
             return
-        events = self._active_events
+        # Every loaded file, as Merged view and Juggernaut read: in Separate
+        # View the active tab alone missed restarts logged in another file
+        # (Gemini audit 8-11).  Rows name their host and source.
+        events = self._events
         if not events:
             QMessageBox.information(self, "Logon Sessions", "No events loaded.")
             return
@@ -15592,7 +15595,10 @@ class MainWindow(QMainWindow):
             return
 
         # Normal mode — events are already in memory, no cap applied.
-        events = self._active_events
+        # Every loaded file, as Merged view and Juggernaut read: in Separate
+        # View the active tab alone missed restarts logged in another file
+        # (Gemini audit 8-11).  Rows name their host and source.
+        events = self._events
         if not events:
             QMessageBox.information(self, "WiFi History", "No events loaded.")
             return
@@ -15668,7 +15674,10 @@ class MainWindow(QMainWindow):
             self._sysact_workers.append(worker)
             worker.start()
             return
-        events = self._active_events
+        # Every loaded file, as Merged view and Juggernaut read: in Separate
+        # View the active tab alone missed restarts logged in another file
+        # (Gemini audit 8-11).  Rows name their host and source.
+        events = self._events
         if not events:
             QMessageBox.information(self, "System Activity", "No events loaded.")
             return
@@ -15776,7 +15785,10 @@ class MainWindow(QMainWindow):
             return
 
         # Normal mode — events are already in memory.
-        events = self._active_events
+        # Every loaded file, as Merged view and Juggernaut read: in Separate
+        # View the active tab alone missed restarts logged in another file
+        # (Gemini audit 8-11).  Rows name their host and source.
+        events = self._events
         if not events:
             QMessageBox.information(self, "Remote Assistance", "No events loaded.")
             return
@@ -15971,7 +15983,10 @@ class MainWindow(QMainWindow):
             return
 
         # Normal mode — aggregate in-memory events.
-        events = self._active_events
+        # Every loaded file, as Merged view and Juggernaut read: in Separate
+        # View the active tab alone missed restarts logged in another file
+        # (Gemini audit 8-11).  Rows name their host and source.
+        events = self._events
         if not events:
             QMessageBox.information(self, "Computer Normalisation",
                                     "No events loaded.")
