@@ -493,7 +493,10 @@ def _display_offset_segments() -> list:
     cur = off(t)
     segs = [(None, cur)]
     try:
-        off(_d(1969, 12, 31, 23, 59, tzinfo=_z.utc))
+        # Ask the platform itself: utc_to_display_naive no longer raises here
+        # (it falls back to unconverted, Gemini 4-02), so off() cannot tell.
+        if _tz_state.get("mode") == "local":
+            _d(1969, 12, 31, 23, 59, tzinfo=_z.utc).astimezone()
     except (OSError, OverflowError, ValueError):
         # Windows cannot convert a pre-1970 instant to local time; the table
         # shows such a timestamp unconverted (apply_tz's fallback).

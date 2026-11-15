@@ -151,7 +151,13 @@ def utc_to_display_naive(dt):
     dt = dt.astimezone(_utc_tz.utc)
     mode = _tz_state.get("mode")
     if mode == "local":
-        return dt.astimezone().replace(tzinfo=None)
+        try:
+            return dt.astimezone().replace(tzinfo=None)
+        except (OSError, OverflowError, ValueError):
+            # Windows cannot convert an instant before 1970 to local time: it
+            # is shown unconverted, as apply_tz and Juggernaut's SQL do
+            # (Gemini audit 4-02; this raised out of the filter).
+            return dt.replace(tzinfo=None)
     if mode == "specific":
         try:
             from zoneinfo import ZoneInfo
@@ -1535,7 +1541,12 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                 def _boundary_to_utc(_d):
                     naive = _d.replace(tzinfo=None)
                     if use_system_local:
-                        return naive.astimezone(_tz.utc)
+                        try:
+                            return naive.astimezone(_tz.utc)
+                        except (OSError, OverflowError, ValueError):
+                            # Before 1970 on Windows: unconverted, as the table
+                            # shows it (Gemini audit 4-02).
+                            return naive.replace(tzinfo=_tz.utc)
                     return naive.replace(tzinfo=display_tz).astimezone(_tz.utc)
 
                 if self._adv_date_from:
