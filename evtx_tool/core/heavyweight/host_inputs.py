@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 
-from evtx_tool.core.host_identity import NameStat, Rename, iso_z, parse_rename
+from evtx_tool.core.host_identity import NameStat, Rename, iso_z, parse_rename, rename_anchored
 
 
 def inputs_from_jm(table, parquet_dir: str) -> "tuple[list[NameStat], list[Rename], int]":
@@ -36,8 +36,9 @@ def inputs_from_jm(table, parquet_dir: str) -> "tuple[list[NameStat], list[Renam
             shards = json.load(fh)
         if shards:
             src = "[" + ", ".join("'" + p.replace("'", "''") + "'" for p in shards) + "]"
-            for ts, sf, rid, ed_json in con.execute(
-                f"SELECT timestamp_utc, source_file, record_id, event_data_json "
+            for ts, sf, rid, ed_json, comp, ch in con.execute(
+                f"SELECT timestamp_utc, source_file, record_id, event_data_json, "
+                f"       COALESCE(computer, ''), COALESCE(channel, '') "
                 f"FROM parquet_scan({src}) "
                 f"WHERE event_id = 6011 AND lower(provider) = 'eventlog'"
             ).fetchall():
@@ -45,7 +46,9 @@ def inputs_from_jm(table, parquet_dir: str) -> "tuple[list[NameStat], list[Renam
                     pair = parse_rename(json.loads(ed_json) if ed_json else None)
                 except ValueError:
                     pair = None
-                if pair is None:
+                # As Normal mode: the System log, and the logging computer (8-15).
+                if (pair is None or (ch and ch.strip().lower() != "system")
+                        or not rename_anchored(comp, *pair)):
                     bad += 1
                 else:
                     renames.append(Rename(pair[0], pair[1], iso_z(ts), sf or "", int(rid or 0)))

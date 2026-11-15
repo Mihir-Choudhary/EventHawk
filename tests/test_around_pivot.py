@@ -79,7 +79,9 @@ def ev(sf, rid, comp, when, eid=4624, provider="Microsoft-Windows-Security-Audit
 
 def dataset():
     return [
-        ev(SYS, 1000, "WS01", T0, 6011, "EventLog", {"Data": {"#text": ["OLD-NAME", "WS01"]}}),
+        # A 6011 is a System-log record (host renames are read from there only).
+        dict(ev(SYS, 1000, "WS01", T0, 6011, "EventLog", {"Data": {"#text": ["OLD-NAME", "WS01"]}}),
+             channel="System"),
         ev(SEC, 1, "WS01", T0 - FIVE),
         ev(SEC, 2, "WS01", T0 + FIVE),
         ev(SEC, 3, "WS01", T0 - FIVE - US),

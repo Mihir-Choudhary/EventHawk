@@ -7684,7 +7684,8 @@ class _ComputerNormalisationDialog(QDialog):
         bad = getattr(self._identity, "unreadable_renames", 0)
         if bad:
             html += (f"<br><span style='color:{tc('#8a4800')};'><b>{bad}</b> rename event(s) "
-                     f"(EID 6011) could not be read and were not used for grouping.</span>")
+                     f"(EID 6011) could not be read, or do not rename the computer that logged them, "
+                     f"and were not used for grouping.</span>")
         coll = getattr(self._identity, "collected_files", [])
         if coll:
             import html as _html
@@ -18231,7 +18232,7 @@ class MainWindow(QMainWindow):
         bad = getattr(identity, "unreadable_renames", 0)
         if bad:
             lines.append(f"  {bad} rename event{'s' if bad != 1 else ''} (EID 6011) could not "
-                         f"be read, so names {'they' if bad != 1 else 'it'} would link may be missing")
+                         f"be read or do not rename the computer that logged them, so names {'they' if bad != 1 else 'it'} would link may be missing")
         return names, group.display_name.strip() or "(unknown)", lines
 
     def _add_around_menu(self, menu, ev: dict, source) -> None:

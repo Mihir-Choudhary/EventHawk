@@ -118,12 +118,21 @@ def iso_z(ts) -> str:
     return f"{base[:19]}.{(frac + '000000')[:6]}Z"
 
 
+def rename_anchored(computer: str, old: str, new: str) -> bool:
+    """A 6011 renames the computer that logged it: its Computer is the old or
+    the new name (Gemini audit 8-15: a third-party 6011 naming two other
+    computers merged them)."""
+    c = name_key(computer)[1]
+    return c != UNKNOWN and c in (name_key(old)[1], name_key(new)[1])
+
+
 def inputs_from_events(events) -> "tuple[list[NameStat], list[Rename], int]":
     """Host-identity input from Normal mode's event dicts, in one pass.
 
-    Returns (names, renames, unreadable 6011 count).  A rename is EID 6011
-    from provider EventLog; one whose name pair cannot be read is counted,
-    never guessed.
+    Returns (names, renames, unusable 6011 count).  A rename is EID 6011
+    from provider EventLog in the System log, naming the computer that logged
+    it; one whose name pair cannot be read, or that is not such a rename, is
+    counted, never guessed or used.
     """
     stats: dict[tuple[str, str], list] = {}
     renames: list[Rename] = []
@@ -143,7 +152,8 @@ def inputs_from_events(events) -> "tuple[list[NameStat], list[Rename], int]":
                 s[2] = ts
         if ev.get("event_id") == 6011 and str(ev.get("provider") or "").lower() == "eventlog":
             pair = parse_rename(ev.get("event_data"))
-            if pair is None:
+            ch = str(ev.get("channel") or "").strip().lower()
+            if pair is None or (ch and ch != "system") or not rename_anchored(comp, *pair):
                 bad += 1
             else:
                 renames.append(Rename(pair[0], pair[1], ts, sf, int(ev.get("record_id") or 0)))
