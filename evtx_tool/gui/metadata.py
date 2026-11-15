@@ -66,8 +66,9 @@ def build_metadata(
         u = ev.get("user_id") or ""
         if u:
             usr[u] += 1
-        else:
-            usr["N/A"] += 1
+        # No "N/A" bucket: picking it filtered on the text "N/A", which no
+        # event has, so it matched nothing (Gemini audit 5-09; Juggernaut's
+        # picker never offered it).
 
         m = ev.get("computer") or ""
         if m:

@@ -1248,6 +1248,9 @@ class ColumnFilterPopup(QDialog):
             # "{value}  ({count})", which would also match the count digits).
             visible = not text_lower or text_lower in val
             chk.setVisible(visible)
+        if text_lower and getattr(self, "_list_pre_search", None) is None:
+            # Remember the ticks before the search, as the date tree does.
+            self._list_pre_search = [chk.isChecked() for chk in self._checkboxes]
         if text_lower:
             # Hidden (no substring match) → unchecked.
             # Visible + exact match     → checked.
@@ -1259,9 +1262,14 @@ class ColumnFilterPopup(QDialog):
                 val = str(chk.property("filter_value") or "").lower()
                 chk.setChecked(val == text_lower)
         else:
-            # Search cleared — restore all to checked
-            for chk in self._checkboxes:
-                chk.setChecked(True)
+            # Search cleared: put back the ticks from before the search.  This
+            # ticked EVERY value, undoing what the analyst had unticked
+            # (Gemini audit 5-10).
+            saved = getattr(self, "_list_pre_search", None)
+            self._list_pre_search = None
+            if saved is not None and len(saved) == len(self._checkboxes):
+                for chk, was in zip(self._checkboxes, saved):
+                    chk.setChecked(was)
 
     def _on_search_changed(self, text: str) -> None:
         """Handle every keystroke in the search box.
@@ -19843,7 +19851,7 @@ class MainWindow(QMainWindow):
             for ev in events:
                 rid = ev.get(field)
                 if rid is not None:
-                    src = ev.get("source_file", "<unknown>")
+                    src = ev.get("source_file") or "<unknown>"
                     by_file[src].append(int(rid))
 
         if not by_file:
@@ -19855,6 +19863,11 @@ class MainWindow(QMainWindow):
         report_sections: list[str] = []
         total_missing = 0
 
+        # One label per log, told apart when two folders hold the same file
+        # name (two hosts' Security.evtx), and escaped: the text is HTML, so
+        # "<unknown>" or a "&" in a name was eaten (Gemini audit 5-05).
+        import html as _html
+        _labels = unique_display_names(list(by_file))
         for src, ids in sorted(by_file.items()):
             ids_sorted = sorted(set(ids))
             lo, hi = ids_sorted[0], ids_sorted[-1]
@@ -19873,8 +19886,7 @@ class MainWindow(QMainWindow):
                     n_missing += end - start + 1
             total_missing += n_missing
 
-            import os as _os2
-            fname = _os2.path.basename(src)
+            fname = _html.escape(_labels.get(src, src))
             section = (
                 f"<b>{fname}</b><br>"
                 f"&nbsp;&nbsp;Range: {lo:,} \u2013 {hi:,} &nbsp;|&nbsp; "
