@@ -287,8 +287,10 @@ def apply_tz(raw_ts: str) -> str:
 from evtx_tool.core.filters import SYSTEM_XML_NAMES          # noqa: E402
 _SYSTEM_XML_NAMES_LC = SYSTEM_XML_NAMES.lower()
 
-_display_date_memo: dict[str, str] = {}
-_display_date_memo_ver = [None]
+# (time-zone version, memo) as ONE tuple, swapped whole: a background
+# prewarm that computed a value under the previous zone wrote it into the
+# cleared memo after a change (Gemini audit 12-09).
+_display_date_memo_slot: list = [(None, {})]
 _DISPLAY_DATE_MEMO_MAX = 2_000_000
 
 
@@ -316,13 +318,18 @@ def display_hour(raw_ts: str) -> str:
     if not raw_ts:
         return ""
     ver = (_tz_state.get("mode"), _tz_state.get("specific"), _tz_state.get("custom_offset_min"))
-    if _display_date_memo_ver[0] != ver or len(_display_date_memo) > _DISPLAY_DATE_MEMO_MAX:
-        _display_date_memo.clear()
-        _display_date_memo_ver[0] = ver
-    d = _display_date_memo.get(raw_ts)
+    cur = _display_date_memo_slot[0]
+    if cur[0] != ver or len(cur[1]) > _DISPLAY_DATE_MEMO_MAX:
+        cur = (ver, {})
+        _display_date_memo_slot[0] = cur
+    memo = cur[1]
+    d = memo.get(raw_ts)
     if d is None:
         d = apply_tz(raw_ts)[:13].lower()
-        _display_date_memo[raw_ts] = d
+        # Kept only if the zone did not change meanwhile (this memo still current).
+        now = (_tz_state.get("mode"), _tz_state.get("specific"), _tz_state.get("custom_offset_min"))
+        if now == ver and _display_date_memo_slot[0] is cur:
+            memo[raw_ts] = d
     return d
 
 
@@ -957,7 +964,7 @@ class EventTableModel(QAbstractTableModel):
             return                      # already running
         self._adv_partial = []
         self._adv_build_gen = getattr(self, "_adv_cache_gen", 0)
-        self._adv_build_timer = QTimer()
+        self._adv_build_timer = QTimer(self)     # parented: freed with the model (12-10)
         self._adv_build_timer.setInterval(0)
         self._adv_build_timer.timeout.connect(self._adv_cache_step)
         self._adv_build_timer.start()

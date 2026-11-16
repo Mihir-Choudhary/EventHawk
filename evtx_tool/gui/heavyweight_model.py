@@ -1732,6 +1732,7 @@ class ArrowTableModel(QAbstractTableModel):
         self._display_table = None  # type: ignore[assignment]
         self._full_table    = None  # type: ignore[assignment]
         self._cache_dict    = {}
+        _KEY_SEL_CACHE.clear()      # it held the closed table's key arrays (12-10)
 
     # ── Legacy alias ──────────────────────────────────────────────────────────
     # Keep HeavyweightTableModel as an alias so any remaining isinstance() checks

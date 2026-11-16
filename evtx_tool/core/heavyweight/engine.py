@@ -1004,7 +1004,8 @@ class HeavyweightEngine:
         self._stop        = threading.Event()
         self._tmp_dir: str | None = None   # temp dir for EVTX chunk splits
         self.last_parse_stats: dict = {}   # per-source integrity counters from last run()
-        atexit.register(self._atexit_cleanup)
+        # Registered for the run only: registered for life, every engine of a
+        # session stayed referenced by atexit until exit (Gemini audit 12-10).
 
     def stop(self) -> None:
         """Signal all streaming workers to stop at next record boundary."""
@@ -1024,10 +1025,13 @@ class HeavyweightEngine:
         """Parse *files* (see _run).  A stop() made before run() is honoured:
         the flag is cleared only when the run ends (Gemini audit 2-08; it was
         cleared at the start, so a stop that came first was lost)."""
+        atexit.register(self._atexit_cleanup)
         try:
             return self._run(files, filter_config)
         finally:
             self._stop.clear()
+            self._atexit_cleanup()
+            atexit.unregister(self._atexit_cleanup)
 
     def _run(
         self,
