@@ -64,6 +64,12 @@ class PSWorker(QThread):
         """Request graceful cancellation (checked between loop iterations)."""
         self._cancelled = True
 
+    def request_stop(self) -> None:
+        """The name every other worker uses: the window's Stop button and its
+        close path ask for request_stop(), and never reached this worker
+        (Gemini audit 9-11)."""
+        self.request_cancel()
+
     @property
     def is_cancelled(self) -> bool:
         return self._cancelled

@@ -14174,6 +14174,9 @@ class MainWindow(QMainWindow):
             self._hw_worker.request_stop()
         if self._analysis_runner is not None and self._analysis_runner.is_running():
             self._analysis_runner.request_stop()
+        _psw = getattr(self, "_ps_worker", None)       # PowerShell History (9-11)
+        if _psw is not None and self._thread_running(_psw):
+            _psw.request_stop()
         self._set_status("Stopping...")
         self._btn_stop.setEnabled(False)
 
