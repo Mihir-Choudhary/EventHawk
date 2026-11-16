@@ -434,7 +434,12 @@ def _parse_record(data: dict, ts_raw: str) -> RawEvent | None:
         ts_str = ts_raw
     timestamp = _parse_ts(ts_str)
 
-    computer = system.get("Computer", "")
+    # JSON null, or {"#text": ...} with attributes: the text (Gemini audit
+    # 10-06; the main parser's 1-08 pattern).
+    computer = system.get("Computer") or ""
+    if isinstance(computer, dict):
+        computer = computer.get("#text") or ""
+    computer = str(computer)
 
     # ── EventData ──────────────────────────────────────────────────────────────
     event_data_raw = event_node.get("EventData", {})
@@ -466,6 +471,10 @@ def _flatten_event_data(event_data) -> dict[str, str]:
 
     data_node = event_data.get("Data", event_data)
 
+    # ONE named <Data> comes as a dict, not a list of one (10-06: it was empty).
+    if isinstance(data_node, dict) and "#attributes" in data_node:
+        data_node = [data_node]
+
     if isinstance(data_node, list):
         result = {}
         for item in data_node:
@@ -477,7 +486,8 @@ def _flatten_event_data(event_data) -> dict[str, str]:
         return result
 
     if isinstance(data_node, dict):
-        return {k: str(v) for k, v in data_node.items() if not k.startswith("#")}
+        # JSON null is empty, not "None" (10-06).
+        return {k: ("" if v is None else str(v)) for k, v in data_node.items() if not k.startswith("#")}
 
     return {}
 
@@ -614,9 +624,12 @@ def _parse_ts(s: str) -> datetime:
         s = s.rstrip() + "+00:00"
     s = s.replace("T", " ")
     try:
-        return datetime.fromisoformat(s)
+        d = datetime.fromisoformat(s)
     except ValueError:
         return datetime.min.replace(tzinfo=timezone.utc)
+    # Always UTC-aware (10-06: a date-only value parsed naive, and comparing
+    # it with the aware times raised), and in UTC.
+    return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d.astimezone(timezone.utc)
 
 
 def _collapse_copies(events: list[RawEvent]) -> list[RawEvent]:
@@ -788,7 +801,8 @@ def _scan_file_for_target_ids(path: Path, evtx_mod) -> set[int]:
             system = data.get("Event", {}).get("System", {})
             eid_raw = system.get("EventID", 0)
             eid = int(eid_raw.get("#text", 0) if isinstance(eid_raw, dict) else eid_raw)
-            if eid in _ALL_TARGET_IDS:
+            # The parser's own test, provider included (10-06).
+            if eid in _ALL_TARGET_IDS and _is_target(eid, system):
                 found.add(eid)
                 if found == _ALL_TARGET_IDS:   # found all possible targets — stop early
                     break
