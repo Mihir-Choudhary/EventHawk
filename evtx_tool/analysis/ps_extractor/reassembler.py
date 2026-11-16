@@ -23,6 +23,21 @@ def _safe_int(val, default: int = 0) -> int:
         return default
 
 
+def block_key(ev: dict) -> str:
+    """The script-block index key of a parsed 4104, used by every writer.
+
+    A real ScriptBlockId is the key.  A zero or missing one cannot group
+    fragments, so each record is its own block, keyed by host, channel and
+    record ID (Gemini audit 9-03: by record ID alone two hosts' blocks
+    overwrote each other; 9-04: a missing ID was skipped, losing the text).
+    """
+    sbid = str(ev.get("script_block_id", "") or "")
+    if sbid and sbid != ZERO_GUID:
+        return sbid
+    return (f"{sbid or 'NO-SCRIPTBLOCKID'}_{ev.get('computer', '')}_{ev.get('channel', '')}"
+            f"_{ev.get('event_record_id', 0)}")
+
+
 def build_script_block_index(
     events_4104: list[dict],
 ) -> dict[str, ScriptBlockAccumulator]:
@@ -42,20 +57,8 @@ def build_script_block_index(
 
     for ev in events_4104:
         sbid = ev.get("script_block_id", "")
-        if not sbid:
-            logger.debug(
-                "EID 4104 record %s: empty ScriptBlockId — skipping",
-                ev.get("event_record_id", "?"),
-            )
-            continue
-
         record_id = int(ev.get("event_record_id", 0))
-
-        # Zero GUID: degenerate block — do not group across events
-        if sbid == ZERO_GUID:
-            key = f"{sbid}_{record_id}"
-        else:
-            key = sbid
+        key = block_key(ev)
 
         if key not in index:
             index[key] = ScriptBlockAccumulator(

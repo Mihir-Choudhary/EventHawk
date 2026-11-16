@@ -322,8 +322,12 @@ def parse_4104(record: dict) -> dict:
     ts = _get_time_created(sys)
     ex = _get_execution(sys)
 
-    msg_num_raw = ed.get("MessageNumber", "1") or "1"
-    msg_tot_raw = ed.get("MessageTotal", "1") or "1"
+    # A blank field is 1; a logged 0 stays 0 (Gemini audit 9-04: `or "1"`
+    # made an int 0 into 1, and the reassembler then lost the text).
+    msg_num_raw = ed.get("MessageNumber", "1")
+    msg_tot_raw = ed.get("MessageTotal", "1")
+    msg_num_raw = "1" if msg_num_raw in (None, "") else msg_num_raw
+    msg_tot_raw = "1" if msg_tot_raw in (None, "") else msg_tot_raw
     try:
         msg_num = int(msg_num_raw)
     except (ValueError, TypeError):

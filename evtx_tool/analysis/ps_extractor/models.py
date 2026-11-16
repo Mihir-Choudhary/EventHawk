@@ -37,20 +37,27 @@ class ScriptBlockAccumulator:
 
     @property
     def expected_total(self) -> Optional[int]:
+        """The fragment count: the largest MessageTotal logged, or the largest
+        MessageNumber seen if that is larger (a fragment "2 of 1" is kept, and
+        fragment 1 is then missing -- Gemini audit 9-04)."""
         if not self.fragments:
             return None
         # Use max across all fragments — guards against MessageTotal inconsistency
         # (rare logging bug in older PS versions where different fragments disagree)
-        return max(f.message_total for f in self.fragments.values())
+        declared = max(f.message_total for f in self.fragments.values())
+        return max(declared, max((k for k in self.fragments if k >= 1), default=0))
+
+    @property
+    def invalid_numbers(self) -> list[int]:
+        """MessageNumbers below 1: kept (their text is evidence), marked."""
+        return sorted(k for k in self.fragments if k < 1)
 
     @property
     def is_complete(self) -> bool:
         t = self.expected_total
-        if t is None:
+        if not t or self.invalid_numbers:
             return False
-        return len(self.fragments) >= t and all(
-            i in self.fragments for i in range(1, t + 1)
-        )
+        return all(i in self.fragments for i in range(1, t + 1))
 
     @property
     def is_single_fragment(self) -> bool:
@@ -74,18 +81,37 @@ class ScriptBlockAccumulator:
         Missing fragments produce a [MISSING FRAGMENT N of M] placeholder.
         NUL bytes are stripped (seen on some Windows Server 2019 patch levels).
         """
-        total = self.expected_total or max(self.fragments.keys(), default=1)
+        # A run of missing fragments is ONE line ("[MISSING FRAGMENTS 2-1000000
+        # of 1000000]"): one event claiming a huge MessageTotal wrote a line
+        # per number, ~9,200x its size (Gemini audit 9-08).  A fragment
+        # numbered below 1 is kept after the others, marked (9-04/9-08: its
+        # text was lost or replaced by a MISSING line).
+        total = self.expected_total or 0
         parts: list[str] = []
-        for i in range(1, total + 1):
-            if i in self.fragments:
-                parts.append(self.fragments[i].text.rstrip("\x00"))
-            else:
-                parts.append(f"\n[MISSING FRAGMENT {i} of {total}]\n")
+        nxt = 1
+        for i in sorted(k for k in self.fragments if 1 <= k <= total):
+            if i > nxt:
+                parts.append(_missing_line(nxt, i - 1, total))
+            parts.append(self.fragments[i].text.rstrip("\x00"))
+            nxt = i + 1
+        if total >= nxt:
+            parts.append(_missing_line(nxt, total, total))
+        for k in self.invalid_numbers:
+            f = self.fragments[k]
+            parts.append(f"\n[FRAGMENT WITH INVALID MessageNumber {k} (MessageTotal {f.message_total}), "
+                         f"RecordID {f.record_id}]\n")
+            parts.append(f.text.rstrip("\x00"))
         return "".join(parts)
 
     def missing_count(self) -> int:
         t = self.expected_total or 0
-        return sum(1 for i in range(1, t + 1) if i not in self.fragments)
+        return t - sum(1 for k in self.fragments if 1 <= k <= t)
+
+
+def _missing_line(a: int, b: int, total: int) -> str:
+    if a == b:
+        return f"\n[MISSING FRAGMENT {a} of {total}]\n"
+    return f"\n[MISSING FRAGMENTS {a}-{b} of {total}]\n"
 
 
 # ── Session ───────────────────────────────────────────────────────────────────

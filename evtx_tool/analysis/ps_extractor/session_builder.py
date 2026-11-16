@@ -246,7 +246,8 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
         record_id = ev4104.get("event_record_id", 0)
         # Build the dedup key — matches reassembler.py key strategy:
         # ZERO_GUID blocks each get a unique key so they are never merged.
-        dedup_key = f"{sbid}_{record_id}" if not sbid or sbid == ZERO_GUID else sbid
+        from .reassembler import block_key
+        dedup_key = block_key(ev4104)
         # Only add the FIRST fragment we encounter for each block (avoids N entries
         # per multi-fragment block in the timeline). Sorting by timestamp means we
         # naturally encounter the earliest fragment first — even if fragment 1 was

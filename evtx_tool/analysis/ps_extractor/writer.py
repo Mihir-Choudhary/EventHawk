@@ -82,14 +82,10 @@ def write_commands_file(
     # For non-ZERO_GUID blocks, key == sbid. For ZERO_GUID blocks the key is
     # "{zero_guid}_{record_id}" — we cannot guess it from sbid alone, so we
     # resolve via the event's record_id (passed as a second argument below).
-    def _resolve_key(sbid: str, record_id: int = 0) -> str:
-        """Return the sb_index key for this sbid. For ZERO_GUID uses record_id."""
-        if sbid == ZERO_GUID:
-            return f"{sbid}_{record_id}"
-        return sbid
+    from .reassembler import block_key as _resolve_key   # the index's own rule (9-03)
 
-    def _sb_flags(sbid: str, record_id: int = 0) -> str:
-        key = _resolve_key(sbid, record_id)
+    def _sb_flags(ev: dict) -> str:
+        key = _resolve_key(ev)
         acc = sb_index.get(key)
         result = analysis_results.get(key)
         flags: list[str] = []
@@ -99,16 +95,16 @@ def write_commands_file(
             flags.extend(result.indicator_flags())
         return " ".join(f"[{f}]" for f in flags) if flags else ""
 
-    def _sb_attck(sbid: str, record_id: int = 0) -> str:
-        key = _resolve_key(sbid, record_id)
+    def _sb_attck(ev: dict) -> str:
+        key = _resolve_key(ev)
         result = analysis_results.get(key)
         if result and result.att_ck_techniques:
             return ", ".join(result.att_ck_techniques)
         return "T1059.001"
 
-    def _sb_preview(sbid: str, record_id: int = 0) -> str:
+    def _sb_preview(ev: dict) -> str:
         """Return a single-line content preview (first 300 chars) of a script block."""
-        key = _resolve_key(sbid, record_id)
+        key = _resolve_key(ev)
         acc = sb_index.get(key)
         if not acc:
             return ""
@@ -154,9 +150,9 @@ def write_commands_file(
 def _write_session_block(
     lines: list[str],
     sess: PSSession,
-    sb_flags_fn: Callable[[str, int], str],
-    sb_attck_fn: Callable[[str, int], str],
-    sb_preview_fn: Callable[[str, int], str] | None = None,
+    sb_flags_fn: Callable[[dict], str],
+    sb_attck_fn: Callable[[dict], str],
+    sb_preview_fn: Callable[[dict], str] | None = None,
 ) -> None:
     duration = sess.duration_str()
     dur_str = f" | Duration={duration}" if duration else ""
@@ -200,9 +196,9 @@ def _write_session_block(
 
 def _format_event_line(
     ev: dict,
-    sb_flags_fn: Callable[[str, int], str],
-    sb_attck_fn: Callable[[str, int], str],
-    sb_preview_fn: Callable[[str, int], str] | None = None,
+    sb_flags_fn: Callable[[dict], str],
+    sb_attck_fn: Callable[[dict], str],
+    sb_preview_fn: Callable[[dict], str] | None = None,
 ) -> str:
     eid = ev.get("event_id", "?")
     ts = _fmt_ts(ev.get("timestamp", ""))
@@ -251,9 +247,9 @@ def _format_event_line(
         msg_num = ev.get("message_number", 1)
         msg_tot = ev.get("message_total", 1)
         path = ev.get("path", "") or "(in-memory)"
-        # Pass record_id so the closure can reconstruct synthetic ZERO_GUID keys
-        flags = sb_flags_fn(sbid, record_id)
-        attck = sb_attck_fn(sbid, record_id)
+        # The event, so the closure derives the index key (block_key)
+        flags = sb_flags_fn(ev)
+        attck = sb_attck_fn(ev)
         result = [
             f"[{ts}] EID:4104 SCRIPTBLOCK      PID:{pid}  Block:{sbid} [{msg_num}/{msg_tot}]",
             f"  Path    : {path}",
@@ -262,7 +258,7 @@ def _format_event_line(
             result.append(f"  Flags   : {flags}")
         result.append(f"  ATT&CK  : {attck}")
         if sb_preview_fn:
-            preview = sb_preview_fn(sbid, record_id)
+            preview = sb_preview_fn(ev)
             if preview:
                 result.append(f"  Content : {preview}")
         return "\n".join(result)
@@ -378,19 +374,33 @@ def _format_scriptblock_file(
     # Build per-fragment provenance lines (sorted by MessageNumber).
     # Shows exactly which event record contributed each piece of the assembled
     # script so analysts can cross-reference back to the raw EVTX log.
-    total_frags = acc.expected_total or max(acc.fragments.keys(), default=1)
+    # Missing runs are one line each, and fragments numbered below 1 are
+    # listed too (Gemini audit 9-08: a line per number of a huge MessageTotal).
+    total_frags = acc.expected_total or 0
     frag_prov_lines: list[str] = []
-    for frag_num in range(1, total_frags + 1):
-        frag = acc.fragments.get(frag_num)
-        if frag is not None:
-            frag_prov_lines.append(
-                f"  [{frag_num:>3}/{total_frags}]  RecordID: {frag.record_id:<12}  "
-                f"Timestamp: {_fmt_ts(frag.timestamp)}"
-            )
-        else:
-            frag_prov_lines.append(
-                f"  [{frag_num:>3}/{total_frags}]  RecordID: MISSING"
-            )
+    nxt = 1
+
+    def _gap(a: int, b: int) -> None:
+        lbl = f"{a:>3}" if a == b else f"{a}-{b}"
+        frag_prov_lines.append(f"  [{lbl}/{total_frags}]  RecordID: MISSING")
+
+    for frag_num in sorted(k for k in acc.fragments if 1 <= k <= total_frags):
+        if frag_num > nxt:
+            _gap(nxt, frag_num - 1)
+        frag = acc.fragments[frag_num]
+        frag_prov_lines.append(
+            f"  [{frag_num:>3}/{total_frags}]  RecordID: {frag.record_id:<12}  "
+            f"Timestamp: {_fmt_ts(frag.timestamp)}"
+        )
+        nxt = frag_num + 1
+    if total_frags >= nxt:
+        _gap(nxt, total_frags)
+    for k in acc.invalid_numbers:
+        frag = acc.fragments[k]
+        frag_prov_lines.append(
+            f"  [invalid MessageNumber {k}]  RecordID: {frag.record_id:<12}  "
+            f"Timestamp: {_fmt_ts(frag.timestamp)}"
+        )
     frag_prov_block = "\n".join(frag_prov_lines) if frag_prov_lines else "  (none)"
 
     header = "\n".join([
@@ -721,8 +731,8 @@ def write_json_export(
             })
         elif eid == 4104:
             sbid = ev.get("script_block_id", "")
-            key = sbid if sbid else ""
-            res = analysis_results.get(key)
+            from .reassembler import block_key as _bk
+            res = analysis_results.get(_bk(ev))      # zero/no-ID blocks too (9-03)
             base.update({
                 "script_block_id": sbid,
                 "path":            ev.get("path", "") or "(in-memory)",
@@ -967,10 +977,8 @@ def write_csv_timeline(
                 sbid    = ev.get("script_block_id", "")
                 path    = ev.get("path", "")
                 command = path if path else "(in-memory)"
-                key = sbid
-                if not key or key == "00000000-0000-0000-0000-000000000000":
-                    rid = ev.get("event_record_id", 0)
-                    key = f"{sbid}_{rid}"
+                from .reassembler import block_key as _bk
+                key = _bk(ev)
                 acc = _sb_index.get(key)
                 if acc:
                     safe = _make_safe_key(key)

@@ -90,6 +90,10 @@ class PSExtractor:
         self._errors: list[str] = []
         # PowerShell-channel events with an ID that is not extracted: {eid: count}
         self._not_extracted: dict[int, int] = {}
+        # Copies of a log (same record loaded twice): counted once (Gemini
+        # audit 9-03).  identity -> digests of the contents seen.
+        self._seen_records: dict[tuple, set] = {}
+        self.copies_collapsed = 0
 
     def add_error(self, message: str) -> None:
         """Record a problem found outside the pipeline (e.g. while reading the
@@ -252,6 +256,7 @@ class PSExtractor:
             summary.get("script_blocks", 0),
             len(self._errors),
         )
+        summary["copies_collapsed"] = self.copies_collapsed
         return summary
 
     def _classify_events(self) -> tuple[dict[int, list[dict]], int]:
@@ -287,6 +292,7 @@ class PSExtractor:
 
             try:
                 data = raw.get("data")
+                raw_text = data if isinstance(data, str) else None
                 if isinstance(data, str):
                     try:
                         data = json.loads(data)
@@ -324,6 +330,25 @@ class PSExtractor:
                 if eid not in RELEVANT_EVENT_IDS:
                     self._not_extracted[eid] = self._not_extracted.get(eid, 0) + 1
                     continue
+
+                # The same record (host, channel, ID, time, record ID) with the
+                # same content is a copy of a log: skip it.  Different content
+                # under one identity is two records, both kept (record_identity).
+                _rid = raw.get("event_record_id")
+                if _rid is not None and str(_rid).strip() != "":
+                    _tc = sys_data.get("TimeCreated")
+                    _st = _tc.get("#attributes", {}).get("SystemTime", "") if isinstance(_tc, dict) else _tc
+                    _ident = (str(sys_data.get("Computer", "")).strip().lower(), channel.lower(), eid,
+                              str(_st or ""), str(_rid).strip())
+                    import hashlib
+                    _dig = hashlib.blake2b((raw_text if raw_text is not None else
+                                            json.dumps(data, sort_keys=True, default=str)).encode("utf-8", "replace"),
+                                           digest_size=16).digest()
+                    _seen = self._seen_records.setdefault(_ident, set())
+                    if _dig in _seen:
+                        self.copies_collapsed += 1
+                        continue
+                    _seen.add(_dig)
 
                 # Shallow-copy to avoid mutating input record dict
                 data = dict(data)
