@@ -30,6 +30,13 @@ def build_justification(ev: "ScoredEvent", trie: "AncestryTrie") -> str:
             "before this process started"
         )
 
+    # Substituted binary (10-03: never stated)
+    if getattr(ev, "image_hash_mismatch", False):
+        parts.append(
+            f"Image hash mismatch: '{norm.proc_norm}' ran with a hash ({ev.raw.image_hash}) "
+            "that the baseline never saw for it (possible substituted binary)"
+        )
+
     # Anomalous lineage
     if ev.trie_depth_score > 0.5:
         expected_parent = trie.most_common_parent(norm.proc_norm)

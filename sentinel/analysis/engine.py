@@ -25,13 +25,34 @@ from sentinel.analysis.lineage import PerHostLineageTracker
 from sentinel.analysis.normalizer import normalize_cmdline, normalize_procname
 from sentinel.analysis.scorer import composite_score, trie_depth_score, image_hash_bonus
 from sentinel.baseline.freq_model import surprisal_cmdline, surprisal_lineage
-from sentinel.baseline.persistence import load_artifacts
+from sentinel.baseline.persistence import load_artifacts, load_known_hashes
 from sentinel.config import SentinelConfig, load_config
 from sentinel.models import BaselineMeta, NormalizedEvent, ScoredEvent, TierBoundaries
 
 logger = logging.getLogger(__name__)
 
 
+
+
+def hash_signal(proc_norm: str, image_hash: str, known: dict) -> float:
+    """1.0 when *proc_norm* is known with other hashes, else 0.0.  A process
+    with known hashes learns nothing from the target, so every substituted
+    binary is flagged, not only the first; a process with none (new, or an
+    old baseline) learns its first hash, as before (10-03)."""
+    bonus = image_hash_bonus(proc_norm, image_hash, known)
+    if image_hash and proc_norm and not known.get(proc_norm):
+        known.setdefault(proc_norm, set()).add(image_hash)
+    return bonus
+
+
+def fuse_capped(score: float, in_baseline: bool, ppid_flag: float, drift_jsd: float, hash_bonus: float,
+                drift_threshold: float, aggregate_max: float) -> float:
+    """The in-baseline cap (halved, at most Tier 2) -- not when PPID spoofing,
+    significant drift or an image-hash mismatch is seen: a known command line
+    run from a substituted binary was halved and capped (10-03)."""
+    if in_baseline and ppid_flag < 1.0 and drift_jsd < drift_threshold and hash_bonus <= 0:
+        return min(score * 0.5, aggregate_max)
+    return score
 
 def scored_parent(resolved_parent, ev) -> str:
     """The parent name to score.  After PPID_MISMATCH the claimed parent is a
@@ -133,7 +154,10 @@ def run_analysis(
     # Build a seen-hash table for image_hash_bonus: maps proc_norm → set of hashes
     # seen so far in this run (populated from baseline events via SQLite if available,
     # or accumulated live from scored events).
-    known_hashes: dict[str, set[str]] = defaultdict(set)
+    # Starts from the BASELINE's hashes (Gemini audit 10-03): it started
+    # empty, so the first binary of the target -- trojanized or not -- became
+    # "known".
+    known_hashes: dict[str, set[str]] = defaultdict(set, load_known_hashes(baseline_dir))
 
     # ── Stream events through scoring pipeline ────────────────────────────────
     _cb("Scoring events", 0.15)
@@ -178,9 +202,7 @@ def run_analysis(
         ppid_flag = 1.0 if 'PPID_MISMATCH' in ev.flags else 0.0
 
         # Image hash mismatch bonus (Sysmon events only, when hash is available)
-        hash_bonus = image_hash_bonus(proc_norm, ev.image_hash, known_hashes)
-        if ev.image_hash:
-            known_hashes[proc_norm].add(ev.image_hash)
+        hash_bonus = hash_signal(proc_norm, ev.image_hash, known_hashes)
 
         # Host drift
         drift_jsd = drift_monitors[ev.host].update(ev.timestamp, proc_norm)
@@ -191,8 +213,8 @@ def run_analysis(
         # Fuse cap: only suppress if context is truly non-anomalous.
         # Do NOT cap when PPID spoofing is detected or when host drift is significant —
         # an adversary could replay a known-baseline command in an anomalous context.
-        if in_baseline and ppid_flag < 1.0 and drift_jsd < cfg.drift_significant_threshold:
-            score = min(score * 0.5, tier_bounds.aggregate_max)
+        score = fuse_capped(score, in_baseline, ppid_flag, drift_jsd, hash_bonus,
+                            cfg.drift_significant_threshold, tier_bounds.aggregate_max)
 
         tier = tier_bounds.classify(score)
 
@@ -206,6 +228,7 @@ def run_analysis(
             composite=score,
             tier=tier,
         )
+        scored_ev.image_hash_mismatch = hash_bonus > 0
         scored.append(scored_ev)
 
     _cb("Building justifications", 0.90)

@@ -44,9 +44,12 @@ _CHECKSUM_FILE   = "artifact_checksums.json"
 _DB_FILE         = "baseline.db"
 
 _PICKLE_FILES = (_FREQ_FILE, _TRIE_FILE, _FUSE_FILE)
+# The image hashes each process had in the baseline (Gemini audit 10-03):
+# signed like the rest, since editing it would hide a substituted binary.
+_HASH_FILE = "known_hashes.json"
 # Files covered by artifact_checksums.json.  The meta file holds the tier
 # boundaries: unsigned, editing suppress_max silenced every alert (Gemini 10-01).
-_SIGNED_FILES = _PICKLE_FILES + (_META_FILE,)
+_SIGNED_FILES = _PICKLE_FILES + (_META_FILE, _HASH_FILE)
 _MIN_ENV_KEY_BYTES = 16
 
 
@@ -153,6 +156,12 @@ def _verify_checksums(directory: Path, key: bytes) -> None:
     for fname in _SIGNED_FILES:
         fpath = directory / fname
         if not fpath.exists():
+            if fname in stored:
+                # Signed when built, gone now: deleting it must not switch a
+                # check off (10-03).
+                raise RuntimeError(
+                    f"{fname} is listed in {checksum_path.name} but missing from {directory}. "
+                    "The baseline may have been tampered with. Re-build the baseline to resolve this.")
             continue
         expected = stored.get(fname)
         if not isinstance(expected, str):
@@ -209,6 +218,15 @@ def save_artifacts(
     with open(fuse_path, "wb") as fh:
         pickle.dump(fuse, fh, protocol=pickle.HIGHEST_PROTOCOL)
     logger.info("Saved fuse_filter → %s", fuse_path)
+
+    # The baseline's image hashes per process (10-03)
+    hashes: dict[str, set[str]] = {}
+    for ev in normalized_events:
+        h = getattr(getattr(ev, "raw", None), "image_hash", "") or ""
+        if h and ev.proc_norm:
+            hashes.setdefault(ev.proc_norm, set()).add(h)
+    with open(directory / _HASH_FILE, "w", encoding="utf-8") as fh:
+        json.dump({k: sorted(v) for k, v in sorted(hashes.items())}, fh, indent=1)
 
     # Compute and save HMAC-SHA256 checksums for the pickles and the meta file
     checksums = {
@@ -346,6 +364,21 @@ def load_artifacts(directory: Path) -> tuple[
         directory, meta.event_count, meta.stability_score,
     )
     return meta, freq_model, trie, fuse
+
+
+def load_known_hashes(directory: Path) -> dict[str, set[str]]:
+    """The baseline's image hashes per process, checksum-verified.  A baseline
+    built before 10-03 has none: {} (analysis then learns them as it goes)."""
+    key = _artifact_key(directory)
+    _verify_checksums(directory, key)
+    p = directory / _HASH_FILE
+    if not p.exists():
+        logger.warning("Baseline %s has no %s (built by an older Sentinel): image hashes are "
+                       "compared within the analysed logs only", directory, _HASH_FILE)
+        return {}
+    with open(p, encoding="utf-8") as fh:
+        raw = json.load(fh)
+    return {str(k): set(map(str, v)) for k, v in raw.items()}
 
 
 def artifacts_exist(directory: Path) -> bool:

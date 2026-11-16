@@ -53,6 +53,7 @@ class ScoredEvent:
     composite: float = 0.0           # final 0-100 score
     tier: int = 1                    # 1=suppress, 2=aggregate, 3=highlight, 4=critical
     justification_text: str = ""
+    image_hash_mismatch: bool = False  # hash differs from the baseline's (10-03)
 
     @property
     def raw(self) -> RawEvent:
