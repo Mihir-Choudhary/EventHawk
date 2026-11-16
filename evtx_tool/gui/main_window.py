@@ -19304,11 +19304,16 @@ class MainWindow(QMainWindow):
 
         # If extraction was cancelled, show a brief message
         if summary.get("cancelled"):
-            self._warn_blocking("PowerShell History", "Extraction cancelled.",
+            _rm = summary.get("partial_files_removed", 0)
+            self._warn_blocking("PowerShell History", "Extraction cancelled."
+                                + (f"\n\nThe {_rm} file(s) it had written so far were removed, so no "
+                                   "partial extraction is left." if _rm else ""),
                                 icon=QMessageBox.Icon.Information)
             return
 
-        output_dir = getattr(self, "_ps_output_dir", "")
+        # The extractor may have written into a new subfolder (the chosen one
+        # held an earlier extraction; Gemini audit 9-12).
+        output_dir = summary.get("output_dir") or getattr(self, "_ps_output_dir", "")
 
         ps_events  = summary.get("total_ps_events", 0)
         blocks     = summary.get("script_blocks", 0)
@@ -19338,6 +19343,9 @@ class MainWindow(QMainWindow):
             msg += (f"\nErrors: {errors} — see Show Details, and "
                     "ps_extraction_summary.txt\n")
         msg += f"\nDirectory:\n{output_dir}"
+        if summary.get("new_subfolder"):
+            msg += ("\n(The chosen folder already held an extraction, so this one is in a new "
+                    "subfolder; nothing there was changed.)")
 
         result_dlg = QMessageBox(self)
         result_dlg.setWindowTitle("PowerShell History — Complete")

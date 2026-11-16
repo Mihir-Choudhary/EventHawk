@@ -121,6 +121,14 @@ class PSExtractor:
         Execute the full extraction pipeline.
         Returns summary dict.
         """
+        # A folder that already holds an extraction gets a fresh subfolder:
+        # stale script-block files of an earlier run sat beside this run's,
+        # uncounted (Gemini audit 9-12).  Nothing earlier is deleted.
+        self.output_dir = self._prepare_output_dir()
+        try:
+            self._before = set(os.listdir(self.output_dir))
+        except OSError:
+            self._before = set()
         self._emit("Scanning events for PowerShell telemetry...", 0.0)
 
         # Step 1: Classify and parse PS events — O(n) single pass (0.0 → 0.25)
@@ -174,6 +182,7 @@ class PSExtractor:
                 output_dir=self.output_dir,
                 progress_cb=self._emit,
                 errors=self._errors,
+                cancel_check=self._is_cancelled,
             )
         except Exception as exc:
             self._errors.append(f"scriptblock files write failed: {type(exc).__name__}: {exc}")
@@ -280,6 +289,8 @@ class PSExtractor:
             len(self._errors),
         )
         summary["copies_collapsed"] = self.copies_collapsed
+        summary["output_dir"] = str(self.output_dir)
+        summary["new_subfolder"] = bool(getattr(self, "_made_subfolder", False))
         return summary
 
     def _classify_events(self) -> tuple[dict[int, list[dict]], int]:
@@ -432,9 +443,61 @@ class PSExtractor:
 
         return results
 
-    @staticmethod
-    def _cancelled_summary(total: int = 0) -> dict:
+    _ARTIFACTS = ("ps_commands.txt", "ps_extraction.json", "ps_extraction_summary.txt", "ps_timeline.xlsx")
+
+    @classmethod
+    def _is_artifact(cls, name: str) -> bool:
+        return name in cls._ARTIFACTS or (name.startswith("scriptblock_") and name.endswith(".txt"))
+
+    def _prepare_output_dir(self) -> Path:
+        d = Path(self.output_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        self._made_subfolder = False
+        try:
+            busy = any(self._is_artifact(n) for n in os.listdir(d))
+        except OSError:
+            busy = False
+        if not busy:
+            return d
+        from datetime import datetime, timezone
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        sub, k = d / f"ps_extraction_{stamp}", 2
+        while sub.exists():
+            sub, k = d / f"ps_extraction_{stamp}_{k}", k + 1
+        sub.mkdir()
+        self._made_subfolder = True
+        return sub
+
+    def _discard_partial(self) -> int:
+        """A cancelled run removes the files IT wrote (never anything that
+        was there before), so no partial extraction is left (9-12)."""
+        n = 0
+        before = getattr(self, "_before", None)
+        if before is None:
+            return 0
+        try:
+            names = os.listdir(self.output_dir)
+        except OSError:
+            return 0
+        for name in names:
+            if name not in before and self._is_artifact(name):
+                try:
+                    os.remove(os.path.join(self.output_dir, name))
+                    n += 1
+                except OSError as exc:
+                    self._errors.append(f"could not remove partial {name}: {exc}")
+        if getattr(self, "_made_subfolder", False):
+            try:
+                os.rmdir(self.output_dir)
+            except OSError:
+                pass
+        return n
+
+    def _cancelled_summary(self, total: int = 0) -> dict:
+        removed = self._discard_partial()
         return {
+            "partial_files_removed": removed,
+            "output_dir":      str(self.output_dir),
             "total_scanned":   total,
             "total_ps_events": 0,
             "script_blocks":   0,

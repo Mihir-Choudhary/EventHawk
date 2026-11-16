@@ -307,9 +307,11 @@ def write_scriptblock_files(
     output_dir: Path,
     progress_cb: Callable[[str, float], None] | None = None,
     errors: list[str] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     """
     Write one scriptblock_<GUID>.txt file per ScriptBlockAccumulator.
+    Stops between files when *cancel_check* says so (Gemini audit 9-12).
     Emits progress every 10% via progress_cb(step, pct) where pct is 0.76->0.86.
     """
     total = len(sb_index)
@@ -319,6 +321,8 @@ def write_scriptblock_files(
     chunk = max(1, total // 10)
 
     for i, (key, acc) in enumerate(sb_index.items()):
+        if cancel_check is not None and cancel_check():
+            return
         if progress_cb and i % chunk == 0:
             # Inside this step's own band (0.76 -> 0.86): it ran to 0.92 and
             # the summary step then reported 0.86 (Gemini audit 9-08).
