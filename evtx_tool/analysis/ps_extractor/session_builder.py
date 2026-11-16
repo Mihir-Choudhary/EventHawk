@@ -24,6 +24,28 @@ def _k(ts) -> str:
     return ts_sort_key(ts)
 
 
+def _running_session(
+    candidates: list[str],
+    sessions: dict[str, "PSSession"],
+    ev: dict,
+) -> "PSSession | None":
+    """The session of this PID that was running when *ev* was logged, or
+    None.  A PID is reused, so a session that had not started yet or had
+    already stopped is another process; and a PowerShell 7 (PowerShellCore)
+    event is never a Windows PowerShell 5.1 session's, whose EID 400 the
+    sessions come from (Gemini audit 9-13: such events were attached, or
+    the earliest session taken when none had started)."""
+    if str(ev.get("channel") or "").casefold().startswith("powershellcore"):
+        return None
+    ts = ev.get("timestamp", "")
+    if not ts:
+        return _best_session_for_event(candidates, sessions, ts)
+    t = _k(ts)
+    live = [sessions[h] for h in candidates
+            if _k(sessions[h].start_ts) <= t and (not sessions[h].stop_ts or t <= _k(sessions[h].stop_ts))]
+    return max(live, key=lambda s: _k(s.start_ts)) if live else None
+
+
 def _best_session_for_event(
     candidates: list[str],
     sessions: dict[str, "PSSession"],
@@ -231,10 +253,12 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
         # attached by PID to this one (9-07).
         if not matched and not host_id_ctx and pid and _pk(ev4103.get("computer"), pid) in pid_to_host_ids:
             candidates = pid_to_host_ids[_pk(ev4103.get("computer"), pid)]
-            event_ts = ev4103.get("timestamp", "")
-            best = _best_session_for_event(candidates, sessions_by_host_id, event_ts)
-            best.session_events.append(ev4103)
-            matched = True
+            best = _running_session(candidates, sessions_by_host_id, ev4103)
+            if best is not None:
+                best.session_events.append(ev4103)
+                if not best.user_name:          # as the HostId match does (9-13)
+                    best.user_name = ev4103.get("user", "")
+                matched = True
 
         if not matched:
             # No session: create a synthetic "unsessioned" entry
@@ -253,10 +277,10 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
 
         if not matched and not host_id and pid and _pk(ev800.get("computer"), pid) in pid_to_host_ids:
             candidates = pid_to_host_ids[_pk(ev800.get("computer"), pid)]
-            event_ts = ev800.get("timestamp", "")
-            best = _best_session_for_event(candidates, sessions_by_host_id, event_ts)
-            best.session_events.append(ev800)
-            matched = True
+            best = _running_session(candidates, sessions_by_host_id, ev800)
+            if best is not None:
+                best.session_events.append(ev800)
+                matched = True
 
         if not matched:
             _ensure_unsessioned(sessions_by_host_id, ev800)
@@ -287,10 +311,10 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
         matched = False
         if pid and _pk(ev4104.get("computer"), pid) in pid_to_host_ids:
             candidates = pid_to_host_ids[_pk(ev4104.get("computer"), pid)]
-            event_ts = ev4104.get("timestamp", "")
-            best = _best_session_for_event(candidates, sessions_by_host_id, event_ts)
-            best.session_events.append(ev4104)
-            matched = True
+            best = _running_session(candidates, sessions_by_host_id, ev4104)
+            if best is not None:
+                best.session_events.append(ev4104)
+                matched = True
 
         if not matched:
             _ensure_unsessioned(sessions_by_host_id, ev4104)

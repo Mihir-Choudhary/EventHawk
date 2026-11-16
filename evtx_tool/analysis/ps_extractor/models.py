@@ -144,6 +144,11 @@ class PSSession:
             from datetime import datetime
 
             def _parse(ts: str):
+                # Any offset ("+00:00" failed; Gemini audit 9-13), as UTC.
+                from evtx_tool.core.time_window import parse_event_ts
+                d = parse_event_ts(ts)
+                if d is not None:
+                    return d.replace(tzinfo=None)
                 # Strip trailing Z
                 ts = ts.rstrip("Z")
                 # Truncate fractional seconds to 6 digits (%f max).
@@ -165,7 +170,8 @@ class PSSession:
                 delta = t1 - t0
                 total_secs = int(delta.total_seconds())
                 if total_secs < 0:
-                    total_secs = 0
+                    # The log does not give a length: never 0:00:00 (9-13).
+                    return "Unavailable (stop logged before start)"
                 h, rem = divmod(total_secs, 3600)
                 m, s = divmod(rem, 60)
                 return f"{h}:{m:02d}:{s:02d}"
