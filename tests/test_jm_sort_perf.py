@@ -103,13 +103,17 @@ def main() -> int:
         # dictionary-encoded).  The old code logged the failure and returned the
         # table UNSORTED, so sorting the grid by Computer silently showed unordered
         # rows.  Ordering now goes through DuckDB.
+        # Channel sorts on its SHOWN form, without "Microsoft-Windows-" (Gemini
+        # audit 5-07, as test_jm_functional), so the order is checked on it.
+        def shown(name, v):
+            return v[len("Microsoft-Windows-"):] if name == "channel" and v.startswith("Microsoft-Windows-") else v
         for col, name in ((COL_CHANNEL, "channel"), (COL_COMPUTER, "computer")):
             model.sort(col, Qt.SortOrder.AscendingOrder); settle(model)
-            vals = [v for v in col_vals(name, 50000) if v is not None]
+            vals = [shown(name, v) for v in col_vals(name, 50000) if v is not None]
             check(f"{name} (dictionary-encoded) sorts ascending",
                   vals == sorted(vals), f"{len(set(vals))} distinct, first {vals[:2]}")
             model.sort(col, Qt.SortOrder.DescendingOrder); settle(model)
-            vals = [v for v in col_vals(name, 50000) if v is not None]
+            vals = [shown(name, v) for v in col_vals(name, 50000) if v is not None]
             check(f"{name} (dictionary-encoded) sorts descending",
                   vals == sorted(vals, reverse=True), f"{len(set(vals))} distinct, first {vals[:2]}")
 
