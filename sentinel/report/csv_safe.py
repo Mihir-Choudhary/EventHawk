@@ -1,0 +1,34 @@
+"""Formula-safe CSV for Sentinel's own reports, without evtx_tool.
+
+The same rule as every EventHawk CSV (user decision 2026-11-06, see
+evtx_tool.output.exporters.csv_cell): a text cell starting with = + - @ TAB
+or CR gets one leading apostrophe; plain numbers and the lone "-" are
+untouched.  Sentinel is a standalone package and imported that writer from
+evtx_tool, so its CSV report failed outside the EventHawk tree (Gemini audit
+10-12).  test_sentinel_csv_standalone checks the two stay the same.
+"""
+from __future__ import annotations
+
+import csv
+import re
+
+_PLAIN_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+_FORMULA_FIRST = frozenset("=+-@\t\r")
+
+
+def csv_cell(value):
+    if (isinstance(value, str) and value and value[0] in _FORMULA_FIRST
+            and value != "-" and not _PLAIN_NUMBER.fullmatch(value)):
+        return "'" + value
+    return value
+
+
+class SafeDictWriter(csv.DictWriter):
+    """csv.DictWriter whose every value goes through csv_cell()."""
+
+    def writerow(self, rowdict):
+        return super().writerow({k: csv_cell(v) for k, v in rowdict.items()})
+
+    def writerows(self, rowdicts):
+        for r in rowdicts:
+            self.writerow(r)

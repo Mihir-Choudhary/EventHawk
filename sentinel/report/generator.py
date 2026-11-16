@@ -87,8 +87,10 @@ def generate_csv_report(
     events_to_export.sort(key=lambda e: (e.tier, -e.composite))
 
     with open(output_path, "w", encoding="utf-8", newline="") as fh:
-        # Formula-safe like every EventHawk CSV (user rule; Codex CK91-1).
-        from evtx_tool.output.exporters import SafeDictWriter
+        # Formula-safe like every EventHawk CSV (user rule; Codex CK91-1), with
+        # Sentinel's own copy of the rule: Sentinel runs without evtx_tool
+        # (Gemini audit 10-12).
+        from sentinel.report.csv_safe import SafeDictWriter
         writer = SafeDictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for ev in events_to_export:
