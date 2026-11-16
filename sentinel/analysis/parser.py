@@ -75,11 +75,24 @@ def _is_target(eid: int, system: dict) -> bool:
     return str(name).strip().lower() == want
 
 
+# Files the last parse could not open: [(path, reason)].  The caller reports
+# them -- a failed file only reached the log, and "sentinel analyze" exited 0
+# (Gemini audit 10-08).
+_FAILED: list[tuple[str, str]] = []
+
+
+def last_failed_files() -> list[tuple[str, str]]:
+    return list(_FAILED)
+
+
 def parse_evtx_files(
     paths: list[Path],
     progress_cb: Callable[[str, float], None] | None = None,
+    _reset: bool = True,
 ) -> list[RawEvent]:
     """Parse a list of .evtx files and return all targeted RawEvents."""
+    if _reset:
+        _FAILED.clear()
     try:
         import evtx as _evtx_mod
     except ImportError:
@@ -101,6 +114,7 @@ def parse_evtx_files(
             results.extend(events)
         except Exception as exc:
             logger.warning("Failed to open %s: %s", path.name, exc)
+            _FAILED.append((str(path), str(exc)))
 
     logger.info(
         "Parsing complete: %d files, %d total records, %d matched target IDs %s",
@@ -254,6 +268,7 @@ def parse_evtx_files_parallel(
     Returns:
         List of RawEvents sorted by timestamp.
     """
+    _FAILED.clear()
     if not paths:
         return []
 
@@ -295,6 +310,7 @@ def parse_evtx_files_parallel(
                 open_error = skips.pop("open_error", None)
                 if open_error:
                     logger.warning("Could not read %s: %s", path.name, open_error)
+                    _FAILED.append((str(path), str(open_error)))
                 total_seen += seen
                 total_matched += matched
                 # Per record, as in the serial path: one bad record used to
@@ -323,6 +339,7 @@ def parse_evtx_files_parallel(
                 seen, matched, events = _parse_single_evtx(path, _evtx_mod)
             except Exception as exc:
                 logger.warning("Failed to open %s: %s", path.name, exc)
+                _FAILED.append((str(path), str(exc)))
                 continue
             total_seen += seen
             total_matched += matched

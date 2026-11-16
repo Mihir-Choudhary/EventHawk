@@ -241,6 +241,8 @@ def run_analysis(
 
     metrics = _build_metrics(scored, len(raw_events), input_file_hashes, cfg)
     metrics["tier_boundaries"] = tier_bounds.as_dict()
+    from sentinel.analysis.parser import last_failed_files
+    metrics["failed_files"] = last_failed_files()      # reported by the caller (10-08)
     logger.info(
         "Analysis complete: %d events scored, tier4=%d, tier3=%d, hosts=%d",
         len(scored),

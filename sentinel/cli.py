@@ -103,26 +103,28 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         bar = "#" * int(pct * 30)
         print(f"\r[{bar:<30}] {int(pct*100):3d}%  {step:<40}", end="", flush=True)
 
-    # Accept either a single folder or explicit file paths
+    # Folders and files, any mix: every folder is scanned (Gemini audit 10-08:
+    # only a single folder argument was, so "--evtx A B" read nothing).
     raw_evtx = [Path(f) for f in args.evtx]
-    if len(raw_evtx) == 1 and raw_evtx[0].is_dir():
-        from sentinel.analysis.parser import find_relevant_evtx_files
-        logger.info("Scanning %s for relevant EVTX files ...", raw_evtx[0])
-        target_paths = find_relevant_evtx_files(raw_evtx[0], progress_cb=_cb)
-        print()
-        if not target_paths:
-            logger.error(
-                "No EVTX files containing process-creation events found in: %s", raw_evtx[0]
-            )
-            return 1
-        logger.info("Found %d relevant file(s)", len(target_paths))
-    else:
-        target_paths = raw_evtx
-        missing = [p for p in target_paths if not p.exists()]
-        if missing:
-            for p in missing:
-                logger.error("File not found: %s", p)
-            return 1
+    missing = [p for p in raw_evtx if not p.exists()]
+    if missing:
+        for p in missing:
+            logger.error("File not found: %s", p)
+        return 1
+    from sentinel.analysis import parser as _sp
+    target_paths = []
+    for p in raw_evtx:
+        if p.is_dir():
+            logger.info("Scanning %s for relevant EVTX files ...", p)
+            found = _sp.find_relevant_evtx_files(p, progress_cb=_cb)
+            print()
+            if not found:
+                logger.error("No EVTX files containing process-creation events found in: %s", p)
+                return 1
+            logger.info("Found %d relevant file(s) in %s", len(found), p)
+            target_paths.extend(found)
+        else:
+            target_paths.append(p)
 
     scored, metrics = run_analysis(target_paths, baseline_dir, sigma_dir, progress_cb=_cb)
     print()
@@ -155,6 +157,16 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     if report_path:
         print(f"\nFull JSON report saved to: {report_path}")
 
+    # Not a success when evidence was not read or nothing was scored (10-08).
+    failed = metrics.get("failed_files") or []
+    for path, why in failed:
+        logger.error("Could not read %s: %s", path, why)
+    if failed:
+        logger.error("%d file(s) could not be read: the analysis is incomplete", len(failed))
+        return 1
+    if not metrics.get("events_scored", 0):
+        logger.error("No process-creation events were scored")
+        return 1
     return 0
 
 
