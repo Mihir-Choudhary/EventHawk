@@ -97,6 +97,19 @@ class PSWorker(QThread):
                         -0.05,  # sub-zero = indeterminate progress bar
                     )
                     read = corrupt = 0
+                    # As the parse engines do (Gemini audit 9-05): report a
+                    # file cut short, and after a read that stops part-way
+                    # recover the remaining chunks one by one.
+                    from evtx_tool.core import chunk_salvage as _cs
+                    from evtx_tool.core import parser as _cp
+                    try:
+                        _trunc = _cp.check_evtx_truncation(fpath)
+                    except Exception:
+                        _trunc = None
+                    if _trunc:
+                        extractor.add_error(f"{basename}: {_trunc}")
+                    emitted = _cs.IdRuns()
+                    stopped = None
                     try:
                         parser = PyEvtxParser(fpath)
                         for rec in parser.records_json():
@@ -106,16 +119,47 @@ class PSWorker(QThread):
                                 corrupt += 1
                                 continue
                             read += 1
+                            try:
+                                emitted.add(rec["event_record_id"])
+                            except Exception:
+                                pass
                             # Tag each record with its source file so the extractor
                             # can track which files actually contained PS events.
                             rec["_source_file"] = fpath
                             yield rec
                     except Exception as exc:
                         logger.warning("Could not read %s: %s", fpath, exc)
-                        extractor.add_error(
-                            f"{basename}: could not read past record {read} ({exc}); "
-                            "the rest of the file was not examined"
-                            if read else f"{basename}: could not be read ({exc})")
+                        stopped = exc
+                    if stopped is not None:
+                        salvaged, stats, salvage_exc = 0, {}, None
+                        if read:
+                            try:
+                                gen = _cs.salvage_records_json(fpath, already_emitted=emitted)
+                                while True:
+                                    try:
+                                        rec = next(gen)
+                                    except StopIteration as _stop:
+                                        stats = _stop.value or {}
+                                        break
+                                    if self._cancelled:
+                                        return
+                                    salvaged += 1
+                                    rec["_source_file"] = fpath
+                                    yield rec
+                            except Exception as exc2:
+                                salvage_exc = exc2
+                        if not read:
+                            extractor.add_error(f"{basename}: could not be read ({stopped})")
+                        else:
+                            msg = (f"{basename}: could not read past record {read} ({stopped}); "
+                                   f"{salvaged} more record(s) recovered chunk by chunk")
+                            if stats.get("chunks_unrecoverable"):
+                                msg += f"; {stats['chunks_unrecoverable']} chunk(s) unrecoverable"
+                            if stats.get("records_unreadable"):
+                                msg += f"; {stats['records_unreadable']} record(s) unreadable"
+                            if salvage_exc is not None:
+                                msg += f"; the recovery itself failed ({salvage_exc}), the rest of the file was not examined"
+                            extractor.add_error(msg)
                     if corrupt:
                         extractor.add_error(
                             f"{basename}: {corrupt} corrupt record(s) skipped")

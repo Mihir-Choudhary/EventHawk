@@ -318,8 +318,11 @@ class PSExtractor:
                 raw_text = data if isinstance(data, str) else None
                 if isinstance(data, str):
                     try:
-                        data = json.loads(data)
-                    except json.JSONDecodeError as exc:
+                        # As the parse engines read it: every value of a
+                        # repeated name is kept (json.loads kept the last; 9-05).
+                        from evtx_tool.core.record_json import load_record
+                        data = load_record(data)
+                    except ValueError as exc:
                         rid = raw.get("event_record_id", "?")
                         self._errors.append(f"record {rid}: undecodable event JSON ({exc})")
                         continue

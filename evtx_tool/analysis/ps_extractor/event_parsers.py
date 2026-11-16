@@ -97,6 +97,21 @@ def _parse_classic_texts(texts: list) -> dict[str, str]:
     return result
 
 
+def _first_and_all(name: str, value, out: dict) -> None:
+    """Put *value* under *name*: a name logged more than once (load_record
+    keeps every value, as a list) takes its first non-empty value, and when
+    the values differ they are all kept under "<name> (all values)" -- one
+    value to match on, none hidden (Gemini audit 9-05)."""
+    if isinstance(value, list):
+        vals = [("" if v is None else v if isinstance(v, str) else str(v)) for v in value]
+        distinct = list(dict.fromkeys(v for v in vals if v != ""))
+        out.setdefault(name, distinct[0] if distinct else "")
+        if len(distinct) > 1:
+            out[f"{name} (all values)"] = " | ".join(distinct)
+        return
+    out[name] = "" if value is None else (value if isinstance(value, str) else str(value))
+
+
 def extract_eventdata(event: dict) -> dict[str, str]:
     """
     Normalise the EventData shapes pyevtx-rs produces into a flat {name: value} dict.
@@ -124,7 +139,10 @@ def extract_eventdata(event: dict) -> dict[str, str]:
 
     # Shape C: flat dict keyed by field name
     if isinstance(raw, dict):
-        result: dict[str, str] = {k: str(v) for k, v in raw.items() if not k.startswith("#")}
+        result: dict[str, str] = {}
+        for k, v in raw.items():
+            if not k.startswith("#"):
+                _first_and_all(k, v, result)
         if not result:
             # The classic channel: the unnamed strings are the "#text" of Data,
             # either one string or (what pyevtx-rs actually emits) a list.
@@ -152,7 +170,15 @@ def extract_eventdata(event: dict) -> dict[str, str]:
                 # As text, like Shapes B and C: pyevtx-rs gives a numeric
                 # #text as a JSON number, and an int ScriptBlockText made the
                 # writers raise (Gemini audit 9-06).
-                result[name] = "" if value is None else (value if isinstance(value, str) else str(value))
+                if name in result:
+                    # The same name again (two <Data Name=...>): keep both.
+                    prev = result[name]
+                    _first_and_all(name, [prev, value] if f"{name} (all values)" not in result
+                                   else result[f"{name} (all values)"].split(" | ") + [value], result)
+                    if result[name] == "" and prev:
+                        result[name] = prev
+                else:
+                    result[name] = "" if value is None else (value if isinstance(value, str) else str(value))
             elif isinstance(value, str):
                 unnamed.append(value)
         for k, v in _parse_classic_texts(unnamed).items():
