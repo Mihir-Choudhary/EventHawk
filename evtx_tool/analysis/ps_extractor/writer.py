@@ -464,9 +464,17 @@ def write_summary(
     """
     Write ps_extraction_summary.txt and return a summary dict for the GUI.
 
+    The extractor writes it again after the last file, so its error count
+    and file list are final (Gemini audit 9-09); a listed file that is not
+    on disk is marked NOT WRITTEN.
+
     *not_extracted* counts the PowerShell-channel events whose ID is not
     extracted, by ID; they are listed so that none goes unseen.
     """
+
+    def _nw(name: str) -> str:
+        p = Path(output_path).parent / name
+        return "" if p.exists() else "  -- NOT WRITTEN (see the errors above)"
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     source_names = ", ".join(os.path.basename(f) for f in source_files) or "(unknown)"
 
@@ -655,11 +663,11 @@ def write_summary(
     lines += [
         "",
         "OUTPUT FILES:",
-        f"  ps_commands.txt          (session timeline)",
+        f"  ps_commands.txt          (session timeline){_nw('ps_commands.txt')}",
         f"  scriptblock_<GUID>.txt x {len(sb_index)}",
         f"  ps_extraction_summary.txt",
-        f"  ps_extraction.json       (machine-readable export)",
-        f"  ps_timeline.xlsx         (Excel timeline with hyperlinks)",
+        f"  ps_extraction.json       (machine-readable export){_nw('ps_extraction.json')}",
+        f"  ps_timeline.xlsx         (Excel timeline with hyperlinks){_nw('ps_timeline.xlsx')}",
         "",
         _SEP,
     ]

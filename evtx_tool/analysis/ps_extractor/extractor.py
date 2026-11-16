@@ -219,8 +219,25 @@ class PSExtractor:
         if self._is_cancelled():
             return self._cancelled_summary(total)
 
-        # Step 8: Write ps_extraction.json (0.91 → 0.96)
-        self._emit("Writing ps_extraction.json...", 0.91)
+        # Step 8: Write ps_timeline.xlsx (0.91 → 0.96) -- before the JSON, so
+        # the JSON's summary and errors include a failure here (9-09).
+        self._emit("Writing ps_timeline.xlsx...", 0.91)
+        try:
+            write_csv_timeline(
+                sessions=sessions,
+                output_path=self.output_dir / "ps_timeline.xlsx",
+                sb_index=sb_index,
+            )
+        except Exception as exc:
+            self._errors.append(f"ps_timeline.xlsx write failed: {type(exc).__name__}: {exc}")
+            logger.error("write_csv_timeline failed", exc_info=True)
+
+        if self._is_cancelled():
+            return self._cancelled_summary(total)
+
+        # Step 9: Write ps_extraction.json (0.96 → 1.00)
+        self._emit("Writing ps_extraction.json...", 0.96)
+        summary["parse_errors"] = len(self._errors)
         try:
             write_json_export(
                 sessions=sessions,
@@ -235,20 +252,24 @@ class PSExtractor:
             self._errors.append(f"ps_extraction.json write failed: {type(exc).__name__}: {exc}")
             logger.error("write_json_export failed", exc_info=True)
 
-        if self._is_cancelled():
-            return self._cancelled_summary(total)
-
-        # Step 9: Write ps_timeline.xlsx (0.96 → 1.00)
-        self._emit("Writing ps_timeline.xlsx...", 0.96)
+        # The summary text again, now that every file is written: its error
+        # count and file list were from before the last two files (9-09).
         try:
-            write_csv_timeline(
-                sessions=sessions,
-                output_path=self.output_dir / "ps_timeline.xlsx",
+            write_summary(
+                buckets=buckets,
                 sb_index=sb_index,
+                sessions=sessions,
+                analysis_results=analysis_results,
+                output_path=self.output_dir / "ps_extraction_summary.txt",
+                source_files=self.source_files,
+                total_scanned=total,
+                errors=self._errors,
+                not_extracted=self._not_extracted,
             )
         except Exception as exc:
-            self._errors.append(f"ps_timeline.xlsx write failed: {type(exc).__name__}: {exc}")
-            logger.error("write_csv_timeline failed", exc_info=True)
+            self._errors.append(f"ps_extraction_summary.txt final write failed: {type(exc).__name__}: {exc}")
+            logger.error("final write_summary failed", exc_info=True)
+        summary["parse_errors"] = len(self._errors)
 
         self._emit("PowerShell extraction complete.", 1.0)
         logger.info(
