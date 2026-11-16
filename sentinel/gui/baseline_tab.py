@@ -289,6 +289,17 @@ class BaselineTab(QWidget):
                 "Please select a directory produced by 'Build Baseline'."
             )
             return
+        # Verified as analysis will read it (checksums included), not only
+        # that four files exist (Gemini audit 10-09).
+        from sentinel.baseline.persistence import load_artifacts
+        try:
+            load_artifacts(artifact_dir)
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Invalid Baseline",
+                f"The baseline in this folder cannot be used:\n{exc}"
+            )
+            return
         self._artifact_dir = artifact_dir
         self._output_edit.setText(d)
         self._log(f"Loaded existing baseline from: {d}")

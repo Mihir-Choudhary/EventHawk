@@ -267,6 +267,9 @@ class AnalysisTab(QWidget):
         self._progress_bar.setValue(0)
         self._progress_bar.show()
 
+        # The baseline THIS run uses: the selection can change before the
+        # results are exported (Gemini audit 10-09).
+        self._run_baseline_dir = self._baseline_dir
         self._worker = _AnalysisWorker(self._target_source, self._baseline_dir, sigma_dir)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
@@ -283,6 +286,10 @@ class AnalysisTab(QWidget):
         self._run_btn.setEnabled(True)
         if not scored and not metrics:
             return  # error case — _on_error already handled UI feedback
+        metrics = dict(metrics)
+        _bd = getattr(self, "_run_baseline_dir", None)
+        if _bd:
+            metrics["baseline_dir"] = str(_bd)
 
         # B25: Legitimate completion with 0 scored events — inform user
         if not scored:
@@ -296,6 +303,9 @@ class AnalysisTab(QWidget):
                 f"Analysis complete: {raw_total} raw events but 0 process-creation events. "
                 "No results to display."
             )
+            # Still a result: the window clears the previous run's alerts,
+            # which stayed on screen and in exports (10-09).
+            self.analysis_complete.emit([], metrics)
             return
 
         self._progress_bar.setValue(100)

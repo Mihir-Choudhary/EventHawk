@@ -189,7 +189,10 @@ class SentinelWindow(QDialog):
         try:
             from sentinel.baseline.persistence import load_artifacts
             from sentinel.models import BaselineMeta
-            baseline_dir = self._analysis_tab._baseline_dir
+            # The baseline the results were computed against, not the one
+            # selected now (Gemini audit 10-09).
+            baseline_dir = (self._metrics or {}).get("baseline_dir") or self._analysis_tab._baseline_dir
+            baseline_dir = Path(baseline_dir) if baseline_dir else None
             if baseline_dir:
                 meta, _, _, _ = load_artifacts(baseline_dir)
             else:
