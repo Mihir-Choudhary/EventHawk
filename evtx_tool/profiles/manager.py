@@ -57,10 +57,31 @@ class ProfileManager:
     """
 
     def __init__(self, user_dir: str | Path | None = None):
-        self._user_dir = Path(user_dir) if user_dir else DEFAULT_USER_DIR
-        self._user_dir.mkdir(parents=True, exist_ok=True)
+        self._user_dir = self._writable_user_dir(Path(user_dir) if user_dir else DEFAULT_USER_DIR)
         self._cache: dict[str, dict] = {}
         self._load_all()
+
+    @staticmethod
+    def _writable_user_dir(wanted: Path) -> "Path | None":
+        """*wanted* if it can be created; else the per-user folder
+        (%LOCALAPPDATA%\\EventHawk\\profiles); else None (built-in profiles
+        only).  A read-only working folder -- an all-users install under
+        Program Files -- crashed every ProfileManager (Gemini audit 11-05).
+        The existing ./profiles stays first, so profiles saved there stay."""
+        tries = [wanted]
+        lad = os.environ.get("LOCALAPPDATA")
+        if lad:
+            tries.append(Path(lad) / "EventHawk" / "profiles")
+        for d in tries:
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                if d != wanted:
+                    logger.warning("Profile folder %s is not writable; user profiles are in %s", wanted, d)
+                return d
+            except OSError as exc:
+                logger.warning("Profile folder %s cannot be used: %s", d, exc)
+        logger.warning("No writable profile folder: only the built-in profiles are available")
+        return None
 
     # ── Loading ────────────────────────────────────────────────────────────────
 
@@ -77,7 +98,7 @@ class ProfileManager:
                     logger.warning("Failed to load default profile %s: %s", path.name, exc)
 
         # User profiles override defaults with same name
-        for path in sorted(self._user_dir.glob("*.json")):
+        for path in (sorted(self._user_dir.glob("*.json")) if self._user_dir is not None else []):
             try:
                 profile = self._load_file(path)
                 self._cache[profile["name"]] = profile
@@ -93,6 +114,9 @@ class ProfileManager:
     def _load_file(self, path: Path) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             profile = fast_loads(f.read())
+        if not isinstance(profile, dict):
+            # A list or a number is no profile (11-20: it raised TypeError).
+            raise ValueError(f"{path.name}: not a profile (the JSON root is not an object)")
         profile["_source_path"] = str(path)
         return self._validate_profile(profile)
 
@@ -119,6 +143,9 @@ class ProfileManager:
                     profile[field] = ""
             elif not isinstance(profile[field], typ):
                 profile[field] = typ(profile[field]) if typ is str else []
+
+        if not str(profile.get("name", "")).strip():
+            raise ValueError("A profile needs a name")      # 11-20: "" was accepted
 
         # Normalize event_ids to int
         # BUG 20 fix: also handle float values (e.g. 4624.0 from JSON quirks)
@@ -182,7 +209,7 @@ class ProfileManager:
         name = profile["name"]
         if name in self._cache:
             raise ValueError(f"Profile '{name}' already exists. Use update() to modify it.")
-        filepath = self._user_dir / self._name_to_filename(name)
+        filepath = self._user_path(name)
         self._save_file(profile, filepath)
         profile["_source_path"] = str(filepath)
         profile["_user_defined"] = True
@@ -198,7 +225,8 @@ class ProfileManager:
         merged = {**existing, **updates}
         merged["name"] = name  # name is immutable
         merged = self._validate_profile(merged)
-        filepath = self._user_dir / self._name_to_filename(name)
+        filepath = (Path(existing["_source_path"]) if existing.get("_user_defined") and existing.get("_source_path")
+                    else self._user_path(name))
         self._save_file(merged, filepath)
         merged["_source_path"] = str(filepath)
         merged["_user_defined"] = True
@@ -243,7 +271,9 @@ class ProfileManager:
         name = profile["name"]
         if name in self._cache and not overwrite:
             raise ValueError(f"Profile '{name}' already exists. Use overwrite=True to replace.")
-        dest = self._user_dir / self._name_to_filename(name)
+        old = self._cache.get(name)
+        dest = (Path(old["_source_path"]) if old and old.get("_user_defined") and old.get("_source_path")
+                else self._user_path(name))
         self._save_file(profile, dest)
         profile["_source_path"] = str(dest)
         profile["_user_defined"] = True
@@ -291,12 +321,16 @@ class ProfileManager:
                 continue
             p = self._cache.get(name)
             if p is None:
-                # Try partial match
-                matches = self.get_by_partial_name(name)
-                if matches:
+                # A partial name must name ONE profile: it took the first of
+                # several, and "" matched every one (Gemini audit 11-17).
+                matches = self.get_by_partial_name(name) if str(name).strip() else []
+                if len(matches) == 1:
                     profiles.append(matches[0])
+                elif matches:
+                    missing.append(f"{name!r} matches {len(matches)} profiles: "
+                                   + ", ".join(sorted(m["name"] for m in matches)))
                 else:
-                    missing.append(name)
+                    missing.append(repr(name) if not str(name).strip() else name)
             else:
                 profiles.append(p)
 
@@ -310,11 +344,36 @@ class ProfileManager:
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _name_to_filename(name: str) -> str:
-        """Convert profile name to a safe filename."""
-        safe = "".join(c if c.isalnum() or c in "- _" else "_" for c in name)
-        return safe[:80] + ".json"
+    _RESERVED = frozenset({"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                           *(f"LPT{i}" for i in range(1, 10))})
+
+    @classmethod
+    def _name_to_filename(cls, name: str) -> str:
+        """Convert profile name to a safe filename (a reserved Windows device
+        name gets a "_" in front -- 13-07)."""
+        safe = "".join(c if c.isalnum() or c in "- _" else "_" for c in name)[:80]
+        if safe.split(".")[0].strip().upper() in cls._RESERVED:
+            safe = "_" + safe
+        return safe + ".json"
+
+    def _user_path(self, name: str) -> Path:
+        """The file for profile *name*: its safe name, or with a short hash
+        when another profile's file already has it ("RDP:Inbound" and
+        "RDP/Inbound" were one file, so one replaced the other; 11-10/13-07)."""
+        if self._user_dir is None:
+            raise OSError("No writable profile folder: the profile cannot be saved")
+        p = self._user_dir / self._name_to_filename(name)
+        if p.exists():
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    other = fast_loads(fh.read())
+            except Exception:
+                other = None
+            if not (isinstance(other, dict) and other.get("name") == name):
+                import hashlib
+                h = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+                p = self._user_dir / (p.stem + f"_{h}.json")
+        return p
 
     @staticmethod
     def _save_file(profile: dict, path: Path) -> None:

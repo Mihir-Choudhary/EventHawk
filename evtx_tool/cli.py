@@ -58,9 +58,20 @@ console = Console(legacy_windows=False, emoji=False)
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 def _setup_logging(verbose: bool) -> None:
-    log_dir = Path("evtx_tool_logs")
-    log_dir.mkdir(exist_ok=True)
-    handlers = [logging.FileHandler(log_dir / "evtx_parser.log", encoding="utf-8")]
+    # A read-only working folder: the per-user folder, else console only
+    # (Gemini audit 11-05: it crashed).
+    handlers = []
+    for log_dir in (Path("evtx_tool_logs"),
+                    Path(os.environ.get("LOCALAPPDATA", "")) / "EventHawk" / "logs"
+                    if os.environ.get("LOCALAPPDATA") else None):
+        if log_dir is None:
+            continue
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            handlers = [logging.FileHandler(log_dir / "evtx_parser.log", encoding="utf-8")]
+            break
+        except OSError:
+            continue
     if verbose:
         handlers.append(logging.StreamHandler(sys.stderr))
     logging.basicConfig(

@@ -67,6 +67,11 @@ class ProfileEditorDialog(QDialog):
 
         if self._is_default:
             self._set_readonly(True)
+        elif not self._is_new:
+            # update() keeps the name: read-only, not silently ignored (11-10)
+            self._inp_name.setReadOnly(True)
+            self._inp_name.setToolTip("The name of an existing profile cannot be changed; "
+                                      "save a copy as a new profile instead.")
 
     # =========================================================================
     # UI BUILD
@@ -395,7 +400,9 @@ class ProfileEditorDialog(QDialog):
             self.accept()
 
     def _set_readonly(self, readonly: bool) -> None:
-        self._inp_name.setReadOnly(readonly)
+        # Editing keeps the name (ProfileManager.update never renames), so
+        # it is read-only rather than silently ignored (Gemini audit 11-10).
+        self._inp_name.setReadOnly(readonly or not self._is_new)
         self._inp_desc.setReadOnly(readonly)
         self._inp_author.setReadOnly(readonly)
         self._inp_tags.setReadOnly(readonly)
