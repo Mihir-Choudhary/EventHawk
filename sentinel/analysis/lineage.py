@@ -194,6 +194,12 @@ class LineageTracker:
                 entry.exit_time = ev.timestamp
 
 
+def host_key(host) -> str:
+    """The per-host key of lineage and drift state (10-11: "HOST" and "host"
+    were two hosts)."""
+    return str(host or "unknown").strip().lower() or "unknown"
+
+
 class PerHostLineageTracker:
     """
     Multi-host wrapper around LineageTracker.
@@ -206,9 +212,11 @@ class PerHostLineageTracker:
         self._trackers: dict[str, LineageTracker] = {}
 
     def _tracker_for(self, host: str) -> LineageTracker:
-        if host not in self._trackers:
-            self._trackers[host] = LineageTracker()
-        return self._trackers[host]
+        # One host whatever its letter case or stray spaces (10-11).
+        key = host_key(host)
+        if key not in self._trackers:
+            self._trackers[key] = LineageTracker()
+        return self._trackers[key]
 
     def process_event(self, ev: RawEvent) -> str | None:
         """Route to per-host tracker. Returns resolved parent name or None."""

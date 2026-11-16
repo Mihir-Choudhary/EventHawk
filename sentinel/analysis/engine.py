@@ -150,6 +150,7 @@ def run_analysis(
     )
     # PerHostLineageTracker prevents PID-state bleed across different hosts
     lineage_tracker = PerHostLineageTracker()
+    from sentinel.analysis.lineage import host_key as _host_key   # same key for drift (10-11)
 
     # Build a seen-hash table for image_hash_bonus: maps proc_norm → set of hashes
     # seen so far in this run (populated from baseline events via SQLite if available,
@@ -205,7 +206,7 @@ def run_analysis(
         hash_bonus = hash_signal(proc_norm, ev.image_hash, known_hashes)
 
         # Host drift
-        drift_jsd = drift_monitors[ev.host].update(ev.timestamp, proc_norm)
+        drift_jsd = drift_monitors[_host_key(ev.host)].update(ev.timestamp, proc_norm)
 
         # Composite score (includes hash bonus) — uses cfg weights
         score = composite_score(s_cmd, s_lin, t_score, ppid_flag, drift_jsd, hash_bonus, cfg=cfg)

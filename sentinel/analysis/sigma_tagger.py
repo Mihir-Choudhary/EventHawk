@@ -49,7 +49,8 @@ class SigmaTagger:
             )
             return
 
-        yml_files = list(rules_dir.rglob("*.yml"))
+        # Both extensions Sigma rules use (10-11: *.yaml was never loaded).
+        yml_files = sorted(set(rules_dir.rglob("*.yml")) | set(rules_dir.rglob("*.yaml")))
         if not yml_files:
             logger.warning("No Sigma rule files found in %s", rules_dir)
             return
@@ -63,7 +64,8 @@ class SigmaTagger:
             for f in yml_files:
                 try:
                     with open(f, encoding="utf-8") as fh:
-                        yaml.safe_load(fh)
+                        # Every document of the file, not only the first (10-11).
+                        list(yaml.safe_load_all(fh))
                     safe_files.append(f)
                 except yaml.YAMLError as ye:
                     logger.warning("Skipping unsafe/invalid YAML: %s (%s)", f.name, ye)
@@ -93,15 +95,19 @@ class SigmaTagger:
         """Build keyword matchers from Sigma rule titles and detection fields."""
         for rule in collection.rules:
             tags = [str(t) for t in (rule.tags or [])]
+            # Tags in any letter case (10-11).
             technique_ids = [
-                t.replace('attack.', '').upper()
+                t.lower().replace('attack.', '', 1).upper()
                 for t in tags
-                if t.startswith('attack.t')
+                if t.lower().startswith('attack.t')
             ]
             if not technique_ids:
                 continue
             # Extract detection keywords from rule title as a rough heuristic
-            keywords = rule.title.lower().split() if rule.title else []
+            # Without surrounding punctuation: "suspicious," never matched (10-11).
+            import string as _string
+            keywords = [w.strip(_string.punctuation) for w in rule.title.lower().split()] if rule.title else []
+            keywords = [w for w in keywords if w]
             if keywords:
                 self._rules.append((_KeywordPredicate(keywords), technique_ids))
 

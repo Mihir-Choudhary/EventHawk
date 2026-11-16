@@ -67,7 +67,9 @@ class HostDriftMonitor:
         """
         # Guard against datetime.min fallback (unparseable timestamps) — subtracting
         # a timedelta from datetime.min raises OverflowError: date value out of range.
-        if ts == datetime.min:
+        # Naive or UTC-aware: the parser returns an AWARE datetime.min, which
+        # the naive test missed (Gemini audit 10-11).
+        if ts.replace(tzinfo=None) == datetime.min:
             logger.warning(
                 "Skipping drift update for process %r — event has an unparseable "
                 "timestamp (datetime.min). Check EVTX file for corrupt records.",
