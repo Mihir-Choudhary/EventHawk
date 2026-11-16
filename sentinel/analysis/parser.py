@@ -628,7 +628,8 @@ def _collapse_copies(events: list[RawEvent]) -> list[RawEvent]:
     reject a short or compromised baseline is inflated simply by duplicating
     files -- and an analysis reported 468 events scored where 117 exist.
     Identity: host + event id + exact timestamp + EventRecordID (unique
-    within a log).  A record without an id (0) is never collapsed.
+    within a log) AND the same content.  A record without an id (0) is
+    never collapsed.
     """
     seen: set = set()
     out: list[RawEvent] = []
@@ -636,7 +637,11 @@ def _collapse_copies(events: list[RawEvent]) -> list[RawEvent]:
         if not ev.record_id:
             out.append(ev)
             continue
-        ident = (ev.host.strip().lower(), ev.event_id, ev.timestamp, ev.record_id)
+        # The content too (Gemini audit 10-05): a cleared log restarts its
+        # record IDs, so two different records can share the rest -- both kept.
+        ident = (ev.host.strip().lower(), ev.event_id, ev.timestamp, ev.record_id,
+                 ev.process_guid, ev.pid, ev.ppid, ev.parent_guid, ev.process_path, ev.parent_path,
+                 ev.cmdline, ev.user, ev.integrity_level, ev.image_hash)
         if ident in seen:
             continue
         seen.add(ident)
