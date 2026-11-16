@@ -201,6 +201,7 @@ class PSExtractor:
             self._errors.append(f"ps_extraction_summary.txt write failed: {type(exc).__name__}: {exc}")
             logger.error("write_summary failed", exc_info=True)
             from .reassembler import classify_accumulators
+            from .writer import _is_ghost_session as _is_ghost
             _complete, _partial = classify_accumulators(sb_index)
             real_sessions = [s for s in sessions if s.host_id != "_unsessioned"]
             summary = {
@@ -208,6 +209,7 @@ class PSExtractor:
                 "total_ps_events": sum(len(v) for v in buckets.values()),
                 "script_blocks":   len(sb_index),
                 "sessions":        len(real_sessions),
+                "sessions_without_metadata": sum(1 for s in real_sessions if _is_ghost(s)),
                 "partial_blocks":  len(_partial),
                 "safety_net":      sum(1 for a in sb_index.values() if a.was_safety_net_triggered),
                 "ps_core_blocks":  0,

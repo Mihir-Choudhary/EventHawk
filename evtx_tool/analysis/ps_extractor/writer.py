@@ -304,7 +304,7 @@ def write_scriptblock_files(
 ) -> None:
     """
     Write one scriptblock_<GUID>.txt file per ScriptBlockAccumulator.
-    Emits progress every 10% via progress_cb(step, pct) where pct is 0.78->0.92.
+    Emits progress every 10% via progress_cb(step, pct) where pct is 0.76->0.86.
     """
     total = len(sb_index)
     if total == 0:
@@ -314,7 +314,9 @@ def write_scriptblock_files(
 
     for i, (key, acc) in enumerate(sb_index.items()):
         if progress_cb and i % chunk == 0:
-            pct = 0.78 + (i / total) * 0.14
+            # Inside this step's own band (0.76 -> 0.86): it ran to 0.92 and
+            # the summary step then reported 0.86 (Gemini audit 9-08).
+            pct = 0.76 + (i / total) * 0.10
             progress_cb(f"Writing script block files ({i}/{total})...", pct)
 
         result = analysis_results.get(key)
@@ -663,6 +665,8 @@ def write_summary(
         "total_ps_events":  total_ps,
         "script_blocks":    len(sb_index),
         "sessions":         len(real_sessions),
+        # Left out of every timeline export; counted here (9-08).
+        "sessions_without_metadata": len(ghost_sessions),
         "partial_blocks":   len(partial_blocks),
         "safety_net":       len(safety_net_blocks),
         "ps_core_blocks":   len(ps_core_blocks),
@@ -942,6 +946,8 @@ def write_csv_timeline(
 
     all_rows: list[tuple] = []
     for sess in sessions:
+        if _is_ghost_session(sess):
+            continue      # as ps_commands.txt and the JSON (9-08); counted in the summary
         s_id  = sess.host_id
         usid  = sess.user_sid
         uname = sess.user_name

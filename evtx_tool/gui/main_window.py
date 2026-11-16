@@ -19310,6 +19310,7 @@ class MainWindow(QMainWindow):
         ps_events  = summary.get("total_ps_events", 0)
         blocks     = summary.get("script_blocks", 0)
         sessions   = summary.get("sessions", 0)
+        ghosts     = summary.get("sessions_without_metadata", 0)
         partial    = summary.get("partial_blocks", 0)
         safety_net = summary.get("safety_net", 0)
         errors     = summary.get("parse_errors", 0)
@@ -19320,7 +19321,9 @@ class MainWindow(QMainWindow):
             f"Script blocks     : {blocks:,}"
             + (f"  ({partial} incomplete)" if partial else "") + "\n"
             f"Safety-net blocks : {safety_net:,}\n"
-            f"Sessions (400/403): {sessions:,}\n"
+            f"Sessions (400/403): {sessions:,}"
+            # Left out of the timelines, so say how many (Gemini audit 9-08).
+            + (f"  ({ghosts:,} without metadata, not in the timelines)" if ghosts else "") + "\n"
             "\nOutput files:\n"
             "  ps_commands.txt\n"
             "  ps_extraction_summary.txt\n"
