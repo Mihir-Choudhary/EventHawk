@@ -485,7 +485,7 @@ class SystemActivityJMFetchWorker(QThread):
 
     finished = Signal(object, bool)      # (events, truncated) - Signal(object): see WiFi worker
     fetch_error = Signal(str, str)
-    counted = Signal(int)
+    counted = Signal(object)  # object: a count can exceed a 32-bit int (Gemini audit 12-08)
 
     def __init__(self, parquet_dir: str, parent=None, count_only: bool = False):
         super().__init__(parent)

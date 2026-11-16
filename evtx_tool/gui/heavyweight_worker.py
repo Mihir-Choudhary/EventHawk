@@ -49,7 +49,7 @@ def _remove_orphan_session_dirs() -> None:
 class HeavyweightParseWorker(QThread):
     """Run HeavyweightEngine on a background thread."""
 
-    progress = Signal(int, int, int, float)   # done_files, total_files, done_events, eps
+    progress = Signal(object, object, object, float)   # done_files, total_files, done_events, eps  # object: a count can exceed a 32-bit int (Gemini audit 12-08)
     finished = Signal(str)                     # parquet_dir path
     error    = Signal(str)
     # Emitted instead of finished when the run was stopped.  Without it a

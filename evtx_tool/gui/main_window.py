@@ -4768,7 +4768,7 @@ class _WifiJMFetchWorker(QThread):
     # Python object by reference, untouched.
 
     fetch_error = Signal(str, str)    # (error_kind, detail_message)
-    counted     = Signal(int)          # count_only: how many events a load would read
+    counted     = Signal(object)       # count_only: how many events a load would read  # object: a count can exceed a 32-bit int (Gemini audit 12-08)
 
     _WLAN_CHANNEL = "Microsoft-Windows-WLAN-AutoConfig/Operational"
     _RELEVANT_EIDS = (8001, 8002, 8003, 8004, 11001, 11006)
@@ -6603,7 +6603,7 @@ class _RemoteAssistJMFetchWorker(QThread):
     # Python object by reference, untouched.
 
     fetch_error = Signal(str, str)     # (error_kind, detail_message)
-    counted     = Signal(int)          # count_only: how many events a load would read
+    counted     = Signal(object)       # count_only: how many events a load would read  # object: a count can exceed a 32-bit int (Gemini audit 12-08)
 
     _RA_CHANNELS = (
         "Microsoft-Windows-RemoteAssistance/Operational",
@@ -6805,7 +6805,7 @@ class _JMAnalysisMaterializeWorker(QThread):
     on available RAM first and the window stays alive while it runs.
     """
 
-    progress    = Signal(int, int)     # (rows built, total)
+    progress    = Signal(object, object)     # (rows built, total)  # object: a count can exceed a 32-bit int (Gemini audit 12-08)
     finished_ok = Signal(object)        # list[dict] — see note below
     # NOT Signal(list): Qt marshals a list through QVariantList and
     # converts every int to a SIGNED 64-bit value. Windows event data
@@ -6915,8 +6915,8 @@ class _JMExportWorker(QThread):
     complete is worse than no export: it would be read as the full evidence set.
     """
 
-    progress   = Signal(int)        # rows written so far
-    finished_ok = Signal(int, str)  # (rows written, path)
+    progress   = Signal(object)     # rows written so far  # object: a count can exceed a 32-bit int (Gemini audit 12-08)
+    finished_ok = Signal(object, str)  # (rows written, path)  # object: a count can exceed a 32-bit int (Gemini audit 12-08)
     failed     = Signal(str)
 
     _BATCH = 5_000
