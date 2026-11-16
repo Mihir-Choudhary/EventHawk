@@ -251,7 +251,9 @@ _ENC_FLAG = re.compile(
     r"(?:^|\s)[-/–—]"
     r"(?:encodedcommand|encodedcomman|encodedcomma|encodedcomm|encodedcom|encodedco|encodedc|"
     r"encoded|encode|encod|enco|enc|en|ec|e)"
-    r"\s+[\"']?([A-Za-z0-9+/]{8,}={0,2})",
+    # value after whitespace or a colon ("-EncodedCommand:..."), and as short
+    # as one UTF-16LE character pair ("ls" is 6 base64 characters) -- 9-10
+    r"(?:\s+|:\s*)[\"']?([A-Za-z0-9+/]{4,}={0,2})",
     re.IGNORECASE,
 )
 
@@ -266,10 +268,19 @@ def _extract_encoded_command(host_app: str) -> str:
     """
     if not host_app:
         return ""
-    m = _ENC_FLAG.search(host_app)
-    if not m:
+    # Every flag, not the first: an undecodable first value hid a valid
+    # later one, and two different commands are both evidence (9-10).
+    found = [_decode_b64_command(m.group(1)) for m in _ENC_FLAG.finditer(host_app)]
+    if not found:
         return ""
-    b64 = m.group(1)
+    good = list(dict.fromkeys(f for f in found if not f.startswith("[not decodable")))
+    if not good:
+        return found[0]
+    return good[0] if len(good) == 1 else "\n--- next -EncodedCommand ---\n".join(good)
+
+
+def _decode_b64_command(b64: str) -> str:
+    """One -EncodedCommand value decoded (see _extract_encoded_command)."""
     pad = (4 - len(b64) % 4) % 4
     try:
         raw = base64.b64decode(b64 + "=" * pad, validate=True)
