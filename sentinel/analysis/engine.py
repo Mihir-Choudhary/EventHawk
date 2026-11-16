@@ -32,6 +32,17 @@ from sentinel.models import BaselineMeta, NormalizedEvent, ScoredEvent, TierBoun
 logger = logging.getLogger(__name__)
 
 
+
+def scored_parent(resolved_parent, ev) -> str:
+    """The parent name to score.  After PPID_MISMATCH the claimed parent is a
+    lie (it had exited before the child started): scoring its name gave the
+    spoof a baseline lineage (Gemini audit 10-13).  It is scored as a parent
+    no baseline holds, named so the report shows what was claimed."""
+    if "PPID_MISMATCH" in getattr(ev, "flags", ()):
+        claimed = normalize_procname(ev.parent_name) or "unknown"
+        return f"<spoofed parent: {claimed}>"
+    return normalize_procname(resolved_parent or ev.parent_name)
+
 def run_analysis(
     target_paths: list[Path],
     baseline_dir: Path,
@@ -142,7 +153,7 @@ def run_analysis(
 
         # Normalize
         proc_norm = normalize_procname(ev.process_name)
-        parent_norm = normalize_procname(resolved_parent or ev.parent_name)
+        parent_norm = scored_parent(resolved_parent, ev)
         cmdline_norm = normalize_cmdline(ev.cmdline)
 
         # Reconstruct deep ancestry chain using lineage tracker state (up to 5 levels)

@@ -37,6 +37,7 @@ class _ProcEntry:
     create_time: datetime
     exit_time: datetime | None = None
     parent_name: str = ""  # resolved parent name, stored for chain reconstruction
+    ppid: int = 0          # the parent PID: Security logs walk on it (10-14)
 
 
 class LineageTracker:
@@ -89,22 +90,33 @@ class LineageTracker:
 
         chain.append(parent_norm)
 
-        # Walk up via PID or GUID registry to recover grandparent+
+        # Walk up via GUID (Sysmon) or PPID (Security) to recover grandparent+.
+        # Gemini audit 10-14: Security logs stopped after one hop (no PPID was
+        # kept) and a repeated NAME (cmd -> powershell -> cmd) was taken for a
+        # cycle; a cycle is the same process seen twice.  10-13: a node that
+        # had exited before the process below it started, or that started
+        # after it (a reused PID), is not its ancestor: the walk stops there.
         current_pid = ev.ppid
         current_guid = ev.parent_guid
+        below = ev.timestamp
+        visited: set[int] = set()
         for _ in range(MAX_ANCESTRY_DEPTH - 2):  # already have proc + parent
-            entry = self._lookup_entry(current_guid, current_pid)
-            if entry is None or not entry.parent_name:
+            if not current_guid and not current_pid:
                 break
+            entry = self._lookup_entry(current_guid, current_pid)
+            if entry is None or not entry.parent_name or id(entry) in visited:
+                break
+            if entry.create_time > below or (entry.exit_time is not None and entry.exit_time < below):
+                break
+            visited.add(id(entry))
             gp_norm = normalize_procname(entry.parent_name)
-            if not gp_norm or gp_norm in chain:
+            if not gp_norm:
                 break
             chain.append(gp_norm)
             # B26: Walk up using the entry's parent_guid (not its own guid)
             current_guid = entry.parent_guid
-            current_pid = 0  # GUID-free fallback stops here for Security logs
-            if not current_guid:
-                break
+            current_pid = 0 if current_guid else entry.ppid
+            below = entry.create_time
 
         return chain
 
@@ -118,6 +130,11 @@ class LineageTracker:
             # Sysmon: parent identified by ParentProcessGuid
             entry = self._by_guid.get(ev.parent_guid)
             if entry:
+                # A parent that had exited before this child started cannot
+                # be its parent (Gemini audit 10-07: only the PID path checked).
+                if entry.exit_time is not None and entry.exit_time < ev.timestamp:
+                    ev.flags.add('PPID_MISMATCH')
+                    return None
                 return entry.name
             # Parent GUID unseen — may be a system process started before tracing
             return ev.parent_name if ev.parent_name else None
@@ -152,6 +169,7 @@ class LineageTracker:
             parent_guid=ev.parent_guid,  # B26: store for ancestry chain walk
             create_time=ev.timestamp,
             parent_name=resolved_parent_name or ev.parent_name,
+            ppid=ev.ppid,
         )
         if ev.process_guid:
             self._by_guid[ev.process_guid] = entry
@@ -159,13 +177,20 @@ class LineageTracker:
             self._by_pid[ev.pid] = entry
 
     def _record_exit(self, ev: RawEvent) -> None:
+        # Both entries (10-07: Sysmon 5 carries a GUID AND a PID, and the PID
+        # entry was never marked).  The PID entry only when it is this
+        # process: a GUID-less exit (Security 4689) never marks a process
+        # Sysmon tracks by GUID -- on the corpus a 4689 of the same PID marked
+        # a Sysmon parent that its own EID 5 shows alive, and its child was
+        # flagged PPID_MISMATCH falsely.
         if ev.process_guid:
             entry = self._by_guid.get(ev.process_guid)
             if entry:
                 entry.exit_time = ev.timestamp
-        elif ev.pid:  # B15: PID 0 is never a real process — don't clobber
+        if ev.pid:  # B15: PID 0 is never a real process — don't clobber
             entry = self._by_pid.get(ev.pid)
-            if entry:
+            if entry and entry.guid == (ev.process_guid or "") or (
+                    entry and ev.process_guid and not entry.guid):
                 entry.exit_time = ev.timestamp
 
 
