@@ -33,6 +33,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
+from rich.markup import escape as _escape
 
 import io
 if hasattr(sys.stdout, "reconfigure"):
@@ -153,10 +154,17 @@ def _build_filter(
 ) -> dict:
     fc = load_filter(filter_file) if filter_file else empty_filter()
 
+    neg: list[int] = []
     if event_id:
         ids: list[int] = []
         for spec in ",".join(event_id).split(","):
             spec = spec.strip()
+            if spec.startswith("!") and spec[1:].strip().isdigit():
+                # "-e !4624": an exclusion, as in the GUI's Event ID box
+                # (Gemini audit 11-12: it was skipped, and with nothing left
+                # every event matched).
+                neg.append(int(spec[1:].strip()))
+                continue
             if "-" in spec and spec.count("-") == 1 and not spec.startswith("-"):
                 lo, hi = spec.split("-", 1)
                 try:
@@ -183,6 +191,9 @@ def _build_filter(
             # (Gemini audit 3-09).
             fc["event_id_expr"] = ""
             fc["event_id_exclude"] = False
+        elif not neg:
+            raise click.BadParameter("no valid Event ID in " + ", ".join(event_id)
+                                     + " -- nothing would be filtered", param_hint="--event-id")
 
     if exclude_id:
         # Ranges too, as for --event-id (a range excluded nothing: Codex DOC-3).
@@ -205,8 +216,10 @@ def _build_filter(
                 excl.append(int(spec))
             elif spec:
                 click.echo(f"Warning: unrecognised event-ID spec '{spec}' — skipped", err=True)
-        if excl:
-            fc["exclude_event_ids"] = excl
+        neg.extend(excl)
+    if neg:
+        # Added to the saved filter's exclusions, never replacing them (11-12).
+        fc["exclude_event_ids"] = list(dict.fromkeys(list(fc.get("exclude_event_ids") or []) + neg))
 
     level_map = {
         "critical": [1], "error": [2], "warning": [3], "warn": [3],
@@ -247,6 +260,24 @@ def _build_filter(
     if search:
         fc["text_search"] = list(search)
         fc["search_mode"] = search_mode.upper()
+    return fc
+
+
+def _intersect_window(fc: dict, anchor_bounds, user_from, user_to) -> dict:
+    """fc's dates = the anchor's window within --date-from/--date-to and the
+    saved filter's dates (latest start, earliest end); an empty result is an
+    error, never a silent "everything"."""
+    from evtx_tool.core.time_window import parse_event_ts
+    starts = [anchor_bounds[0]] + ([_cli_bound(user_from, "--date-from")] if user_from else []) \
+        + ([fc["date_from"]] if fc.get("date_from") else [])
+    ends = [anchor_bounds[1]] + ([_cli_bound(user_to, "--date-to")] if user_to else []) \
+        + ([fc["date_to"]] if fc.get("date_to") else [])
+    key = lambda v: parse_event_ts(v) or parse_event_ts(str(v) + "Z")      # noqa: E731
+    lo = max(starts, key=key)
+    hi = min(ends, key=key)
+    if key(lo) and key(hi) and key(lo) > key(hi):
+        raise click.UsageError(f"the timeline window and the date range do not overlap ({lo} > {hi})")
+    fc["date_from"], fc["date_to"] = lo, hi
     return fc
 
 
@@ -326,7 +357,7 @@ def _run_analysis(
         elapsed = time.monotonic() - t0
         for _re_msg in _rule_errs:
             # Its chains are missing from what follows: say so.
-            console.print(f"[red]Correlation rule failed (its chains are missing): {_re_msg}[/red]")
+            console.print(f"[red]Correlation rule failed (its chains are missing): {_escape(str(_re_msg))}[/red]")
         crit   = sum(1 for c in chains if c["severity"] == "critical")
         high   = sum(1 for c in chains if c["severity"] == "high")
         console.print(
@@ -338,7 +369,7 @@ def _run_analysis(
             sc = sev_col.get(chain["severity"], "white")
             console.print(
                 f"  [{sc}][{chain['severity'].upper()}][/{sc}] "
-                f"{chain['rule_name']} -- "
+                f"{_escape(str(chain['rule_name']))} -- "
                 f"{', '.join(chain['computers']) or '?'}"
             )
 
@@ -378,9 +409,9 @@ def cli():
 # Timeline
 @click.option("--timeline-anchor",  default=None,
               help="Pivot time (e.g. '2026-02-21T14:30:00'). Sets a time window.")
-@click.option("--timeline-before",  default=5, show_default=True, type=int,
+@click.option("--timeline-before",  default=5, show_default=True, type=click.IntRange(min=0),
               help="Minutes before the timeline anchor.")
-@click.option("--timeline-after",   default=30, show_default=True, type=int,
+@click.option("--timeline-after",   default=30, show_default=True, type=click.IntRange(min=0),
               help="Minutes after the timeline anchor.")
 # Output
 @click.option("--output", "-o",     default=None,
@@ -398,7 +429,7 @@ def cli():
 @click.option("--correlate",         is_flag=True, default=False,
               help="Run attack-chain correlation engine (10 rules).")
 # Engine
-@click.option("--max-threads",       type=int, default=None,
+@click.option("--max-threads",       type=click.IntRange(min=1), default=None,
               help="Max worker processes (default: CPU-1).")
 @click.option("--cpu-limit",         type=float, default=85.0, show_default=True)
 @click.option("--ram-limit",         type=float, default=90.0, show_default=True)
@@ -406,8 +437,8 @@ def cli():
               type=click.Choice(["low", "normal", "high"], case_sensitive=False),
               default="normal", show_default=True)
 @click.option("--no-recursive",      is_flag=True, default=False)
-@click.option("--limit",             type=int, default=None,
-              help="Cap output at N events.")
+@click.option("--limit",             type=click.IntRange(min=1), default=None,
+              help="Cap output at N events (1 or more).")
 @click.option("--no-tui",            is_flag=True, default=False)
 @click.option("--verbose",    "-v",  is_flag=True, default=False)
 def parse_cmd(
@@ -434,6 +465,7 @@ def parse_cmd(
 
     # ── Timeline mode ─────────────────────────────────────────────────────
     timeline_mode = bool(timeline_anchor)
+    user_from, user_to = date_from, date_to
     if timeline_mode:
         date_from, date_to = _resolve_timeline(
             timeline_anchor, timeline_before, timeline_after
@@ -449,11 +481,16 @@ def parse_cmd(
             )
 
     # ── Build filter ──────────────────────────────────────────────────────
+    anchor_bounds = (date_from, date_to) if timeline_mode else None
     fc = _build_filter(
-        event_id, level, date_from, date_to,
+        event_id, level, None if timeline_mode else date_from, None if timeline_mode else date_to,
         user, computer, source, search, search_mode,
         exclude_id, filter_file,
     )
+    if timeline_mode:
+        # The anchor's window INTERSECTS --date-from/--date-to and a saved
+        # filter's dates; it overwrote them (Gemini audit 11-16).
+        fc = _intersect_window(fc, anchor_bounds, user_from, user_to)
 
     # ── Apply profiles ────────────────────────────────────────────────────
     pm            = ProfileManager()
@@ -612,7 +649,7 @@ def _diff_stop_if_unreadable(engine, side: str) -> None:
               default=None)
 @click.option("--spike-factor",      default=3.0, show_default=True,
               help="Volume spike threshold (incident/baseline ratio).")
-@click.option("--max-threads",       type=int, default=None)
+@click.option("--max-threads",       type=click.IntRange(min=1), default=None)
 @click.option("--verbose",     "-v", is_flag=True, default=False)
 def diff_cmd(baseline, incident, profile, output, fmt, spike_factor, max_threads, verbose):
     """
@@ -889,7 +926,7 @@ def profiles_export_all(dest_dir):
 
 @cli.command("benchmark")
 @click.argument("paths", nargs=-1, required=True, metavar="FILE_OR_DIR...")
-@click.option("--threads", multiple=True, type=int,
+@click.option("--threads", multiple=True, type=click.IntRange(min=1),
               help="Thread counts to test (repeat flag for multiple).")
 def benchmark(paths, threads):
     """Benchmark parsing speed."""
@@ -956,6 +993,12 @@ def interactive(paths):
         "\nSelect profiles (numbers, 'all', or blank for none)", default=""
     )
     selected: list[str] = []
+    bad = [p.strip() for p in profile_input.split(",")
+           if p.strip() and p.strip().lower() != "all"
+           and not (p.strip().isdigit() and 1 <= int(p.strip()) <= len(all_names))]
+    if bad:
+        # Not silently ignored, leaving no filter at all (Gemini audit 11-04).
+        raise click.UsageError(f"not a profile number: {', '.join(bad)} (1-{len(all_names)}, 'all' or blank)")
     if profile_input.strip().lower() == "all":
         selected = all_names
     elif profile_input.strip():
@@ -1011,6 +1054,9 @@ def interactive(paths):
                        attack_summary=attack_summary,
                        iocs=iocs_result, chains=chains)
         console.print(f"[green]Exported {count:,} events -> {output}[/green]")
+    else:
+        # "blank for console": the events are shown, as parse does (11-14).
+        _print_events_table(all_events)
 
 
 # ── gui command ───────────────────────────────────────────────────────────────
@@ -1050,13 +1096,15 @@ def _print_events_table(events: list[dict]) -> None:
         ts   = ev.get("timestamp", "").replace("T", " ").replace("Z", "")[:19]
         tags = ev.get("attack_tags") or []
         atk  = tags[0]["tid"] if tags else ""
+        # Log text as Text, never markup ("[x]" vanished or raised; Gemini
+        # audit 11-08), and a missing source file is "" (11-21: None raised).
         t.add_row(
             ts, str(ev.get("event_id", "")),
-            Text(lvl, style=color_map.get(lvl, "white")),
-            ev.get("channel", ""),
-            ev.get("computer", ""),
-            atk,
-            os.path.basename(ev.get("source_file", "")),
+            Text(str(lvl or ""), style=color_map.get(lvl, "white")),
+            Text(str(ev.get("channel") or "")),
+            Text(str(ev.get("computer") or "")),
+            Text(str(atk or "")),
+            Text(os.path.basename(str(ev.get("source_file") or ""))),
         )
     console.print(t)
     if len(events) > 200:

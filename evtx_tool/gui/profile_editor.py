@@ -266,7 +266,19 @@ class ProfileEditorDialog(QDialog):
         self._inp_users.setText(", ".join(p.get("users", [])))
         self._inp_keywords.setText(", ".join(p.get("keywords", [])))
 
-        profile_levels = set(p.get("levels", []))
+        # Codes (1-5, -1/-2 for Audit Success/Failure) and names in any case
+        # are the same level (Gemini audit 11-21: only exact names were ticked).
+        _codes = {1: "Critical", 2: "Error", 3: "Warning", 4: "Information", 0: "Information",
+                  5: "Verbose", -1: "Audit Success", -2: "Audit Failure"}
+        _by_cf = {n.casefold(): n for n in _LEVEL_NAMES}
+        profile_levels = set()
+        for _lv in p.get("levels", []):
+            if isinstance(_lv, int) or (isinstance(_lv, str) and _lv.strip().lstrip("-").isdigit()):
+                _n = _codes.get(int(_lv))
+            else:
+                _n = _by_cf.get(str(_lv).strip().casefold())
+            if _n:
+                profile_levels.add(_n)
         for name, chk in self._level_checks.items():
             chk.setChecked(name in profile_levels)
 

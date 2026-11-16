@@ -308,7 +308,7 @@ class EVTXParserTUI:
                 Text(lvl, style=lvl_color),
                 ev.get("channel", ""),
                 ev.get("computer", ""),
-                os.path.basename(ev.get("source_file", "")),
+                os.path.basename(str(ev.get("source_file") or "")),
                 Text(key_data, style="dim"),
             )
 
@@ -384,7 +384,7 @@ class EVTXParserTUI:
         from collections import Counter
         eid_counts = Counter(ev.get("event_id", 0) for ev in events)
         lvl_counts = Counter(ev.get("level_name", "") for ev in events)
-        src_counts = Counter(os.path.basename(ev.get("source_file", "")) for ev in events)
+        src_counts = Counter(os.path.basename(str(ev.get("source_file") or "")) for ev in events)
 
         # Summary stats
         t = Table(title="Summary", show_header=True, header_style="bold cyan",

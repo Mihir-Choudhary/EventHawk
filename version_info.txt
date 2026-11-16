@@ -23,7 +23,7 @@ VSVersionInfo(
             StringStruct('FileDescription', 'EventHawk - DFIR EVTX Analysis Tool (launcher)'),
             StringStruct('FileVersion', '2.0.0.0'),
             StringStruct('InternalName', 'EventHawk'),
-            StringStruct('LegalCopyright', 'MIT License'),
+            StringStruct('LegalCopyright', 'Apache License 2.0'),
             StringStruct('OriginalFilename', 'EventHawk.exe'),
             StringStruct('ProductName', 'EventHawk'),
             StringStruct('ProductVersion', '2.0.0.0'),
