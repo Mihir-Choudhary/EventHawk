@@ -2,7 +2,7 @@
     build_standalone.ps1  --  Build the portable, antivirus-friendly EventHawk standalone.
 
     Produces (in .\dist):
-      * EventHawk-1.3.0-Setup.exe  -- Inno Setup installer (~57 MB). Installs to
+      * EventHawk-<version>-Setup.exe  -- Inno Setup installer (~57 MB). Installs to
         Program Files with one-click Desktop + Start Menu shortcuts.
       * EventHawk-portable.7z      -- extract anywhere, run EventHawk.cmd.
     Bundles Python + PySide6 + DuckDB + PyArrow + every dependency and data file.
@@ -143,7 +143,10 @@ if (-not $ISCC) { throw "Inno Setup not found. Install with: winget install JRSo
 & $ISCC "/DSourceDir=$dst" "/O$OutDir" "$repo\EventHawk.iss"
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed (exit $LASTEXITCODE)" }
 
-$setup = Join-Path $OutDir "EventHawk-1.3.0-Setup.exe"
+# The version EventHawk.iss builds (it was hard-coded 1.3.0 while the
+# installer is 2.0.0: Gemini audit 11-06).
+$issVer = (Select-String -Path (Join-Path $PSScriptRoot "EventHawk.iss") -Pattern '#define\s+MyAppVersion\s+"([^"]+)"').Matches[0].Groups[1].Value
+$setup = Join-Path $OutDir "EventHawk-$issVer-Setup.exe"
 Write-Host "`nDONE:" -ForegroundColor Green
 Write-Host "  installer: $setup ($([math]::Round((Get-Item $setup).Length/1MB)) MB)" -ForegroundColor Green
 if (Test-Path "$OutDir\EventHawk-portable.7z") { Write-Host "  portable : $OutDir\EventHawk-portable.7z" -ForegroundColor Green }

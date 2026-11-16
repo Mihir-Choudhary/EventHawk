@@ -15,6 +15,13 @@ setlocal
 ::
 ::   run.bat                  launch the GUI
 ::   run.bat --cli parse ...  run the CLI (evtx_tool.py) with those arguments
+::
+:: The CLI keeps the caller's folder (relative paths are the caller's), gets
+:: its arguments exactly as typed, needs no GUI packages and never waits on
+:: "pause" (Gemini audit 11-15: shift/rebuild split "4624,4625" and "a=b"
+:: into separate words, and the cd and the GUI check came first).
+if /i "%~1"=="--cli" goto cli
+
 cd /d "%~dp0"
 
 py -3 --version >nul 2>&1
@@ -24,24 +31,19 @@ if errorlevel 1 goto no_python
 py -3 -c "import PySide6.QtWidgets, evtx, duckdb, pyarrow" >nul 2>&1
 if errorlevel 1 goto no_deps
 
-if /i "%~1"=="--cli" goto cli
-
 py -3 eventhawk_gui.py %*
 exit /b %errorlevel%
 
-:: Rebuild the argument list without --cli.  This must stay OUTSIDE a
-:: parenthesised block: inside one, %ARGS% is expanded when the whole block is
-:: parsed, so every pass would append to the value it had on entry.
 :cli
-shift
-set "ARGS="
-:collect
-if "%~1"=="" goto run_cli
-set ARGS=%ARGS% "%~1"
-shift
-goto collect
-:run_cli
-py -3 evtx_tool.py %ARGS%
+py -3 --version >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Python 3 was not found on PATH. Install Python 3.10+ and run install.bat. 1>&2
+    exit /b 1
+)
+:: Everything after the first --cli, unchanged (%* keeps , ; = and quotes).
+set "ARGS=%*"
+set "ARGS=%ARGS:*--cli=%"
+py -3 "%~dp0evtx_tool.py" %ARGS%
 exit /b %errorlevel%
 
 :no_python

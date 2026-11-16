@@ -36,7 +36,13 @@ def _find_pythonw() -> str | None:
                             idx += 1
                         except OSError:
                             break
-                    for ver in sorted(versions, reverse=True):
+                    # By version NUMBER: as text "3.9" sorted above "3.12", so an
+                    # old 3.9 was started (Gemini audit 11-09).
+                    import re as _re
+
+                    def _vkey(v: str):
+                        return [int(x) for x in _re.findall(r"\d+", v)] or [0]
+                    for ver in sorted(versions, key=_vkey, reverse=True):
                         try:
                             with winreg.OpenKey(core, rf"{ver}\InstallPath") as inst:
                                 install_dir = winreg.QueryValue(inst, "").strip()
