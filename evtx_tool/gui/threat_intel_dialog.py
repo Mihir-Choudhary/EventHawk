@@ -403,3 +403,9 @@ class ThreatIntelDialog(QDialog):
         # Cancel any running worker on close
         self._cancel_flag[0] = True
         super().closeEvent(event)
+
+    def reject(self) -> None:
+        # Esc closes a dialog through reject(), not closeEvent: the running
+        # lookup went on (Gemini audit 12-05).
+        self._cancel_flag[0] = True
+        super().reject()

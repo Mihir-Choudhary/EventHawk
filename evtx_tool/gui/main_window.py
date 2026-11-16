@@ -19389,7 +19389,41 @@ class MainWindow(QMainWindow):
         """✕ button — clear the file/directory list AND discard parsed results."""
         self._file_list.clear()
         self._carry_specs = []        # a deliberate clear: nothing carries over
+        self._stop_background_work()
         self._clear_results()
+
+    def _stop_background_work(self) -> None:
+        """Stop a running parse, analysis and PowerShell extraction, so none of
+        their results lands on the cleared window (Gemini audit 12-06; the
+        Juggernaut worker is handled by _cleanup_juggernaut).  A stopped thread
+        is kept referenced until it ends: Qt aborts on a thread destroyed
+        while running."""
+        w = self._worker
+        if w is not None and self._thread_running(w):
+            for sig, slot in ((getattr(w, "finished", None), self._on_parse_finished),
+                              (getattr(w, "error", None), self._on_parse_error)):
+                import warnings as _warnings
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore", RuntimeWarning)   # not connected: fine
+                    try:
+                        sig.disconnect(slot)
+                    except Exception:
+                        pass
+            try:
+                w.request_stop()
+            except Exception:
+                pass
+            self._orphan_workers = [x for x in getattr(self, "_orphan_workers", []) if self._thread_running(x)]
+            self._orphan_workers.append(w)
+            self._worker = None
+            self._btn_parse.setEnabled(True)
+        ar = self._analysis_runner
+        if ar is not None and ar.is_running():
+            ar.request_stop()          # its result is discarded once cancelled (12-03)
+            self._analysis_runner = None
+        psw = getattr(self, "_ps_worker", None)
+        if psw is not None and self._thread_running(psw):
+            psw.request_stop()
 
     def _clear_results(self) -> None:
         # Fix E: cleanup Juggernaut (DuckDB) state and reset table model.
@@ -20192,6 +20226,10 @@ class MainWindow(QMainWindow):
             if self._worker and self._worker.isRunning():
                 self._worker.request_stop()
                 self._worker.wait(3000)
+            for _ow in getattr(self, "_orphan_workers", []):      # stopped by Clear Files
+                if self._thread_running(_ow):
+                    _ow.request_stop()
+                    _ow.wait(3000)
             if self._analysis_runner is not None and self._analysis_runner.is_running():
                 self._analysis_runner.request_stop()
         # Never let the window be destroyed while one of its threads runs: Qt
@@ -20670,3 +20708,11 @@ class _PSProgressDialog(QDialog):
             if self._btn_cancel.isEnabled():
                 self._on_cancel_clicked()
             event.ignore()
+
+    def reject(self) -> None:
+        """Esc: the same as the close button -- cancel, never just hide the
+        dialog while the extraction runs on (Gemini audit 12-05)."""
+        if self._extraction_done:
+            super().reject()
+        elif self._btn_cancel.isEnabled():
+            self._on_cancel_clicked()

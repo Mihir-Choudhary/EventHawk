@@ -185,6 +185,31 @@ class AnalysisRunner(QObject):
         """
         import time
 
+        # 0. Cancelled: nothing more reaches the window -- not progress, not a
+        # result (Gemini audit 12-03: a stopped run's result was emitted as
+        # finished and replaced the newer run's).  The worker is stopped and
+        # cleaned up as before.
+        if self._cancel_requested:
+            for _q in (self._progress_q, self._result_q):
+                while True:
+                    try:
+                        _q.get_nowait()
+                    except Empty:
+                        break
+                    except Exception:
+                        break
+            if self._process is None or not self._process.is_alive():
+                self._poll_timer.stop()
+                self._cleanup()
+                return
+            if time.monotonic() - self._cancel_ts > _CANCEL_GRACE_SEC:
+                logger.warning("Worker did not stop within %ss — terminating", _CANCEL_GRACE_SEC)
+                self._process.terminate()
+                self._poll_timer.stop()
+                self.error.emit("Analysis cancelled (worker terminated)")
+                self._cleanup()
+            return
+
         # 1. Drain progress queue (non-blocking)
         while True:
             try:
