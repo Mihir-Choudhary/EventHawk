@@ -9,7 +9,8 @@ Stability metric:
   For each unique process name, count:
     - N_i  = total events for process i
     - U_i  = unique normalized cmdline templates for process i
-  volatility_i = U_i / N_i   (0 if only one unique cmdline, 1 if every event is unique)
+  volatility_i = (U_i - 1) / (N_i - 1)   (0 if only one unique cmdline, 1 if every
+                 event is unique; a process launched once shows no volatility: 0)
   overall_volatility = mean(volatility_i weighted by N_i)
   stability = 1.0 - overall_volatility
 
@@ -67,9 +68,11 @@ def baseline_stability(
         )
         return 0.0
 
+    # By normalized name ("SVCHOST.EXE" is svchost.exe; Gemini audit 10-04).
+    from sentinel.analysis.normalizer import normalize_procname
     per_process: dict[str, list[str]] = defaultdict(list)
     for ev in create_events:
-        per_process[ev.process_name].append(normalize_fn(ev.cmdline))
+        per_process[normalize_procname(ev.process_name)].append(normalize_fn(ev.cmdline))
 
     total_events = 0
     weighted_volatility = 0.0
@@ -77,7 +80,9 @@ def baseline_stability(
     for proc, cmdlines in per_process.items():
         n = len(cmdlines)
         u = len(set(cmdlines))
-        volatility = u / n if n > 0 else 0.0
+        # As the docstring defines it (10-04: U/N scored every single launch
+        # 1.0 and never reached 0 for one template).
+        volatility = (u - 1) / (n - 1) if n > 1 else 0.0
         weighted_volatility += volatility * n
         total_events += n
 

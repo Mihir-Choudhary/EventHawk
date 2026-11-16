@@ -246,8 +246,17 @@ def _calibrate_tiers(
     )
 
 
-def _dominant_host(events: list[RawEvent]) -> str:
-    if not events:
+def _dominant_host(events: list) -> str:
+    """The host of the process creations (10-04: all events counted, so a
+    log of another host's exits could name the baseline); a baseline whose
+    creations come from more than one host is reported -- a baseline
+    describes one computer."""
+    evs = [getattr(e, "raw", e) for e in events]
+    created = [e for e in evs if e.event_id in (4688, 1)] or evs
+    if not created:
         return ""
-    c: Counter = Counter(ev.host for ev in events)
+    c: Counter = Counter(e.host for e in created)
+    if len(c) > 1:
+        logger.warning("Baseline holds process creations of %d hosts (%s); a baseline should describe "
+                       "one computer", len(c), ", ".join(f"{h or '(blank)'}: {n}" for h, n in c.most_common()))
     return c.most_common(1)[0][0]
