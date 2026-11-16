@@ -175,7 +175,8 @@ SAFETY_NET_PATTERNS: list[str] = [
 # ── MITRE ATT&CK technique mappings ──────────────────────────────────────────
 
 ATT_CK_MAP: dict[str, str] = {
-    "has_encoded_commands":      "T1059.001",   # PowerShell
+    # T1059.001 is always tagged; an encoded command is obfuscation (9-14).
+    "has_encoded_commands":      "T1027",        # Obfuscated Files or Info
     "has_download_cradle":       "T1105",        # Ingress Tool Transfer
     "has_amsi_bypass":           "T1562.001",    # Disable Security Tools
     "has_reflection":            "T1620",        # Reflective Code Loading

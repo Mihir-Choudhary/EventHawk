@@ -51,12 +51,18 @@ def analyze_script_block(text: str) -> ContentAnalysisResult:
     def _any(*terms: str) -> bool:
         return any(t in lower for t in terms)
 
+    # The safety-net shorthands count too ("-enc ", "-ec ", any -EncodedCommand
+    # prefix; "curl ", "wget ", "iwr ", "irm "): they were separate lists, so
+    # a pattern that triggered logging set no flag (Gemini audit 9-14).
+    from .event_parsers import _ENC_FLAG
     has_encoded = _any(
         "-encodedcommand", "frombase64string", "tobase64string", "base64",
-    )
+        "-enc ", "-ec ",
+    ) or bool(_ENC_FLAG.search(text))
     has_download = _any(
         "downloadstring", "downloadfile", "net.webclient", "invoke-webrequest",
         "bitstransfer", "start-bitstransfer", "net.http",
+        "curl ", "wget ", "iwr ", "irm ", "invoke-restmethod",
     )
     has_amsi = _any(
         "amsiscanbuffer", "amsi.dll", "amsiinitfailed",
@@ -100,8 +106,11 @@ def analyze_script_block(text: str) -> ContentAnalysisResult:
         or bool(_CHAR_CONCAT_RE.search(lower))
     )
 
-    # High entropy: long base64-like strings
-    has_high_entropy = bool(_HIGH_ENTROPY_RE.search(text))
+    # High entropy: a long base64-like run that IS high entropy (>= 3.5
+    # bits/char: UTF-16LE base64 measures ~3.9, repeated filler <= 2.7;
+    # "A" * 65 is 0 and counted before -- 9-14).
+    from evtx_tool.analysis.context_rules import shannon_entropy
+    has_high_entropy = any(shannon_entropy(m.group(0)) >= 3.5 for m in _HIGH_ENTROPY_RE.finditer(text))
 
     result = ContentAnalysisResult(
         has_encoded_commands=has_encoded,
