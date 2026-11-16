@@ -19,6 +19,11 @@ from .models import PSSession
 logger = logging.getLogger(__name__)
 
 
+def _k(ts) -> str:
+    from evtx_tool.core.time_window import ts_sort_key
+    return ts_sort_key(ts)
+
+
 def _best_session_for_event(
     candidates: list[str],
     sessions: dict[str, "PSSession"],
@@ -37,13 +42,15 @@ def _best_session_for_event(
     sess_objs = [sessions[h] for h in candidates]
     if not event_ts:
         # No event timestamp — fall back to latest start
-        return max(sess_objs, key=lambda s: s.start_ts)
+        return max(sess_objs, key=lambda s: _k(s.start_ts))
 
-    before = [s for s in sess_objs if s.start_ts <= event_ts]
+    # By instant, not text ("...:00Z" sorted after "...:00.5Z"; 9-07).
+    t = _k(event_ts)
+    before = [s for s in sess_objs if _k(s.start_ts) <= t]
     if before:
-        return max(before, key=lambda s: s.start_ts)
+        return max(before, key=lambda s: _k(s.start_ts))
     # All sessions started after event — pick the earliest
-    return min(sess_objs, key=lambda s: s.start_ts)
+    return min(sess_objs, key=lambda s: _k(s.start_ts))
 
 
 # 53504 (IPC listener) is written as the process loads the engine, just
@@ -107,7 +114,7 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
     # HostId is the most reliable session key; use it as primary dict key.
     sessions_by_host_id: dict[str, PSSession] = {}
 
-    for ev400 in sorted(events_400, key=lambda e: e.get("timestamp", "")):
+    for ev400 in sorted(events_400, key=lambda e: _k(e.get("timestamp", ""))):
         host_id = ev400.get("host_id", "").strip("{}")
         if not host_id:
             # Corrupt record — synthesise a key from PID + timestamp
@@ -151,12 +158,30 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
         if sess.pid:
             pid_to_host_ids[_pk(sess.computer, sess.pid)].append(host_id)
 
+    # HostId is unique per process, on its computer: matched with the host and
+    # without letter case (9-07: another computer's 403 with the same HostId
+    # stopped this session; "hid-a" did not stop "HID-A").  Several sessions
+    # under one HostId (a restart): the one started by the event's time.
+    by_host: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for key, sess in sessions_by_host_id.items():
+        if not key.startswith("_pid"):
+            hid = sess.session_events[0].get("host_id", "").strip("{}") if sess.session_events else key
+            by_host[(str(sess.computer or "").strip().casefold(), (hid or key).casefold())].append(key)
+
+    def _by_host_id(ev) -> "PSSession | None":
+        hid = str(ev.get("host_id", "") or "").strip("{}")
+        if not hid:
+            return None
+        keys = by_host.get((str(ev.get("computer") or "").strip().casefold(), hid.casefold()))
+        if not keys:
+            return None
+        return _best_session_for_event(keys, sessions_by_host_id, ev.get("timestamp", ""))
+
     # Attach EID 403 (engine stop) — match by HostId.  A stop whose start has
     # rolled out of the log (or a second stop) is still evidence: keep it.
-    for ev403 in sorted(events_403, key=lambda e: e.get("timestamp", "")):
-        host_id = ev403.get("host_id", "").strip("{}")
-        if host_id in sessions_by_host_id:
-            sess = sessions_by_host_id[host_id]
+    for ev403 in sorted(events_403, key=lambda e: _k(e.get("timestamp", ""))):
+        sess = _by_host_id(ev403)
+        if sess is not None:
             if not sess.stop_ts:
                 sess.stop_ts = ev403.get("timestamp", "")
             sess.session_events.append(ev403)
@@ -166,9 +191,8 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
     # Attach EID 600 (provider start) and 300 (provider/engine error) — match
     # by HostId; with no matching start they are kept unsessioned.
     for ev600 in events_600 + buckets.get(300, []):
-        host_id = ev600.get("host_id", "").strip("{}")
-        if host_id in sessions_by_host_id:
-            sess = sessions_by_host_id[host_id]
+        sess = _by_host_id(ev600)
+        if sess is not None:
             pname = ev600.get("provider_name", "")
             if ev600.get("event_id") == 600 and pname and pname not in sess.providers:
                 sess.providers.append(pname)
@@ -195,15 +219,17 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
         matched = False
 
         # Try ContextInfo HostId first (most precise)
-        if host_id_ctx and host_id_ctx in sessions_by_host_id:
-            sess = sessions_by_host_id[host_id_ctx]
+        sess = _by_host_id(ev4103)
+        if sess is not None:
             sess.session_events.append(ev4103)
             # Backfill user_name from 4103 ContextInfo if session doesn't have it yet
             if not sess.user_name:
                 sess.user_name = ev4103.get("user", "")
             matched = True
 
-        if not matched and pid and _pk(ev4103.get("computer"), pid) in pid_to_host_ids:
+        # A HostId that names no session here is another process: never
+        # attached by PID to this one (9-07).
+        if not matched and not host_id_ctx and pid and _pk(ev4103.get("computer"), pid) in pid_to_host_ids:
             candidates = pid_to_host_ids[_pk(ev4103.get("computer"), pid)]
             event_ts = ev4103.get("timestamp", "")
             best = _best_session_for_event(candidates, sessions_by_host_id, event_ts)
@@ -220,11 +246,12 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
         host_id = ev800.get("host_id", "").strip("{}")
         matched = False
 
-        if host_id and host_id in sessions_by_host_id:
-            sessions_by_host_id[host_id].session_events.append(ev800)
+        _s = _by_host_id(ev800)
+        if _s is not None:
+            _s.session_events.append(ev800)
             matched = True
 
-        if not matched and pid and _pk(ev800.get("computer"), pid) in pid_to_host_ids:
+        if not matched and not host_id and pid and _pk(ev800.get("computer"), pid) in pid_to_host_ids:
             candidates = pid_to_host_ids[_pk(ev800.get("computer"), pid)]
             event_ts = ev800.get("timestamp", "")
             best = _best_session_for_event(candidates, sessions_by_host_id, event_ts)
@@ -240,7 +267,7 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
     # full script content is in the individual scriptblock_<GUID>.txt files.
     events_4104 = buckets.get(4104, [])
     seen_4104_keys: set[str] = set()  # avoid duplicate timeline entries per block
-    for ev4104 in sorted(events_4104, key=lambda e: e.get("timestamp", "")):
+    for ev4104 in sorted(events_4104, key=lambda e: _k(e.get("timestamp", ""))):
         pid = ev4104.get("pid", "")
         sbid = ev4104.get("script_block_id", "")
         record_id = ev4104.get("event_record_id", 0)
@@ -270,11 +297,11 @@ def build_sessions(buckets: dict[int, list[dict]]) -> list[PSSession]:
 
     # Sort session_events within each session by timestamp
     for sess in sessions_by_host_id.values():
-        sess.session_events.sort(key=lambda e: e.get("timestamp", ""))
+        sess.session_events.sort(key=lambda e: _k(e.get("timestamp", "")))
 
     # Return sessions sorted by start_ts, with _unsessioned always last
     real = [s for s in sessions_by_host_id.values() if s.host_id != _UNSESSIONED_KEY]
-    real.sort(key=lambda s: s.start_ts)
+    real.sort(key=lambda s: _k(s.start_ts))
     unsessioned = sessions_by_host_id.get(_UNSESSIONED_KEY)
     result = real + ([unsessioned] if unsessioned else [])
     logger.debug(

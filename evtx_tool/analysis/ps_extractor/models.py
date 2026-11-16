@@ -65,11 +65,13 @@ class ScriptBlockAccumulator:
 
     @property
     def first_timestamp(self) -> str:
-        return min((f.timestamp for f in self.fragments.values()), default="")
+        from evtx_tool.core.time_window import ts_sort_key
+        return min((f.timestamp for f in self.fragments.values()), key=ts_sort_key, default="")
 
     @property
     def last_timestamp(self) -> str:
-        return max((f.timestamp for f in self.fragments.values()), default="")
+        from evtx_tool.core.time_window import ts_sort_key
+        return max((f.timestamp for f in self.fragments.values()), key=ts_sort_key, default="")
 
     @property
     def was_safety_net_triggered(self) -> bool:

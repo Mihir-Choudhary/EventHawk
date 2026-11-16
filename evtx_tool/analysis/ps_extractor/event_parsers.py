@@ -33,7 +33,7 @@ _CLASSIC_KEYS = frozenset({
     "SequenceNumber", "DetailSequence", "DetailTotal", "UserId", "UserID",
     "HostName", "HostVersion", "HostId", "HostID", "HostApplication", "EngineVersion",
     "RunspaceId", "RunspaceID", "PipelineId", "PipelineID", "CommandName", "CommandType",
-    "ScriptName", "CommandPath", "CommandLine",
+    "ScriptName", "CommandPath", "CommandLine", "ProcessId",
 })
 
 # Field names in the Operational log's ContextInfo (EID 4100/4103/4104), one
@@ -545,7 +545,7 @@ def parse_400(record: dict) -> dict:
     return {
         "event_id":          400,
         "timestamp":         ts,
-        "pid":               ex.get("ProcessID", ""),
+        "pid":               ex.get("ProcessID", "") or str(ed.get("ProcessId", "") or ""),  # no <Execution>: EventData (9-07)
         "computer":          get_system_field(record, "Computer"),
         "host_name":         ed.get("HostName", ""),
         "host_version":      ed.get("HostVersion", ""),
@@ -581,7 +581,7 @@ def parse_403(record: dict) -> dict:
     return {
         "event_id":          403,
         "timestamp":         ts,
-        "pid":               ex.get("ProcessID", ""),
+        "pid":               ex.get("ProcessID", "") or str(ed.get("ProcessId", "") or ""),  # no <Execution>: EventData (9-07)
         "computer":          get_system_field(record, "Computer"),
         "host_name":         ed.get("HostName", ""),
         "host_version":      ed.get("HostVersion", ""),
@@ -614,7 +614,7 @@ def parse_600(record: dict) -> dict:
     return {
         "event_id":           600,
         "timestamp":          ts,
-        "pid":                ex.get("ProcessID", ""),
+        "pid":                ex.get("ProcessID", "") or str(ed.get("ProcessId", "") or ""),  # no <Execution>: EventData (9-07)
         "computer":           get_system_field(record, "Computer"),
         "provider_name":      ed.get("ProviderName") or ed.get("_0", ""),
         "new_provider_state": ed.get("NewProviderState") or ed.get("_1", ""),
@@ -661,7 +661,7 @@ def parse_800(record: dict) -> dict:
     return {
         "event_id":        800,
         "timestamp":       ts,
-        "pid":             ex.get("ProcessID", ""),
+        "pid":             ex.get("ProcessID", "") or str(ed.get("ProcessId", "") or ""),  # no <Execution>: EventData (9-07)
         "computer":        get_system_field(record, "Computer"),
         "host_id":         host_id.strip("{}"),
         "host_application": ed.get("HostApplication", ""),
