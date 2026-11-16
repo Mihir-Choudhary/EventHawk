@@ -359,6 +359,12 @@ class PSExtractor:
                 parser = _PARSERS.get(eid)
                 if parser:
                     parsed = parser(data)
+                    # -EncodedCommand decoded wherever a host application is
+                    # logged, not only on a classic 400: PowerShell 7 writes
+                    # none, nor does an Operational-only collection (9-02).
+                    if parsed and parsed.get("host_application") and not parsed.get("encoded_command"):
+                        from .event_parsers import _extract_encoded_command
+                        parsed["encoded_command"] = _extract_encoded_command(str(parsed["host_application"]))
                     if parsed:  # parsers return {} on malformed records
                         buckets[eid].append(parsed)
 

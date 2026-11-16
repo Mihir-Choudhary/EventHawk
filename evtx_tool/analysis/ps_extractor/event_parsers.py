@@ -149,7 +149,10 @@ def extract_eventdata(event: dict) -> dict[str, str]:
             name = attrs.get("Name", "")
             value = item.get("#text", "")
             if name:
-                result[name] = value if value is not None else ""
+                # As text, like Shapes B and C: pyevtx-rs gives a numeric
+                # #text as a JSON number, and an int ScriptBlockText made the
+                # writers raise (Gemini audit 9-06).
+                result[name] = "" if value is None else (value if isinstance(value, str) else str(value))
             elif isinstance(value, str):
                 unnamed.append(value)
         for k, v in _parse_classic_texts(unnamed).items():

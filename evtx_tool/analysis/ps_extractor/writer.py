@@ -240,6 +240,12 @@ def _format_event_line(
         ]
         if payload_preview:
             result.append(f"  Payload : {payload_preview}")
+        # What ran it, and its decoded -EncodedCommand (Gemini audit 9-02: a
+        # 4103-only log showed neither).
+        if ev.get("host_application"):
+            result.append(f"  HostApplication : {ev.get('host_application')}")
+        if ev.get("encoded_command"):
+            result.append(f"  [ENCODED_COMMAND_DETECTED] Decoded: {ev.get('encoded_command')}")
         return "\n".join(result)
     if eid == 4104:
         sbid = ev.get("script_block_id", "")
@@ -328,8 +334,8 @@ def write_scriptblock_files(
             # on Windows, so the script's own CRLF became CR CR LF and the file
             # no longer held the script's exact text (Codex FO-13).
             outpath.write_text(content, encoding="utf-8", errors="replace", newline="")
-        except OSError as exc:
-            msg = f"Failed to write {outpath}: {exc}"
+        except Exception as exc:      # one bad block never stops the others (9-06)
+            msg = f"Failed to write {outpath}: {type(exc).__name__}: {exc}"
             if errors is not None:
                 errors.append(msg)
 
@@ -761,6 +767,11 @@ def write_json_export(
                 "error_id":         ev.get("error_id", ""),
                 "host_application": ev.get("host_application", ""),
             })
+        # Every event keeps these whole when it has them: the workbook cuts
+        # long cells and points here for the full value (Gemini audit 9-01).
+        for k in ("host_application", "encoded_command", "payload", "user_data"):
+            if ev.get(k) and not base.get(k):
+                base[k] = ev[k]
         return base
 
     sessions_data = []
