@@ -56,7 +56,7 @@ def main() -> int:
     def fake_find(folder, progress_cb=None):
         return [Path(folder) / "Security.evtx"]
 
-    def fake_run(paths, baseline, sigma, progress_cb=None):
+    def fake_run(paths, baseline, sigma, progress_cb=None, **_kw):
         seen["paths"] = [str(p) for p in paths]
         return [], dict(seen.get("metrics", {}))
     try:

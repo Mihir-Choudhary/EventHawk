@@ -52,32 +52,34 @@ def build_freq_model(events: list["NormalizedEvent"]) -> FrequencyModel:
     return m
 
 
-def surprisal_cmdline(model: FrequencyModel, proc: str, cmdline: str) -> float:
+def surprisal_cmdline(model: FrequencyModel, proc: str, cmdline: str,
+                      max_s: float = MAX_SURPRISAL) -> float:
     """
     Laplace-smoothed surprisal of (cmdline | proc) in bits.
     Returns MAX_SURPRISAL if proc is entirely unseen in baseline.
     """
     total = model.cmdline_totals[proc]
     if total == 0:
-        return MAX_SURPRISAL  # proc unseen; scored by lineage surprisal
+        return max_s  # proc unseen; scored by lineage surprisal
     count = model.cmdline_given_proc[proc][cmdline]
     vocab = len(model.cmdline_given_proc[proc]) or 1
     p = (count + 1) / (total + vocab)
-    return min(-math.log2(p), MAX_SURPRISAL)
+    return min(-math.log2(p), max_s)
 
 
-def surprisal_lineage(model: FrequencyModel, proc: str, parent: str) -> float:
+def surprisal_lineage(model: FrequencyModel, proc: str, parent: str,
+                      max_s: float = MAX_SURPRISAL) -> float:
     """
     Laplace-smoothed surprisal of (proc | parent) in bits.
     Returns MAX_SURPRISAL if parent is entirely unseen in baseline.
     """
     total = model.proc_totals[parent]
     if total == 0:
-        return MAX_SURPRISAL  # parent unseen
+        return max_s  # parent unseen
     count = model.proc_given_parent[parent][proc]
     vocab = len(model.proc_given_parent[parent]) or 1
     p = (count + 1) / (total + vocab)
-    return min(-math.log2(p), MAX_SURPRISAL)
+    return min(-math.log2(p), max_s)
 
 
 def build_process_distribution(model: FrequencyModel) -> dict[str, float]:

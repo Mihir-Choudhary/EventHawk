@@ -43,8 +43,10 @@ def composite_score(
         cfg:           Optional SentinelConfig; uses module defaults if None.
     """
     c = cfg or _DEFAULT_CFG
-    s_cmd = min(surprisal_cmd, MAX_SURPRISAL) / MAX_SURPRISAL
-    s_lin = min(surprisal_lin, MAX_SURPRISAL) / MAX_SURPRISAL
+    # The config's cap (Gemini audit 10-10: a hard-coded 20 bits ignored it).
+    cap = c.max_surprisal if c.max_surprisal > 0 else MAX_SURPRISAL
+    s_cmd = min(surprisal_cmd, cap) / cap
+    s_lin = min(surprisal_lin, cap) / cap
 
     raw = (
         c.weight_cmdline * s_cmd +

@@ -67,7 +67,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
     logger.info("Found %d relevant EVTX file(s) — building baseline ...", len(evtx_paths))
 
     try:
-        meta = build_baseline(evtx_paths, output_dir, sigma_dir, progress_cb=_cb)
+        meta = build_baseline(evtx_paths, output_dir, sigma_dir, progress_cb=_cb,
+                              config_path=Path(args.config) if getattr(args, "config", None) else None)
         print()
         logger.info(
             "Baseline built: %d events, stability=%.2f, output=%s",
@@ -126,7 +127,8 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         else:
             target_paths.append(p)
 
-    scored, metrics = run_analysis(target_paths, baseline_dir, sigma_dir, progress_cb=_cb)
+    scored, metrics = run_analysis(target_paths, baseline_dir, sigma_dir, progress_cb=_cb,
+                                   config_path=Path(args.config) if getattr(args, "config", None) else None)
     print()
 
     # Load meta for report
@@ -182,6 +184,7 @@ def main() -> int:
     bp.add_argument("--evtx", required=True, help="Folder containing baseline .evtx files")
     bp.add_argument("--output", required=True, help="Output directory for artifacts")
     bp.add_argument("--sigma", default=None, help="Optional Sigma rules directory")
+    bp.add_argument("--config", default=None, help="Optional SentinelConfig JSON file")
 
     # analyze sub-command
     ap = sub.add_parser("analyze", help="Analyze target EVTX files against a baseline")
@@ -189,6 +192,7 @@ def main() -> int:
     ap.add_argument("--baseline", required=True, help="Baseline artifacts directory")
     ap.add_argument("--sigma", default=None, help="Optional Sigma rules directory")
     ap.add_argument("--report", default=None, help="Output JSON report file path")
+    ap.add_argument("--config", default=None, help="Optional SentinelConfig JSON file")
 
     args = parser.parse_args()
 

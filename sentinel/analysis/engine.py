@@ -196,8 +196,8 @@ def run_analysis(
         in_baseline = fuse.contains(proc_norm, parent_norm, cmdline_norm)
 
         # Sub-scores
-        s_cmd = surprisal_cmdline(freq_model, proc_norm, cmdline_norm)
-        s_lin = surprisal_lineage(freq_model, proc_norm, parent_norm)
+        s_cmd = surprisal_cmdline(freq_model, proc_norm, cmdline_norm, max_s=cfg.max_surprisal)
+        s_lin = surprisal_lineage(freq_model, proc_norm, parent_norm, max_s=cfg.max_surprisal)
         depth, scored_len = trie.query_scored(chain)
         t_score = trie_depth_score(depth, scored_len)
         ppid_flag = 1.0 if 'PPID_MISMATCH' in ev.flags else 0.0

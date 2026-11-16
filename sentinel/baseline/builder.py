@@ -44,6 +44,7 @@ def build_baseline(
     output_dir: Path,
     sigma_rules_dir: Path | None = None,
     progress_cb: Callable[[str, float], None] | None = None,
+    config_path: Path | None = None,
 ) -> BaselineMeta:
     """
     Full Phase 0 pipeline.
@@ -90,11 +91,15 @@ def build_baseline(
 
     # ── 0.2  Stability validation ──────────────────────────────────────────────
     _cb("Validating baseline stability", 0.05)
-    stability = baseline_stability(raw_events, normalize_fn=normalize_cmdline)
-    if stability < ABORT_THRESHOLD:
+    # The config's thresholds and cap (Gemini audit 10-10: fixed 0.3 / 0.6).
+    from sentinel.config import load_config
+    cfg = load_config(config_path)
+    stability = baseline_stability(raw_events, normalize_fn=normalize_cmdline,
+                                   abort_threshold=cfg.stability_abort, warn_threshold=cfg.stability_warn)
+    if stability < cfg.stability_abort:
         raise ValueError(
             f"Baseline stability {stability:.2f} is below abort threshold "
-            f"{ABORT_THRESHOLD}. Baseline is too short or potentially compromised."
+            f"{cfg.stability_abort}. Baseline is too short or potentially compromised."
         )
 
     # ── 0.3  Sigma pre-tagging ────────────────────────────────────────────────
@@ -131,7 +136,7 @@ def build_baseline(
 
     # ── Tier calibration (score baseline events, compute percentiles) ──────────
     _cb("Calibrating tier boundaries", 0.85)
-    tier_boundaries = _calibrate_tiers(normalized, freq_model, trie)
+    tier_boundaries = _calibrate_tiers(normalized, freq_model, trie, cfg)
 
     # ── Process distribution for JSD ─────────────────────────────────────────
     process_dist = build_process_distribution(freq_model)
@@ -216,17 +221,19 @@ def _calibrate_tiers(
     normalized: list[NormalizedEvent],
     freq_model,
     trie: AncestryTrie,
+    cfg=None,
 ) -> TierBoundaries:
     from sentinel.analysis.scorer import composite_score, trie_depth_score
     from sentinel.baseline.freq_model import surprisal_cmdline, surprisal_lineage
 
     scores = []
     for ev in normalized:
-        s_cmd = surprisal_cmdline(freq_model, ev.proc_norm, ev.cmdline_norm)
-        s_lin = surprisal_lineage(freq_model, ev.proc_norm, ev.parent_norm)
+        _ms = cfg.max_surprisal if cfg is not None else 20.0
+        s_cmd = surprisal_cmdline(freq_model, ev.proc_norm, ev.cmdline_norm, max_s=_ms)
+        s_lin = surprisal_lineage(freq_model, ev.proc_norm, ev.parent_norm, max_s=_ms)
         depth, scored_len = trie.query_scored(ev.ancestry_chain)
         t_score = trie_depth_score(depth, scored_len)  # B17: use shared formula
-        score = composite_score(s_cmd, s_lin, t_score, 0.0, 0.0)
+        score = composite_score(s_cmd, s_lin, t_score, 0.0, 0.0, cfg=cfg)
         scores.append(score)
 
     if not scores:

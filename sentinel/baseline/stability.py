@@ -37,6 +37,8 @@ WARN_THRESHOLD = 0.6
 def baseline_stability(
     events: list["RawEvent"],
     normalize_fn=None,
+    abort_threshold: float = ABORT_THRESHOLD,
+    warn_threshold: float = WARN_THRESHOLD,
 ) -> float:
     """
     Compute stability score for a list of RawEvents.
@@ -89,17 +91,17 @@ def baseline_stability(
     overall_volatility = weighted_volatility / total_events if total_events else 0.0
     score = max(0.0, min(1.0, 1.0 - overall_volatility))
 
-    if score < ABORT_THRESHOLD:
+    if score < abort_threshold:
         logger.error(
             "Baseline stability %.2f is below abort threshold %.2f. "
             "Baseline may be too short or already compromised. Refusing to build.",
-            score, ABORT_THRESHOLD,
+            score, abort_threshold,
         )
-    elif score < WARN_THRESHOLD:
+    elif score < warn_threshold:
         logger.warning(
             "Baseline stability %.2f is below recommended threshold %.2f. "
             "Analysis may produce elevated false positive rates.",
-            score, WARN_THRESHOLD,
+            score, warn_threshold,
         )
     else:
         logger.info("Baseline stability score: %.2f (OK)", score)
