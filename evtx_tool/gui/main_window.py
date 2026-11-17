@@ -13865,9 +13865,11 @@ class MainWindow(QMainWindow):
         self._set_status(f"Computing column \u2018{compiled.spec.title}\u2019\u2026")
         worker = _CustomColumnWorker(fn, parent=self)
         _holder.append(worker)
+        gen = getattr(self, "_dataset_gen", 0)
+        is_main = model is (self._hw_model if self._hw_model is not None else self._event_model)
         self._custom_col_workers = [w for w in getattr(self, "_custom_col_workers", [])
                                     if self._thread_running(w)] + [worker]
-        worker.done.connect(lambda values: self._on_custom_column_ready(model, compiled, values, editing, quiet))
+        worker.done.connect(lambda values, g=gen, im=is_main: self._on_custom_column_ready(model, compiled, values, editing, quiet, g, im))
         worker.failed.connect(lambda msg: self._on_custom_column_failed(compiled, msg))
         worker.start()
 
@@ -13926,7 +13928,20 @@ class MainWindow(QMainWindow):
             "Custom column", f"The column ‘{compiled.spec.title}’ could not be computed:\n{msg}",
             icon=QMessageBox.Icon.Critical)
 
-    def _on_custom_column_ready(self, model, compiled, values, editing: bool, quiet: bool = False) -> None:
+    def _on_custom_column_ready(self, model, compiled, values, editing: bool, quiet: bool = False,
+                                gen: "int | None" = None, for_main: bool = False) -> None:
+        if gen is not None and gen != getattr(self, "_dataset_gen", 0):
+            # Computed for a dataset that has since been cleared or replaced.
+            # Installed on the new one its values matched no event: blank
+            # cells, and a filter on them hid real events (Codex PR19-6).
+            # A column for the main table is computed again on the events
+            # now loaded; one for a tab of the old dataset is dropped.
+            main = self._hw_model if self._hw_model is not None else self._event_model
+            have = {cc.spec.col_id for cc in getattr(main, "custom_columns", lambda: [])()} if main is not None else {0}
+            if (for_main and main is not None and hasattr(main, "add_custom_column")
+                    and compiled.spec.col_id not in have and not getattr(self, "_close_stop_requested", False)):
+                self._compute_custom_column(main, compiled, editing=False, quiet=quiet)
+            return
         if values is None:                   # cancelled (Exit or a new dataset)
             self._set_status(f"Column ‘{compiled.spec.title}’ not computed (cancelled)")
             return
@@ -19557,6 +19572,9 @@ class MainWindow(QMainWindow):
             psw.request_stop()
 
     def _clear_results(self) -> None:
+        # Every computation started before this belongs to the old dataset
+        # (custom columns: Codex PR19-6).
+        self._dataset_gen = getattr(self, "_dataset_gen", 0) + 1
         # Fix E: cleanup Juggernaut (DuckDB) state and reset table model.
         # Checked on the table itself, not on _hw_model: the normal parse path
         # runs _cleanup_juggernaut() first, which drops _hw_model but left the
