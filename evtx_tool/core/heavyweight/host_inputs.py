@@ -12,6 +12,7 @@ import json
 import os
 
 from evtx_tool.core.host_identity import NameStat, Rename, iso_z, parse_rename, rename_anchored
+from evtx_tool.core.heavyweight.sql_paths import sql_path_list as _sql_path_list  # Gemini 13-01
 
 
 def inputs_from_jm(table, parquet_dir: str) -> "tuple[list[NameStat], list[Rename], int]":
@@ -35,7 +36,7 @@ def inputs_from_jm(table, parquet_dir: str) -> "tuple[list[NameStat], list[Renam
         with open(manifest, "r", encoding="utf-8") as fh:
             shards = json.load(fh)
         if shards:
-            src = "[" + ", ".join("'" + p.replace("'", "''") + "'" for p in shards) + "]"
+            src = _sql_path_list(shards)
             for ts, sf, rid, ed_json, comp, ch in con.execute(
                 f"SELECT timestamp_utc, source_file, record_id, event_data_json, "
                 f"       COALESCE(computer, ''), COALESCE(channel, '') "

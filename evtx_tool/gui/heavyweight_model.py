@@ -141,6 +141,7 @@ _SORT_COL_MAP: dict[int, str] = {
 # Imported so apply_text_filter() and filter_sql._term_clause() always use the
 # exact same blob. No risk of the two drifting out of sync.
 from evtx_tool.core.heavyweight.filter_sql import SEARCH_TEXT_EXPR as _ARROW_SEARCH_EXPR  # noqa: E402
+from evtx_tool.core.heavyweight.sql_paths import sql_path_list as _sql_path_list  # Gemini 13-01
 
 
 # ── Single filter background thread ───────────────────────────────────────────
@@ -348,7 +349,7 @@ class _FilterThread(QThread):
         if cond_sql == "1=1":
             return self._full_table.take(row_ids)
 
-        quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in shards)   # Gemini 3-07
+        quoted = _sql_path_list(shards)[1:-1]   # Gemini 3-07
         try:
             con2 = duckdb.connect()
             # Composite (record_id, source_file) key prevents cross-file matches
@@ -471,7 +472,7 @@ class _FilterThread(QThread):
             phase2_where  = text_sql
             phase2_params = text_params
 
-        quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in shards)   # Gemini 3-07
+        quoted = _sql_path_list(shards)[1:-1]   # Gemini 3-07
         try:
             con2 = duckdb.connect()
             # Composite (record_id, source_file) key — prevents cross-file row matches
@@ -1687,7 +1688,7 @@ class ArrowTableModel(QAbstractTableModel):
             manifest = os.path.join(self._parquet_dir, _MANIFEST_FILENAME)
             with open(manifest, "r", encoding="utf-8") as fh:
                 shards = _json.load(fh)
-            quoted = ", ".join(f"'{p.replace(chr(39), chr(39)*2)}'" for p in shards)
+            quoted = _sql_path_list(shards)[1:-1]
             con = duckdb.connect()
             try:
                 if source_file:

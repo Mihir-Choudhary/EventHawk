@@ -72,6 +72,7 @@ from .worker import ParseWorker, AnalysisWorker
 from evtx_tool.analysis.analysis_runner import AnalysisRunner
 from .theme import COLORS, qc, rebuild_on_theme, tc
 from .filter_dialog import FilterDialog
+from evtx_tool.core.heavyweight.sql_paths import sql_path_list as _sql_path_list  # Gemini 13-01
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -4821,7 +4822,7 @@ class _WifiJMFetchWorker(QThread):
 
         eids_csv   = ", ".join(str(e) for e in self._RELEVANT_EIDS)
         shard_list = (
-            "[" + ", ".join(f"'{p.replace(chr(39), chr(39)*2)}'" for p in shards) + "]"
+            _sql_path_list(shards)
         )
         try:
             con = _duckdb.connect()
@@ -6666,7 +6667,7 @@ class _RemoteAssistJMFetchWorker(QThread):
             return
 
         shard_list = (
-            "[" + ", ".join(f"'{p.replace(chr(39), chr(39)*2)}'" for p in shards) + "]"
+            _sql_path_list(shards)
         )
         chan_placeholders = ", ".join("?" * len(self._RA_CHANNELS))
 
@@ -6842,7 +6843,7 @@ class _JMAnalysisMaterializeWorker(QThread):
             if not shards:
                 self.finished_ok.emit([])
                 return
-            quoted = ", ".join(f"'{p}'" for p in shards)
+            quoted = _sql_path_list(shards)[1:-1]
             con = _duckdb.connect()
             con.execute(f"SET threads={max(2, min((os.cpu_count() or 4) - 1, 16))}")
             lim = f" LIMIT {int(self._limit)}" if self._limit else ""
@@ -7027,12 +7028,12 @@ class _JMExportWorker(QThread):
         self._require_shards(con)
         src = (f"FROM events e LEFT JOIN (SELECT record_id AS _jrid, source_file AS _jsf, "
                f"event_data_json AS _ed, qualifiers AS _q, provider_guid AS _pg, "
-               f"version AS _ver FROM parquet_scan({self._shard_paths})) p "
+               f"version AS _ver FROM parquet_scan({_sql_path_list(self._shard_paths)})) p "
                f"ON e.record_id = p._jrid AND e.source_file = p._jsf "
                f"WHERE {self._where_sql}")
         n_missing = con.execute(
             f"SELECT count(*) FROM events e LEFT JOIN (SELECT record_id AS _jrid, source_file AS _jsf "
-            f"FROM parquet_scan({self._shard_paths})) p "
+            f"FROM parquet_scan({_sql_path_list(self._shard_paths)})) p "
             f"ON e.record_id = p._jrid AND e.source_file = p._jsf "
             f"WHERE ({self._where_sql}) AND p._jrid IS NULL", self._params).fetchone()[0]
         if n_missing:
@@ -7179,7 +7180,7 @@ class _JMExportWorker(QThread):
             con.register("_export_keys", key_tbl)
             ed_rows = con.execute(
                 f"SELECT p.source_file, p.record_id, p.event_data_json "
-                f"FROM parquet_scan({self._shard_paths}) p "
+                f"FROM parquet_scan({_sql_path_list(self._shard_paths)}) p "
                 f"INNER JOIN _export_keys k "
                 f"  ON p.source_file = k.k_src AND p.record_id = k.k_rid"
             ).fetchall()
@@ -7266,7 +7267,7 @@ class _ComputerNormJMWorker(QThread):
             return
 
         shard_list = (
-            "[" + ", ".join(f"'{p.replace(chr(39), chr(39)*2)}'" for p in shards) + "]"
+            _sql_path_list(shards)
         )
         sql = (
             f"SELECT COALESCE(computer, '') AS computer, "
@@ -13698,7 +13699,7 @@ class MainWindow(QMainWindow):
         shards = self._hw_model._get_shard_paths()
         if not shards:
             return
-        quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in shards)
+        quoted = _sql_path_list(shards)[1:-1]
         con = duckdb.connect()
         try:
             rows = con.execute(
@@ -16256,7 +16257,7 @@ class MainWindow(QMainWindow):
             return
 
         # Escape shard paths for DuckDB list literal
-        shard_list = "[" + ", ".join(f"'{p.replace(chr(39), chr(39)*2)}'" for p in shards) + "]"
+        shard_list = _sql_path_list(shards)
 
         # Query only the 4 logon-related event types (fast — column-pruned Parquet scan).
         # source_file is selected so we can build composite (source_file, record_id) keys

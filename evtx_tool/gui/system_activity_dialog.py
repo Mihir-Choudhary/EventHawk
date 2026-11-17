@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 from evtx_tool.analysis.host_power import fmt_secs
 from evtx_tool.gui.theme import COLORS, rebuild_on_theme, tc
 from evtx_tool.analysis.system_activity import ACTIVITY_SQL
+from evtx_tool.core.heavyweight.sql_paths import sql_path_list as _sql_path_list  # Gemini 13-01
 
 logger = logging.getLogger(__name__)
 
@@ -506,7 +507,7 @@ class SystemActivityJMFetchWorker(QThread):
         if not shards:
             self.finished.emit([], False)
             return
-        lst = "[" + ", ".join("'" + p.replace("'", "''") + "'" for p in shards) + "]"
+        lst = _sql_path_list(shards)
         sql = (f"SELECT event_id, timestamp_utc, event_data_json, computer, source_file, channel, provider, "
                f"record_id, event_record_id FROM parquet_scan({lst}) WHERE {ACTIVITY_SQL} ORDER BY timestamp_utc")
         try:
