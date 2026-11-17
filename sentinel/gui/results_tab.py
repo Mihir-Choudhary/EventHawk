@@ -166,7 +166,8 @@ class ResultsTab(QWidget):
                 if ev.justification_text:
                     detail_text += f" | {ev.justification_text}"
                 detail.setText(0, detail_text)
-                detail.setForeground(0, QColor("#cccccc"))
+                # The window's own text colour: #cccccc was 1.3:1 on the light
+                # theme (Gemini audit 14-01).
 
             tech_item.setExpanded(True)
 

@@ -2087,7 +2087,7 @@ class EventTimeZoneDialog(QDialog):
             spacing: 8px;
         }
         QRadioButton:checked {
-            color: #9b7a2e;
+            color: #73571c;   /* #9b7a2e was 3.3:1 (Gemini 14-01) */
             font-weight: bold;
         }
         QRadioButton:disabled { color: #67594d; }
@@ -2200,7 +2200,7 @@ class EventTimeZoneDialog(QDialog):
         QPushButton#signToggle {
             font-weight: bold;
             font-size: 14pt;
-            color: #73571c;
+            color: #1e1a14;   /* amber was 3.2:1 on the dark theme (Gemini 14-01) */
             background: #e8e0cc;
             border: 1px solid #73571c;
             border-radius: 4px;
@@ -11836,7 +11836,7 @@ class MainWindow(QMainWindow):
                "being used.<br><br>")
             + f"Loading this much data in-memory may cause the tool to "
             f"<b>lag or crash</b>.<br><br>"
-            f"<span style='color:#4fc3f7'>&#9889; <b>Juggernaut Mode</b></span> "
+            f"<span style='color:#2a5a8a'>&#9889; <b>Juggernaut Mode</b></span> "
             f"processes large log sets without loading everything into RAM."
         )
         msg.setStyleSheet(
@@ -14142,7 +14142,7 @@ class MainWindow(QMainWindow):
                 "Click Browse and select hayabusa.exe.\n"
                 "Download from: github.com/Yamato-Security/hayabusa/releases"
             )
-            self._lbl_hayabusa_path.setStyleSheet("font-size: 8pt; color: #c07000;")
+            self._lbl_hayabusa_path.setStyleSheet("font-size: 8pt; color: #7a4c00;")   # #c07000 was 3.1:1 (14-01)
 
     def _pick_hayabusa_path(self) -> None:
         """Open file dialog to select Hayabusa binary."""

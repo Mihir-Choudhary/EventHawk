@@ -492,7 +492,7 @@ class ProfileEditorDialog(QDialog):
             QPushButton:hover {{ background: {COLORS['btn_hover']}; }}
             QPushButton:default {{
                 background: {COLORS['accent']};
-                color: #fff;
+                color: {COLORS['on_accent']};
                 border-color: {COLORS['accent']};
             }}
             QPushButton:default:hover {{ background: {COLORS['accent_hover']}; }}

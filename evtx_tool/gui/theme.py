@@ -397,7 +397,7 @@ QLabel#countLabel[filtered="true"] {
     font-weight: bold;
 }
 QLabel#modeChip {
-    color: #73571c;
+    color: #1e1a14;   /* text, not amber: 3.2-3.8:1 on the dark theme's tan (Gemini 14-01) */
     background: #ddd4bc;
     border-radius: 4px;
     padding: 2px 8px;
@@ -405,7 +405,7 @@ QLabel#modeChip {
     font-weight: bold;
 }
 QPushButton[active="true"] {
-    color: #73571c;
+    color: #1e1a14;   /* text, not amber: 3.2-3.8:1 on the dark theme's tan (Gemini 14-01) */
     border-color: #73571c;
     background: #ddd4bc;
 }
@@ -495,7 +495,7 @@ QPushButton:pressed {
 QPushButton:checked {
     background: #ddd4bc;
     border-color: #73571c;
-    color: #73571c;
+    color: #1e1a14;   /* text, not amber: 3.2-3.8:1 on the dark theme's tan (Gemini 14-01) */
 }
 QPushButton:disabled {
     color: #67594d;
@@ -708,7 +708,7 @@ QCalendarWidget QToolButton {
 }
 QCalendarWidget QToolButton:hover {
     background: #d8d1c5;
-    color: #73571c;
+    color: #1e1a14;   /* text, not amber: 3.2-3.8:1 on the dark theme's tan (Gemini 14-01) */
 }
 QCalendarWidget QToolButton::menu-indicator { image: none; }
 QCalendarWidget QSpinBox {
