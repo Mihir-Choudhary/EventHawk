@@ -11,8 +11,8 @@ Layout:
   ├─ Active Profiles ───────┴─────────────────────────────── │
   │ Logon/Logoff, RDP Activity, Privilege Escalation         │
   ├─ Recent Events ─────────────────────────────────────────┤
-  │ 2026-02-17 02:13  4624  Info   Security   MSI           │
-  │ 2026-02-17 02:12  4625  WARN   Security   MSI           │
+  │ 2026-02-17 02:13  4624  Info   Security   PC1           │
+  │ 2026-02-17 02:12  4625  WARN   Security   PC1           │
   ├─ Warnings / Errors ─────────────────────────────────────┤
   └─────────────────────────────────────────────────────────┘
 """

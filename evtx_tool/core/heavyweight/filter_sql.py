@@ -1251,7 +1251,7 @@ def text_config_to_parquet_sql(fc: dict) -> "tuple[str, list[Any]]":
 
     # Case-SENSITIVE search must run against the RAW (non-lowered) blob — using
     # the lower()-wrapped expression pre-lowers the data so an upper-case term
-    # could never match (previously returned zero rows for e.g. "MSI" + cs).
+    # could never match (previously returned zero rows for e.g. "HOST" + cs).
     _expr = _SEARCH_TEXT_RAW_FULL if cs else SEARCH_TEXT_EXPR_FULL
 
     def _term_clause(term: str) -> str:

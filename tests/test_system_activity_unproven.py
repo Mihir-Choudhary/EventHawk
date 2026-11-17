@@ -45,7 +45,7 @@ def build(path):
     d2 = t0 + timedelta(days=3)                       # another weekday
     e_a = S.ev(11, d2, "Microsoft-Windows-Kernel-General", 12, {})
     e_b = S.ev(12, d2 + timedelta(hours=4), "Microsoft-Windows-Kernel-Power", 42, {})
-    res["rows"].append({"host": "MSI", "layer": "Power", "state": "On", "start": d2, "end": d2 + timedelta(hours=4),
+    res["rows"].append({"host": "PC1", "layer": "Power", "state": "On", "start": d2, "end": d2 + timedelta(hours=4),
                         "duration": None, "started_by": "Kernel-General 12", "ended_by": "Kernel-Power 42",
                         "start_ev": e_a, "end_ev": e_b, "notes": "length not proven"})
     undated = S.ev(13, t0, "Microsoft-Windows-Kernel-Power", 105, {"AcOnline": True})

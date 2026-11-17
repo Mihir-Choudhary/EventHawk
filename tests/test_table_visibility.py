@@ -86,7 +86,7 @@ def main() -> int:
 
     def row(state, start_s, dur, layer="Power", notes=""):
         st = T0 + timedelta(seconds=start_s)
-        return {"host": "MSI", "layer": layer, "state": state, "start": st, "end": st + dur,
+        return {"host": "PC1", "layer": layer, "state": state, "start": st, "end": st + dur,
                 "duration": dur, "started_by": "Kernel-General 12", "ended_by": "Kernel-Power 507",
                 "notes": notes, "start_ev": None, "end_ev": None}
     long_note = "shutdown logged between the two events, no Power-Troubleshooter record " * 2
@@ -95,7 +95,7 @@ def main() -> int:
             row("On", 30001, timedelta(microseconds=24)),
             row("Sleep", 31000, timedelta(hours=2, minutes=44, seconds=42, microseconds=904999)),
             row("Screen on", 0, timedelta(hours=1), layer="Screen")]
-    res = {"hosts": ["MSI"], "rows": rows, "points": []}
+    res = {"hosts": ["PC1"], "rows": rows, "points": []}
     dlg = SystemActivityDialog(res, digits=0)
     dlg.resize(1300, 700)
     dlg.show()

@@ -48,7 +48,7 @@ def log(jm: bool, source: str):
     ]
     out = []
     for secs, eid, rid, ed in rows:
-        ev = {"event_id": eid, "computer": "MSI",
+        ev = {"event_id": eid, "computer": "PC1",
               "timestamp": (T0 + timedelta(seconds=secs)).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
               "event_data": dict(ed)}
         if jm:

@@ -104,7 +104,7 @@ SESSION_REASON = {1: "Unknown", 5: "AcDcBurst", 12: "SessionUnlock", 15: "Policy
                   32: "InputHid", 33: "InputPoUserPresent", 53: "Austerity Battery Drain Budget Exceeded"}
 WAKE_SOURCE = {0: "Unknown", 1: "Power Button", 3: "S4 Doze to Hibernate", 5: "Device"}
 # Kernel-General 1 "Change Reason", as Windows renders it (Get-WinEvent on the
-# 2026-10 MSI logs: 93 x 1, 52 x 2).
+# test logs of 2026-10: 93 x 1, 52 x 2).
 CLOCK_REASON = {1: "an application or system component changed the time",
                 2: "synchronized with the hardware clock"}
 SESSION_TYPE = {0: "Screen on", 1: "Screen off", 3: "Sleep"}
@@ -539,9 +539,9 @@ def _clock_checks(host, rows):
     # the resume itself, not a change of the clock while running (every
     # Hibernate row on the test logs was wrongly made Unavailable by it).
     # The same holds for a low-power sleep (Power-Troubleshooter 1 target
-    # state 6, Modern Standby laptops): on the 2026-10 MSI logs every such
+    # state 6, Modern Standby laptops): on test logs of 2026-10 every such
     # wake was followed by a "synchronized with the hardware clock" change of
-    # the period's own length (+5h 41m 54s for a 5h 42m 03s sleep), which made
+    # about the period's own length, which made
     # 35 of them Unavailable.
     asleep = [(r["start"], r["end"]) for r in rows
               if r["layer"] == "Power"

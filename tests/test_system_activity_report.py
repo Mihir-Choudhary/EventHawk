@@ -37,7 +37,7 @@ def check(name, cond, detail=""):
 EVIL = '</script><img src=x onerror="alert(1)"><!--'
 
 
-def ev(rid, t, prov, eid, data, host="MSI", f="C:/case/System.evtx"):
+def ev(rid, t, prov, eid, data, host="PC1", f="C:/case/System.evtx"):
     return {"record_id": rid, "event_record_id": rid, "event_id": eid, "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             "channel": "System", "provider": prov, "computer": host, "level": 4, "level_name": "Information",
             "task": 100, "opcode": 0, "keywords": "0x8000000000000404", "user_id": "S-1-5-18",
@@ -52,16 +52,16 @@ def sample():
     e_hidden = ev(3, t0 + timedelta(hours=3), "Microsoft-Windows-Power-Troubleshooter", 1,
                   {"WakeSourceType": 1, "SleepTime": "x", "WakeTime": "y"})
     e_moment = ev(4, t0 + timedelta(minutes=5), "Microsoft-Windows-Kernel-Power", 105, {"AcOnline": True})
-    rows = [{"host": "MSI", "layer": "Power", "state": "On", "start": t0, "end": t0 + timedelta(hours=2),
+    rows = [{"host": "PC1", "layer": "Power", "state": "On", "start": t0, "end": t0 + timedelta(hours=2),
              "duration": timedelta(hours=2), "started_by": "Kernel-General 12", "ended_by": "Kernel-Power 42",
              "start_ev": e_start, "end_ev": e_sleep, "notes": EVIL},
-            {"host": "MSI", "layer": "Power", "state": "Sleep", "start": t0 + timedelta(hours=2),
+            {"host": "PC1", "layer": "Power", "state": "Sleep", "start": t0 + timedelta(hours=2),
              "end": t0 + timedelta(hours=3, microseconds=971314), "duration": timedelta(hours=1, microseconds=971314),
              "started_by": "Kernel-Power 42", "ended_by": "Power-Troubleshooter 1", "start_ev": e_sleep,
              "end_ev": e_hidden, "notes": ""}]
-    points = [{"host": "MSI", "time": t0 + timedelta(minutes=5), "what": "Power source changed", "details": "on AC power",
+    points = [{"host": "PC1", "time": t0 + timedelta(minutes=5), "what": "Power source changed", "details": "on AC power",
                "evidence": "Kernel-Power 105", "ev": e_moment}]
-    return {"hosts": ["MSI"], "rows": rows, "points": points}, [e_start, e_sleep, e_copy, e_moment]
+    return {"hosts": ["PC1"], "rows": rows, "points": points}, [e_start, e_sleep, e_copy, e_moment]
 
 
 def data_of(doc):
@@ -146,14 +146,14 @@ def main() -> int:
 
     print("\n=== F. clock corrections on waking (analysis) ===")
     from evtx_tool.analysis import system_activity as SA
-    s0 = datetime(2026, 10, 4, 19, 55, 23, 724875)
-    w0 = s0 + timedelta(hours=5, minutes=42, seconds=3, microseconds=299808)
+    s0 = datetime(2026, 1, 4, 20, 0, 0, 500000)
+    w0 = s0 + timedelta(hours=5, minutes=30, seconds=1, microseconds=250000)
     wake_ev = ev(10, w0 + timedelta(seconds=1), "Microsoft-Windows-Power-Troubleshooter", 1,
                  {"SleepTime": s0.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), "WakeTime": w0.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                   "TargetState": 6, "WakeSourceType": 0})
     # Windows catching up with the hardware clock just after the wake: the
-    # clock stood still in the low-power sleep (2026-10 MSI logs).
-    old = w0 - timedelta(hours=5, minutes=41, seconds=54)
+    # clock stood still in the low-power sleep.
+    old = w0 - timedelta(hours=5, minutes=29, seconds=52)
     sync = ev(11, w0 - timedelta(seconds=1), "Microsoft-Windows-Kernel-General", 1,
               {"OldTime": old.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), "NewTime": w0.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                "Reason": 2})
