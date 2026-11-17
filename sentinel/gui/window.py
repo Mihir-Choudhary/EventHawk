@@ -157,7 +157,7 @@ class SentinelWindow(QDialog):
         )
 
         self._results_tab.populate(scored_events)
-        self._metrics_tab.populate(scored_events, metrics)
+        self._metrics_tab.populate(scored_events, metrics, metrics.get("baseline_stability"))
 
         self._jump_results_btn.setVisible(True)
         self._tabs.setTabEnabled(2, True)

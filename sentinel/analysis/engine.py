@@ -123,6 +123,7 @@ def run_analysis(
     if not raw_events:
         _cb("Done", 1.0)
         return [], {"events_raw_total": 0, "events_scored": 0,
+                    "baseline_stability": meta.stability_score,   # Gemini 14-05
                     "tier1_suppressed": 0, "tier2_aggregate": 0,
                     "tier3_highlight": 0, "tier4_critical": 0,
                     "suppression_rate_pct": 0.0,
@@ -242,6 +243,9 @@ def run_analysis(
 
     metrics = _build_metrics(scored, len(raw_events), input_file_hashes, cfg)
     metrics["tier_boundaries"] = tier_bounds.as_dict()
+    # The stability of the baseline these scores rest on, for the Metrics tab
+    # (Gemini audit 14-05: the tab could show it but was never given it).
+    metrics["baseline_stability"] = meta.stability_score
     from sentinel.analysis.parser import last_failed_files
     metrics["failed_files"] = last_failed_files()      # reported by the caller (10-08)
     logger.info(
