@@ -104,7 +104,11 @@ def _vt_parse_response(data: dict) -> dict:
     # kind VirusTotal did not name gets no link rather than a wrong one.
     page      = {"file": "file", "ip_address": "ip-address", "domain": "domain",
                  "url": "url"}.get(data.get("data", {}).get("type", ""))
-    link      = f"https://www.virustotal.com/gui/{page}/{ioc_id}" if ioc_id and page else ""
+    # The id comes from the response: one encoded path segment, so "/", "?",
+    # "#" or ".." cannot move the link to another page (Gemini audit 13-02).
+    from urllib.parse import quote as _q
+    link      = (f"https://www.virustotal.com/gui/{page}/{_q(str(ioc_id), safe='')}"
+                 if ioc_id and page else "")
 
     return {
         "positives": positives,
