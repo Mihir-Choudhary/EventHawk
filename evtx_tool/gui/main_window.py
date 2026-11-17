@@ -1757,6 +1757,44 @@ def _is_pivot_tab_key(key: str) -> bool:
 # FileTabState.proxy slot expects an EventFilterProxyModel interface.
 # This shim satisfies all the proxy calls made by main_window.py.
 
+class _CallWorker(QThread):
+    """Run one function on a thread the window owns; deliver its result or its
+    error through queued signals (Gemini audit 12-04)."""
+
+    done   = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn, parent=None) -> None:
+        super().__init__(parent)
+        self._fn = fn
+        self.error = None
+
+    def run(self) -> None:
+        try:
+            self.done.emit(self._fn())
+        except Exception as exc:              # reported to the caller
+            self.error = exc
+            self.failed.emit(str(exc))
+
+    @classmethod
+    def run_waiting(cls, fn, parent=None):
+        """Run *fn* on a worker while a local event loop keeps the window alive;
+        return its result or raise its error."""
+        from PySide6.QtCore import QEventLoop
+        wk = cls(fn, parent=parent)
+        out: list = []
+        loop = QEventLoop()
+        wk.done.connect(lambda r: (out.append(r), loop.quit()))
+        wk.failed.connect(lambda _m: loop.quit())
+        wk.start()
+        loop.exec()          # queued signals: delivered only once the loop runs
+        wk.wait()
+        wk.deleteLater()
+        if wk.error is not None:
+            raise wk.error
+        return out[0] if out else []
+
+
 class _JMSessionFetchWorker(QThread):
     """Two-phase background worker for the JM session-filter DuckDB query.
 
@@ -1780,8 +1818,10 @@ class _JMSessionFetchWorker(QThread):
     query_failed = _Sig(str)      # error message
 
     def __init__(self, duckdb_mod, scan_sql: str, where_sql: str,
-                 params: list, row_limit: int) -> None:
-        super().__init__()
+                 params: list, row_limit: int, parent=None) -> None:
+        # A parent, so the window's close and its Parquet clean-up see this
+        # thread (Gemini audit 12-04).
+        super().__init__(parent)
         self._duckdb    = duckdb_mod
         self._scan_sql  = scan_sql
         self._where_sql = where_sql
@@ -1794,6 +1834,12 @@ class _JMSessionFetchWorker(QThread):
     def proceed(self, do_fetch: bool = True) -> None:
         """Call from the main thread after receiving count_ready."""
         self._do_fetch = do_fetch
+        self._proceed_event.set()
+
+    def request_stop(self) -> None:
+        """The window is closing: end the wait for proceed() now, fetch nothing
+        (it waited up to five minutes, holding the close)."""
+        self._do_fetch = False
         self._proceed_event.set()
 
     def run(self) -> None:
@@ -12643,7 +12689,7 @@ class MainWindow(QMainWindow):
         # Capture Arrow table reference on the main thread (immutable, thread-safe).
         arrow_table = self._hw_model._full_table
 
-        def _worker() -> None:
+        def _worker() -> dict:
             import logging as _log
             _logger = _log.getLogger(__name__)
             meta: dict = {}
@@ -12686,13 +12732,22 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
 
-            # Post result back to main thread — QTimer.singleShot is thread-safe.
-            QTimer.singleShot(0, lambda m=meta: self._on_jm_metadata_loaded(m))
+            return meta
 
-        threading.Thread(target=_worker, daemon=True, name="jm-metadata").start()
+        # A thread the window owns, delivering through a queued signal.  It was
+        # a plain daemon thread posting with QTimer.singleShot, which a thread
+        # without a Qt event loop cannot run: the result never arrived, and
+        # nothing tied it to the dataset it was computed for (Gemini audit 12-04).
+        wk = _CallWorker(_worker, parent=self)
+        wk.done.connect(lambda m, t=arrow_table: self._on_jm_metadata_loaded(m, t))
+        self._jm_meta_worker = wk
+        wk.start()
 
-    def _on_jm_metadata_loaded(self, meta: dict) -> None:
-        """Receive FilterDialog metadata loaded by the background worker thread."""
+    def _on_jm_metadata_loaded(self, meta: dict, table=None) -> None:
+        """Receive FilterDialog metadata loaded by the background worker thread.
+        A result for a dataset that is no longer loaded is ignored."""
+        if table is not None and (self._hw_model is None or self._hw_model._full_table is not table):
+            return
         self._metadata = meta
 
     def _query_jm_metadata_sync(self) -> dict:
@@ -16296,27 +16351,39 @@ class MainWindow(QMainWindow):
         # Query only the 4 logon-related event types (fast — column-pruned Parquet scan).
         # source_file is selected so we can build composite (source_file, record_id) keys
         # that are unique across multi-file loads (record_id alone is not unique per file).
-        try:
+        # The starts too (Security 4608, Kernel-General 12), with channel and
+        # provider: a logon ID is unique only within a boot, and the
+        # builder's boot boundary needs them (Codex C3-1: Juggernaut
+        # sessions ran across reboots).
+        _logon_sql = (
+            f"SELECT source_file, record_id, event_id, computer, timestamp_utc, event_data_json, "
+            f"       channel, provider "
+            f"FROM parquet_scan({shard_list}) "
+            f"WHERE event_id IN (4624, 4634, 4647, 4672, 4688) "
+            f"   OR (event_id = 4608 AND lower(channel) = 'security') "
+            f"   OR (event_id = 12 AND provider = 'Microsoft-Windows-Kernel-General') "
+            f"ORDER BY timestamp_utc"
+        )
+
+        def _fetch_logon_rows():
             _con = _duckdb.connect()
-            # The starts too (Security 4608, Kernel-General 12), with channel and
-            # provider: a logon ID is unique only within a boot, and the
-            # builder's boot boundary needs them (Codex C3-1: Juggernaut
-            # sessions ran across reboots).
-            _rows = _con.execute(
-                f"SELECT source_file, record_id, event_id, computer, timestamp_utc, event_data_json, "
-                f"       channel, provider "
-                f"FROM parquet_scan({shard_list}) "
-                f"WHERE event_id IN (4624, 4634, 4647, 4672, 4688) "
-                f"   OR (event_id = 4608 AND lower(channel) = 'security') "
-                f"   OR (event_id = 12 AND provider = 'Microsoft-Windows-Kernel-General') "
-                f"ORDER BY timestamp_utc"
-            ).fetchall()
-            _con.close()
+            try:
+                return _con.execute(_logon_sql).fetchall()
+            finally:
+                _con.close()
+        try:
+            # Off the window's thread, which stays responsive meanwhile: every
+            # 4688 of the dataset can be millions of rows (Gemini audit 12-04).
+            _rows = _CallWorker.run_waiting(_fetch_logon_rows, parent=self)
         except Exception as exc:
             if busy:
                 busy.dismiss()
             QMessageBox.warning(self, "Logon Sessions",
                                 f"Failed to query Parquet shards:\n{exc}")
+            return
+        if getattr(self, "_close_stop_requested", False):
+            if busy:                                 # the window closed meanwhile
+                busy.dismiss()
             return
 
         if not any(r[2] in (4624, 4634, 4647, 4672, 4688) for r in _rows):
@@ -16469,6 +16536,7 @@ class MainWindow(QMainWindow):
 
             _worker = _JMSessionFetchWorker(
                 _duckdb, _scan_sql, _where_sql, _params, _JM_SESSION_ROW_LIMIT,
+                parent=self,
             )
 
             _progress = _QPD("Counting session events\u2026", "", 0, 0, self)
