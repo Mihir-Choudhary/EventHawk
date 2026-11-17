@@ -2,7 +2,7 @@
 
 The same rule as every EventHawk CSV (user decision 2026-11-06, see
 evtx_tool.output.exporters.csv_cell): a text cell starting with = + - @ TAB
-or CR gets one leading apostrophe; plain numbers and the lone "-" are
+or CR, or with = + - @ after blank characters (ruling R37, 2026-11-17), gets one leading apostrophe; plain numbers and the lone "-" are
 untouched.  Sentinel is a standalone package and imported that writer from
 evtx_tool, so its CSV report failed outside the EventHawk tree (Gemini audit
 10-12).  test_sentinel_csv_standalone checks the two stay the same.
@@ -17,10 +17,19 @@ _FORMULA_FIRST = frozenset("=+-@\t\r")
 
 
 def csv_cell(value):
-    if (isinstance(value, str) and value and value[0] in _FORMULA_FIRST
-            and value != "-" and not _PLAIN_NUMBER.fullmatch(value)):
-        return "'" + value
-    return value
+    if not isinstance(value, str) or not value:
+        return value
+    if value[0] in _FORMULA_FIRST:
+        risky = value
+    else:
+        # Ruling R37 (2026-11-17, Gemini 6-12): blank characters (str.isspace)
+        # before = + - @ do not make a formula safe.
+        risky = value.lstrip().rstrip()
+        if not risky or risky[0] not in "=+-@":
+            return value
+    if risky == "-" or _PLAIN_NUMBER.fullmatch(risky):
+        return value
+    return "'" + value
 
 
 class SafeDictWriter(csv.DictWriter):

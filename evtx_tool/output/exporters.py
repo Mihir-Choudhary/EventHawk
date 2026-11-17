@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # ── Formula-safe CSV / XLSX (user, 2026-11-06) ───────────────────────────────
 # Event values are attacker-controlled.  A CSV cell starting with = + - @ TAB
-# or CR is run as a formula by Excel / LibreOffice when the file is opened
+# or CR, or with = + - @ after blank characters (ruling R37), is run as a formula by Excel / LibreOffice when the file is opened
 # (=HYPERLINK, DDE calls).  Such a cell gets ONE leading apostrophe, the
 # standard text marker: the spreadsheet shows the value as text, and the
 # original is the cell without that first apostrophe.  Plain numbers ("-1",
@@ -48,10 +48,19 @@ _FORMULA_FIRST = frozenset("=+-@\t\r")
 
 def csv_cell(value):
     """*value*, made safe to open in a spreadsheet (see above)."""
-    if (isinstance(value, str) and value and value[0] in _FORMULA_FIRST
-            and value != "-" and not _PLAIN_NUMBER.fullmatch(value)):
-        return "'" + value
-    return value
+    if not isinstance(value, str) or not value:
+        return value
+    if value[0] in _FORMULA_FIRST:
+        risky = value
+    else:
+        # Ruling R37 (2026-11-17, Gemini 6-12): blank characters (str.isspace)
+        # before = + - @ do not make a formula safe.
+        risky = value.lstrip().rstrip()
+        if not risky or risky[0] not in "=+-@":
+            return value
+    if risky == "-" or _PLAIN_NUMBER.fullmatch(risky):
+        return value
+    return "'" + value
 
 
 class _SafeCsvWriter:

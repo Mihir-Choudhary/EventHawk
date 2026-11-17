@@ -34,7 +34,7 @@ CSV is tabular; JSON retains structured event data. XML reconstructs an event re
 
 ### Formula-safe spreadsheets
 
-CSV text starting with `=`, `+`, `-`, `@`, TAB or CR receives one leading apostrophe. Plain numeric values and the lone `-` remain unchanged. CSV cell text can intentionally differ from the raw value. PowerShell XLSX likewise writes text as text, not formulas.
+CSV text starting with `=`, `+`, `-`, `@`, TAB or CR, or with `=`, `+`, `-` or `@` after spaces, tabs or line breaks, receives one leading apostrophe. Plain numeric values (also with spaces around them) and the lone `-` remain unchanged. CSV cell text can intentionally differ from the raw value. PowerShell XLSX likewise writes text as text, not formulas.
 
 ### HTML and PDF
 
