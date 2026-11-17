@@ -134,6 +134,8 @@ h2{font-size:20px;letter-spacing:-.015em;margin:0 0 4px;font-weight:640}
 .cal-g .wd{font-size:10.5px;color:var(--text-3);text-align:center;line-height:14px}
 .cal-g button{all:unset;width:24px;height:24px;border-radius:4px;background:var(--heat-0);cursor:pointer;box-sizing:border-box}
 .cal-g button.nd{background:transparent;box-shadow:inset 0 0 0 1px var(--line);cursor:default}
+/* a day with time of unproven length: hatched, never shaded as on-time (PR19-1) */
+.cal-g button.unk{background-image:repeating-linear-gradient(45deg,transparent 0 3px,var(--line) 3px 5px)}
 .cal-g button:hover{box-shadow:inset 0 0 0 2px var(--text)}
 .cal-g button.in{box-shadow:0 0 0 2px var(--accent)}
 .cal-g button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
@@ -541,6 +543,10 @@ let PA = FA, PB = FB;
 const isFull = () => R.a <= FA && R.b >= FB;
 const isPower = () => R.a === PA && R.b === PB;
 const inR = t => t != null && t >= R.a && t < R.b;
+// A raw event without a usable time belongs to no range: listed with the full
+// range, and counted aloud when a narrower range leaves it out (Codex PR19-4:
+// it was in the data but could never be shown).
+const eIn = t => t == null ? isFull() : inR(t);
 function pIn(p){
   if (p[3] != null && p[4] != null) return p[3] < R.b && p[4] > R.a;
   const t = p[3] != null ? p[3] : p[4];
@@ -566,12 +572,16 @@ const actOk = p => actOn.has(base(p[2]));
 let AGG = new Map();
 function buildAgg(){
   AGG = new Map();
-  const g = d => { let o = AGG.get(d); if (!o) { o = {on: 0, sleep: 0, off: 0, scr: 0, ev: 0}; AGG.set(d, o); } return o; };
+  const g = d => { let o = AGG.get(d); if (!o) { o = {on: 0, sleep: 0, off: 0, scr: 0, ev: 0, unk: 0}; AGG.set(d, o); } return o; };
   for (const p of P){
     if (!hostOk(p[0]) || p[3] == null || p[4] == null) continue;
     const k = kindOf(p); if (!k) continue;
     let s = p[3]; const e = p[4];
-    while (s < e){ const d = Math.floor(s / DAY), nx = Math.min(e, (d + 1) * DAY); g(d)[k] += nx - s; s = nx; }
+    // A period whose length is not proven (Unavailable) is not on / asleep /
+    // off time: its clock span is counted apart, never as measured time
+    // (Codex PR19-1: the calendar said "On 4 h" for an Unavailable period).
+    const kk = p[5] == null ? "unk" : k;
+    while (s < e){ const d = Math.floor(s / DAY), nx = Math.min(e, (d + 1) * DAY); g(d)[kk] += nx - s; s = nx; }
   }
   for (const e of E) if (hostOk(e[2]) && e[0] != null && e[7] < 0) g(Math.floor(e[0] / DAY)).ev++;
   let lo = Infinity, hi = -Infinity;
@@ -583,12 +593,16 @@ function buildAgg(){
   else { PA = Math.max(FA, Math.floor(lo / DAY) * DAY); PB = Math.min(FB, (Math.floor((hi - 1) / DAY) + 1) * DAY); }
 }
 const powerDay = o => o && (o.on + o.sleep + o.off) > 0;
+const unkDay = o => o && o.unk > 0;
 const lvl = on => { const hrs = on / HOUR; return hrs <= 0 ? 0 : hrs <= 2 ? 1 : hrs <= 4 ? 2 : hrs <= 8 ? 3 : hrs <= 12 ? 4 : 5; };
 function dayTip(d){
   const o = AGG.get(d), t = d * DAY, dt = new Date(t / 1000);
   let s = `<b>${WEEK[dt.getUTCDay()]} ${niceDay(t)}</b>`;
   if (!o) return s + "<br>No records";
-  s += `<br>On <b>${fmtTotal(o.on)}</b>`;
+  // "On 0 s" only when the day has measured power time: with nothing but
+  // unproven time it would read as a measured zero.
+  if (powerDay(o) || !o.unk) s += `<br>On <b>${fmtTotal(o.on)}</b>`;
+  if (o.unk) s += `<br>Length unavailable for ${fmtTotal(o.unk)} of clock time (not counted)`;
   if (o.sleep) s += ` · asleep ${fmtTotal(o.sleep)}`;
   if (o.off) s += ` · shut down ${fmtTotal(o.off)}`;
   if (o.scr) s += `<br>Screen on ${fmtTotal(o.scr)}`;
@@ -731,8 +745,10 @@ function calRender(){
     for (let k = 1; k <= n; k++){
       const t = Date.UTC(y, mo, k) * 1000, d = t / DAY, o = AGG.get(d);
       if (t < FA || t >= FB){ g += "<span></span>"; continue; }
-      const pw = powerDay(o);
-      g += `<button type="button" data-d="${d}" class="${pw ? "l" + lvl(o.on) : "nd"}" aria-label="${niceDay(t)}${pw ? ", on " + fmtTotal(o.on) : o ? ", boot records only" : ", no records"}"></button>`;
+      const pw = powerDay(o), uk = unkDay(o);
+      const lab = (pw ? ", on " + fmtTotal(o.on) : uk ? "" : o ? ", boot records only" : ", no records")
+                + (uk ? ", length unavailable for " + fmtTotal(o.unk) : "");
+      g += `<button type="button" data-d="${d}" class="${pw ? "l" + lvl(o.on) : "nd"}${uk ? " unk" : ""}" aria-label="${niceDay(t)}${lab}"></button>`;
     }
     html += `<div class="cal-m"><div class="cal-t">${MON[mo]} ${y}</div><div class="cal-g">${g}</div></div>`;
     dt = new Date(Date.UTC(y, mo + 1, 1));
@@ -763,12 +779,18 @@ function heatRender(){
     for (let hh = 0; hh < 24; hh++){ const s = d * DAY + hh * HOUR, ov = Math.min(R.b, s + HOUR) - Math.max(R.a, s); if (ov > 0) slots[wd * 24 + hh] += ov; }
   }
   for (const p of P){
-    if (!hostOk(p[0]) || p[1] !== "Power" || base(p[2]) !== "On" || p[3] == null || p[4] == null) continue;
+    if (!hostOk(p[0]) || p[1] !== "Power" || p[3] == null || p[4] == null) continue;
+    // On time counts only when its length is proven; an unproven span is
+    // left out of both the on-time and the time measured (PR19-1).
+    const unproven = p[5] == null;
+    if (!unproven && base(p[2]) !== "On") continue;
     let s = Math.max(p[3], R.a); const e = Math.min(p[4], R.b);
     while (s < e){
       const hs = Math.floor(s / HOUR) * HOUR, nx = Math.min(e, hs + HOUR);
       const wd = (new Date(hs / 1000).getUTCDay() + 6) % 7, hh = (hs / HOUR) % 24;
-      on[wd * 24 + hh] += nx - s; s = nx;
+      if (!unproven) on[wd * 24 + hh] += nx - s;
+      else if (powerDay(AGG.get(Math.floor(hs / DAY)))) slots[wd * 24 + hh] = Math.max(0, slots[wd * 24 + hh] - (nx - s));
+      s = nx;
     }
   }
   let mx = 0; for (let k = 0; k < 168; k++) if (slots[k]) mx = Math.max(mx, on[k] / slots[k]);
@@ -1252,9 +1274,14 @@ const eventsT = new VTable({
     {label: "Event record ID", w: "112px", cls: "m r", r: true, get: i => E[i][6], sort: i => +E[i][6] || 0},
     {label: "Log", w: "minmax(100px,.6fr)", cls: "dim", get: i => shortFile(D.files[E[i][5]]), tip: i => D.files[E[i][5]], sort: i => shortFile(D.files[E[i][5]])}],
   rowCls: i => E[i][7] >= 0 ? " dup" : "",
-  filter(){ const out = [], ts = tE; for (let i = 0; i < E.length; i++){ const e = E[i]; if (hostOk(e[2]) && inR(e[0]) && (showDups || e[7] < 0) && (!eKind || e[3] === eKind) && (!ts || matchAll(eHay(i), ts))) out.push(i); } return out; },
+  filter(){ const out = [], ts = tE; for (let i = 0; i < E.length; i++){ const e = E[i]; if (hostOk(e[2]) && eIn(e[0]) && (showDups || e[7] < 0) && (!eKind || e[3] === eKind) && (!ts || matchAll(eHay(i), ts))) out.push(i); } return out; },
   terms: () => tE,
-  count(n){ let tot = 0; for (const e of E) if (hostOk(e[2]) && inR(e[0]) && (showDups || e[7] < 0)) tot++; $("c-events").innerHTML = countTxt(n, tot, "events"); },
+  count(n){
+    let tot = 0, und = 0;
+    for (const e of E) if (hostOk(e[2]) && (showDups || e[7] < 0)) { if (eIn(e[0])) tot++; else if (e[0] == null) und++; }
+    $("c-events").innerHTML = countTxt(n, tot, "events")
+      + (und ? ` · ${fmtN(und)} without a date (listed with the full range)` : "");
+  },
   emptyText: () => "No events match. The search looks in every field value.",
   clear(keepRange){ qE.value = ""; tE = null; eKind = ""; $("e-kind").value = ""; eventsT.refilter(); if (!keepRange && !isFull()) setRange(FA, FB); },
   open: i => inspect("e", i, true)
@@ -1394,7 +1421,7 @@ function refreshRange(){
   let np = 0, nm = 0, ne = 0;
   for (const p of P) if (hostOk(p[0]) && pIn(p)) np++;
   for (const m of M) if (hostOk(m[0]) && inR(m[1])) nm++;
-  for (const e of E) if (hostOk(e[2]) && inR(e[0]) && e[7] < 0) ne++;
+  for (const e of E) if (hostOk(e[2]) && eIn(e[0]) && e[7] < 0) ne++;
   $("n-periods").textContent = fmtN(np); $("n-moments").textContent = fmtN(nm); $("n-events").textContent = fmtN(ne);
   (window.__ehPerf = window.__ehPerf || {}).range = performance.now() - t0;
 }
