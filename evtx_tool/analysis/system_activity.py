@@ -486,18 +486,44 @@ _CLOCK_MIN = timedelta(seconds=60)        # smaller changes are routine time syn
 
 
 def _clock_changes(host):
+    """(time, change, label, new time, Kernel-General 1 Reason or None)."""
     out = []
     for t, e in host.events:
         d = _data(e)
         if _prov(e) == KG and _int(e.get("event_id")) == 1:
             a, b = _dt(d.get("OldTime")), _dt(d.get("NewTime"))
+            reason = _int(d.get("Reason"))
         elif str(e.get("channel") or "").lower() == "security" and _int(e.get("event_id")) == 4616:
             a, b = _dt(d.get("PreviousTime")), _dt(d.get("NewTime"))
+            reason = None
         else:
             continue
         if a is not None and b is not None and abs(b - a) >= _CLOCK_MIN:
-            out.append((t, b - a, _label(e)))
+            out.append((t, b - a, _label(e), b, reason))
     return out
+
+
+def wake_correction(t, change, new_time, reason, sleeps) -> bool:
+    """Is this clock change Windows catching up on waking from one of *sleeps*
+    ((start, end) of each sleep, hibernation or low-power period)?
+
+    Only when all three hold (Codex PR19-2: every change inside such a period
+    was excused, an application's change in the middle of it too):
+    - it is not an application's change (Kernel-General 1 Reason 1);
+    - the new time lands on the wake (within the slack): the clock is set to
+      the moment the computer woke;
+    - the jump is forward and no longer than the period (plus the slack).
+    On the real test logs all 65 changes Windows made on waking fit this and
+    the one application change inside a hibernation did not."""
+    if reason == 1 or t is None or new_time is None:
+        return False
+    for s, en in sleeps:
+        if s is None or en is None:
+            continue
+        if (s <= t <= en + _CLOCK_SLACK and abs(new_time - en) <= _CLOCK_SLACK
+                and timedelta(0) <= change <= (en - s) + _CLOCK_SLACK):
+            return True
+    return False
 
 
 def _uptime(e):
@@ -517,11 +543,11 @@ def _clock_checks(host, rows):
     # wake was followed by a "synchronized with the hardware clock" change of
     # the period's own length (+5h 41m 54s for a 5h 42m 03s sleep), which made
     # 35 of them Unavailable.
-    asleep = [(r["start"], r["end"] + _CLOCK_SLACK) for r in rows
+    asleep = [(r["start"], r["end"]) for r in rows
               if r["layer"] == "Power"
               and (r["state"] in ("Sleep", "Hibernate", "Sleep or hibernate") or r["state"].startswith("Low power"))
               and r["start"] is not None and r["end"] is not None]
-    changes = [c for c in _clock_changes(host) if not any(a <= c[0] <= b for a, b in asleep)]
+    changes = [c for c in _clock_changes(host) if not wake_correction(c[0], c[1], c[3], c[4], asleep)]
     ups =[(t, _uptime(e), e) for t, e in host.events if _prov(e) == "eventlog" and _int(e.get("event_id")) == 6013]
     for r in rows:
         if r["duration"] is None:

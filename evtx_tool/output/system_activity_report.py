@@ -256,9 +256,9 @@ def build_payload(result: dict, events=None, digits: int = 0, generated: datetim
                         fmt_time(p.get("time"), 6)])
 
     # Clock changes of a minute or more: [time, change (us), reason, event,
-    # computer, made on waking].  A change at a wake (inside a sleep or within
-    # the analysis's slack after it) is Windows catching up with the hardware
-    # clock; one made while running moves every later timestamp.
+    # computer, made on waking].  "Made on waking" is Windows catching up with
+    # the hardware clock (system_activity.wake_correction); any other change
+    # moves every later timestamp.
     sleeps = [(r[0], r[3], r[4]) for r in periods
               if r[1] == "Power" and r[3] is not None and r[4] is not None
               and _base_state(r[2]) in ("Sleep", "Hibernate", "Sleep or hibernate", "Low power")]
@@ -279,7 +279,12 @@ def build_payload(result: dict, events=None, digits: int = 0, generated: datetim
         if abs(delta) < 60_000_000:
             continue
         tu, h = _us(t), out_events[idx][2]
-        wake = any(hh == h and s <= tu <= en + slack for hh, s, en in sleeps)
+        # The analysis's own rule (PR19-2): only Windows' wake correction is
+        # "made on waking", not any change that falls inside a sleep.
+        wake = _sa.wake_correction(
+            t, b - a, b, _int(d.get("Reason")) if _prov(e) == _sa.KG else None,
+            [(_EPOCH + timedelta(microseconds=s), _EPOCH + timedelta(microseconds=en))
+             for hh, s, en in sleeps if hh == h])
         if _prov(e) == _sa.KG:
             n = _int(d.get("Reason"))
             reason = (_sa.CLOCK_REASON.get(n, f"reason {d.get('Reason')}")
