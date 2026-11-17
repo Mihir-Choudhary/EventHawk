@@ -168,6 +168,11 @@ class _FilterThread(QThread):
     """
 
     done = Signal(object, int)   # (pa.Table, generation)
+    # The rows every filter EXCEPT the quick filters leaves, when the text
+    # search or field conditions are on (they need the Parquet shards, so a
+    # column popup cannot add them as SQL): the popups count over these.
+    # None when the in-memory SQL is the whole filter (Gemini 5-03, PR19-5).
+    popup_base = Signal(object, int)   # (pa.Table | None, generation)
     # A filter that could not be run: the view falls back to showing more
     # (never fewer) events, and the user must be told (Codex audit-5 E5-05).
     failed = Signal(str)
@@ -532,7 +537,7 @@ class _FilterThread(QThread):
             if item is None:
                 break                     # shutdown sentinel
             (gen, where_sql, params, conditions_cfg,
-             text_search_cfg, sort_col, sort_asc) = item
+             text_search_cfg, sort_col, sort_asc, noquick) = item
 
             # Drain queue — only the latest request matters.
             while not self._q.empty():
@@ -541,7 +546,7 @@ class _FilterThread(QThread):
                     con.close()
                     return
                 (gen, where_sql, params, conditions_cfg,
-                 text_search_cfg, sort_col, sort_asc) = item
+                 text_search_cfg, sort_col, sort_asc, noquick) = item
 
             # A custom column swaps in a new table (ArrowTableModel._set_table);
             # queries must see it, not the one registered at start.
@@ -605,6 +610,23 @@ class _FilterThread(QThread):
                     # Two-phase: metadata via Arrow + conditions via Parquet.
                     result = self._apply_with_conditions(con, where_sql, params, conditions_cfg)
                     sorted_in_sql = False
+                # The column popups' rows (see popup_base).  Computed before
+                # the result is announced, so a popup opened when the filter
+                # settles already has them.
+                base = None
+                if has_conditions or has_full_text:
+                    nq_sql, nq_params = noquick or (where_sql, params)
+                    if (nq_sql, list(nq_params)) == (where_sql, list(params)):
+                        base = result
+                    elif has_full_text:
+                        base = self._apply_with_full_text_search(
+                            con, nq_sql, list(nq_params), conditions_cfg, text_search_cfg)
+                    else:
+                        base = self._apply_with_conditions(con, nq_sql, list(nq_params), conditions_cfg)
+                try:
+                    self.popup_base.emit(base, gen)
+                except RuntimeError:
+                    pass
             except Exception as exc:
                 # NOTE: this fallback shows the FULL table (fail-open).  That is
                 # a forensic-integrity hazard — a filtered view silently showing
@@ -619,6 +641,10 @@ class _FilterThread(QThread):
                 self.failed.emit(f"The filter could not be applied: {exc}")
                 result = self._full_table   # on error, show all rows (see note)
                 sorted_in_sql = False
+                try:
+                    self.popup_base.emit(None, gen)   # popups: the in-memory filter only
+                except RuntimeError:
+                    pass
 
             if not sorted_in_sql:
                 result = self._order_result(con, result, sort_col, sort_asc)
@@ -634,9 +660,12 @@ class _FilterThread(QThread):
 
     def request(self, gen: int, where_sql: str, params: list,
                 conditions_cfg: dict = None, text_search_cfg: dict = None,
-                sort_col: str = "timestamp_utc", sort_asc: bool = True) -> None:
+                sort_col: str = "timestamp_utc", sort_asc: bool = True,
+                noquick: "tuple | None" = None) -> None:
+        """*noquick*: (where_sql, params) of every layer except the quick
+        filters, for the column popups' rows (see popup_base)."""
         self._q.put((gen, where_sql, params, conditions_cfg or {},
-                     text_search_cfg or {}, sort_col, sort_asc))
+                     text_search_cfg or {}, sort_col, sort_asc, noquick))
 
     def stop(self) -> None:
         self._q.put(None)
@@ -749,6 +778,7 @@ class ArrowTableModel(QAbstractTableModel):
         # ── Start filter thread and dispatch initial sort ───────────────────
         self._filter_thread = _FilterThread(full_table, parquet_dir=self._parquet_dir, parent=self)
         self._filter_thread.done.connect(self._on_filter_done)
+        self._filter_thread.popup_base.connect(self._on_popup_base)
         self._filter_thread.failed.connect(self.filter_failed)
         self._filter_thread.start()
 
@@ -979,12 +1009,50 @@ class ArrowTableModel(QAbstractTableModel):
         self._generation += 1
         self._cache_dict  = {}
         self._cache_start = self._cache_end = 0
+        # Until this request's popup rows arrive the old ones are wrong.
+        self._popup_base = None
+        self._popup_base_gen = -1
         self._filter_thread.request(
             self._generation, where_sql, list(params),
             self._conditions_cfg,
             _text_legs,
             self._sort_col, self._sort_asc,
+            noquick=self._combined_where_noquick(),
         )
+
+    @Slot(object, int)
+    def _on_popup_base(self, table, generation: int) -> None:
+        if generation != self._generation:
+            return
+        self._popup_base = table
+        self._popup_base_gen = generation
+
+    def popup_rows_pending(self) -> bool:
+        """True while the column popups' rows for the current filter are not
+        known yet (the filter is still running)."""
+        return getattr(self, "_popup_base_gen", -1) != self._generation
+
+    def popup_table(self) -> "pa.Table":
+        """The rows the column popups count over: every filter except the
+        quick filters when the text search or field conditions are on, else
+        the whole table (the cascade SQL then does the filtering)."""
+        base = getattr(self, "_popup_base", None)
+        return base if base is not None else self._full_table
+
+    def popup_uses_base(self) -> bool:
+        return getattr(self, "_popup_base", None) is not None
+
+    def _combined_where_noquick(self) -> "tuple[str, list]":
+        parts = [(self._fixed_where_sql, self._fixed_params), (self._base_where_sql, self._base_params),
+                 (self._text_where_sql, self._text_params), (self._record_id_where_sql, self._record_id_params)]
+        active = [(sql, p) for sql, p in parts if sql and sql != "1=1"]
+        if not active:
+            return "1=1", []
+        sql = " AND ".join(f"({s})" for s, _ in active)
+        params: list = []
+        for _, p in active:
+            params.extend(p)
+        return sql, params
 
     @Slot(object, int)
     def _on_filter_done(self, filtered_table: "pa.Table", generation: int) -> None:
@@ -1137,10 +1205,15 @@ class ArrowTableModel(QAbstractTableModel):
         already-filtered ``_display_table`` to ColValueWorker instead of
         ``_full_table``, which is a separate architectural change.
         """
+        if self.popup_uses_base():
+            # popup_table() already holds exactly these rows (and the text
+            # search and field conditions, which SQL here cannot add).
+            return "", []
         parts:  list[str] = []
         params: list      = []
         for sql, p in (
             (self._base_where_sql,      self._base_params),
+            (self._text_where_sql,      self._text_params),
             (self._record_id_where_sql, self._record_id_params),
         ):
             if sql and sql != "1=1":

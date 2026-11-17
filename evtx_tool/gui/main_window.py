@@ -13304,7 +13304,9 @@ class MainWindow(QMainWindow):
         # "source_file = '__around__…'", i.e. an always-empty popup.
         _jm_src = self._jm_col_model() or self._hw_model
         _fixed = getattr(_jm_src, "_fixed_where_sql", "1=1")
-        if _jm_src is not self._hw_model and _fixed and _fixed != "1=1":
+        if _jm_src.popup_uses_base():
+            where_sql, where_params = None, None     # popup_table() is already the tab's rows
+        elif _jm_src is not self._hw_model and _fixed and _fixed != "1=1":
             where_sql, where_params = _fixed, list(_jm_src._fixed_params)
         else:
             where_sql, where_params = None, None
@@ -13337,7 +13339,9 @@ class MainWindow(QMainWindow):
         Not always the full table: an around tab made from a filtered snapshot
         holds only that snapshot."""
         _m = self._jm_col_model() or self._hw_model
-        return _m._full_table if _m is not None else None
+        # With a text search or field conditions on: the rows they leave
+        # (Gemini 5-03, Codex PR19-5: the popup counted every event).
+        return _m.popup_table() if _m is not None else None
 
     @staticmethod
     def _thread_running(w) -> bool:
@@ -13445,6 +13449,21 @@ class MainWindow(QMainWindow):
         # Prewarmed by _start_col_prewarm when the last filter settled: show it
         # straight away instead of making the analyst wait for a query they
         # have already paid for.
+        _m = self._jm_col_model() or self._hw_model
+        if _m.popup_rows_pending():
+            # The filter is still running: its rows (and so the counts) are
+            # not known yet.  Ask again shortly rather than count the wrong rows.
+            tries = getattr(self, "_col_popup_wait", 0)
+            if tries < 600:                                    # ~2 minutes
+                self._col_popup_wait = tries + 1
+                if tries == 0:
+                    self._set_status("Column values: waiting for the filter to finish…")
+                QTimer.singleShot(200, lambda i=logical_index, k=col_key: self._start_col_value_worker(i, k))
+            else:
+                self._col_popup_wait = 0
+                self._set_status("Column values unavailable: the filter did not finish.")
+            return
+        self._col_popup_wait = 0
         _ck = self._col_cache_key(col_key)
         _cache = self._col_cache()
         if _ck is not None and _ck in _cache:
@@ -20315,6 +20334,7 @@ class MainWindow(QMainWindow):
         if not self._persist_layout_enabled():
             return False
         st = QSettings("EventHawk", "GUI")
+
         geo = st.value("main_geometry")
         ok = bool(geo) and self.restoreGeometry(geo)
         split = st.value("main_right_split")
