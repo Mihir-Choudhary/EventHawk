@@ -14276,6 +14276,7 @@ class MainWindow(QMainWindow):
         max_threads = self._cmb_threads.currentData()  # None = Auto
 
         from evtx_tool.core.filters import empty_filter
+        _prev_worker = self._worker
         self._worker = ParseWorker(
             files         = files,
             # Everything is parsed; ticked profiles filter the view after
@@ -14285,7 +14286,15 @@ class MainWindow(QMainWindow):
             do_ioc        = self._chk_ioc.isChecked(),
             do_correlate  = self._chk_correlate.isChecked(),
             max_workers   = max_threads,
+            # Owned by the window, so its thread checks (Exit, Parquet
+            # clean-up) see it (Gemini audit 12-01).
+            parent        = self,
         )
+        # The previous, finished worker would otherwise stay a child of the
+        # window, holding its parse engine.  Released by liveness: these
+        # workers replace QThread.finished with their own signal.
+        if _prev_worker is not None and not _prev_worker.isRunning():
+            _prev_worker.deleteLater()
         self._worker.progress.connect(self._on_parse_progress)
         self._worker.finished.connect(self._on_parse_finished)
         self._worker.error.connect(self._on_parse_error)
