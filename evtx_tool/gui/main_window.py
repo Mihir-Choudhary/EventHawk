@@ -44,7 +44,7 @@ from evtx_tool.output.exporters import event_data_text as _event_data_text  # no
 
 from PySide6.QtCore import (
     QEvent, QModelIndex, QObject, QPoint, QSortFilterProxyModel, Qt, QThread, QTimer, Signal, Slot,
-    QPropertyAnimation, QEasingCurve, QSettings, QFileSystemWatcher,
+    QPropertyAnimation, QEasingCurve, QSettings, QFileSystemWatcher, QByteArray,
 )
 from PySide6.QtGui import (
     QAction, QColor, QFont, QKeySequence, QIcon, QPainter, QPixmap, QShortcut,
@@ -20335,15 +20335,28 @@ class MainWindow(QMainWindow):
             return False
         st = QSettings("EventHawk", "GUI")
 
-        geo = st.value("main_geometry")
-        ok = bool(geo) and self.restoreGeometry(geo)
-        split = st.value("main_right_split")
+        def _saved(key):
+            # Only what Qt itself saved (bytes).  A value of another type (a
+            # hand-edited registry entry, another version) raised TypeError
+            # out of the constructor: EventHawk could not start until the
+            # setting was removed by hand (Codex PR19-3).  It is ignored and
+            # the default layout is used.
+            v = st.value(key)
+            if isinstance(v, (QByteArray, bytes, bytearray)) and len(v):
+                return QByteArray(v) if not isinstance(v, QByteArray) else v
+            if v not in (None, ""):
+                logger.warning("saved layout %s is not a Qt layout (%s); default layout used",
+                               key, type(v).__name__)
+            return None
+        geo = _saved("main_geometry")
+        ok = geo is not None and bool(self.restoreGeometry(geo))
+        split = _saved("main_right_split")
         rs = getattr(self, "_right_splitter", None)
-        if split and rs is not None:
+        if split is not None and rs is not None:
             self._right_split_restored = bool(rs.restoreState(split))
-        bsplit = st.value("main_bottom_split")
+        bsplit = _saved("main_bottom_split")
         bs = getattr(self, "_bottom_split", None)
-        if bsplit and bs is not None:
+        if bsplit is not None and bs is not None:
             bs.restoreState(bsplit)
         return ok
 
