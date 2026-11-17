@@ -156,14 +156,57 @@ class SemanticNormalizer:
         try:
             with open(user_file, encoding="utf-8") as fh:
                 override = _yaml.safe_load(fh) or {}
-            for category, table in override.items():
-                if isinstance(table, dict):
-                    merged = dict(self._maps.get(category, {}))
-                    merged.update({k.lower(): v for k, v in table.items()})
-                    self._maps[category] = merged
-            logger.debug("SemanticNormalizer: merged user override from %s", user_file)
         except Exception as exc:
             logger.warning("SemanticNormalizer: could not load user override — %s", exc)
+            return
+        if not isinstance(override, dict):
+            logger.warning("SemanticNormalizer: %s is not a mapping of categories; ignored", user_file)
+            return
+        for category, table in override.items():
+            if not isinstance(table, dict):
+                logger.warning("SemanticNormalizer: %s: category %r is not a mapping; skipped", user_file, category)
+                continue
+            category = str(category)
+            merged = dict(self._maps.get(category, {}))
+            for k, v in table.items():
+                keys = self._override_keys(merged, k)
+                if not keys or v is None or isinstance(v, (dict, list)):
+                    # One unusable entry is skipped alone, never the whole file
+                    # (Gemini audit 13-05).
+                    logger.warning("SemanticNormalizer: %s: entry %r: %r in %s skipped", user_file, k, v, category)
+                    continue
+                for key in keys:
+                    merged[key] = str(v)
+            self._maps[category] = merged
+        logger.debug("SemanticNormalizer: merged user override from %s", user_file)
+
+    @staticmethod
+    def _override_keys(table: dict, k) -> "list[str]":
+        """The lookup keys for a user entry *k*.
+
+        YAML reads an unquoted 3 or 0xC000006D as an integer (Gemini audit
+        13-05).  An integer key takes the form of the bundled key with the same
+        number, every spelling of it (so 0x1 replaces 0x00000001 in a bit
+        table instead of adding a second label for the same bit, and 0 replaces
+        both 0x0 and 0x00000000); otherwise the category's own style:
+        0x hex when its keys are hex, decimal when not."""
+        if isinstance(k, bool):
+            return []
+        if isinstance(k, str):
+            return [k.strip().lower()]
+        if not isinstance(k, int):
+            return []
+        hex_style, same = False, []
+        for existing in table:
+            ex = str(existing)
+            try:
+                num = int(ex, 16) if ex.lower().startswith("0x") else int(ex)
+            except ValueError:
+                continue
+            if num == k:
+                same.append(existing)
+            hex_style = hex_style or ex.lower().startswith("0x")
+        return same or [hex(k) if hex_style else str(k)]
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
