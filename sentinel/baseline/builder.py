@@ -74,7 +74,10 @@ def build_baseline(
     logger.info("Baseline input file hashes: %s", input_file_hashes)
 
     _cb("Parsing EVTX files", 0.02)
-    raw_events: list[RawEvent] = parse_evtx_files(evtx_paths, progress_cb=None)
+    # Per-file progress, which is also where a stop request is honoured
+    # (Gemini audit 12-02: parsing is most of a build).
+    raw_events: list[RawEvent] = parse_evtx_files(
+        evtx_paths, progress_cb=lambda step, pct: _cb(step, 0.02 + 0.03 * pct))
     logger.info("Parsed %d raw events from %d files", len(raw_events), len(evtx_paths))
     if not raw_events:
         # Run diagnostic to give the user a meaningful error message

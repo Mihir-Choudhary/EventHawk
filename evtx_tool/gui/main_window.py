@@ -19581,8 +19581,14 @@ class MainWindow(QMainWindow):
                 "Run: pip install -r sentinel/requirements.txt",
             )
             return
-        win = SentinelWindow(parent=self)
+        # One Sentinel window: each click opened another (Gemini audit 12-02).
+        win = getattr(self, "_sentinel_win", None)
+        if win is None:
+            win = SentinelWindow(parent=self)
+            self._sentinel_win = win
         win.show()
+        win.raise_()
+        win.activateWindow()
 
     def _on_about(self) -> None:
         dlg = QDialog(self)

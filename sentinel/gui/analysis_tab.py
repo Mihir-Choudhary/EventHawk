@@ -32,9 +32,16 @@ from sentinel.gui.widgets import forward_warnings, show_blocking
 logger = logging.getLogger(__name__)
 
 
+class _Stopped(Exception):
+    """Raised inside the worker at its next progress step after request_stop()."""
+
+
 class _AnalysisWorker(QThread):
+    # Its own result signal: naming it "finished" replaced QThread.finished,
+    # so the end of the thread could not be observed (Gemini audit 12-02).
     progress = Signal(str, float)
-    finished = Signal(list, dict)   # scored_events, metrics
+    result = Signal(list, dict)     # scored_events, metrics
+    stopped = Signal()
     error = Signal(str)
     warning = Signal(str)            # engine log warnings, for the log pane
 
@@ -43,15 +50,29 @@ class _AnalysisWorker(QThread):
         target_source: "Path | list[Path]",   # folder OR explicit file list
         baseline_dir: Path,
         sigma_dir: Path | None,
+        parent=None,
     ) -> None:
-        super().__init__()
+        super().__init__(parent)
+        self._stop = False
         self.target_source = target_source
         self.baseline_dir = baseline_dir
         self.sigma_dir = sigma_dir
 
+    def request_stop(self) -> None:
+        """Stop at the next progress step; a stopped run delivers no result."""
+        self._stop = True
+
+    def _step(self, step: str, pct: float) -> None:
+        if self._stop:
+            raise _Stopped()
+        self.progress.emit(step, pct)
+
     def run(self) -> None:
         with forward_warnings(self.warning.emit):
-            self._run()
+            try:
+                self._run()
+            except _Stopped:
+                self.stopped.emit()
 
     def _run(self) -> None:
         try:
@@ -65,9 +86,9 @@ class _AnalysisWorker(QThread):
                 from sentinel.analysis.parser import find_relevant_evtx_files
 
                 def _scan_cb(step: str, pct: float) -> None:
-                    self.progress.emit(step, pct * 0.10)
+                    self._step(step, pct * 0.10)
 
-                self.progress.emit("Scanning EVTX files for process events...", 0.0)
+                self._step("Scanning EVTX files for process events...", 0.0)
                 target_paths = find_relevant_evtx_files(
                     self.target_source, progress_cb=_scan_cb
                 )
@@ -78,7 +99,7 @@ class _AnalysisWorker(QThread):
                         "Sentinel requires Security.evtx (EID 4688) or Sysmon.evtx (EID 1)."
                     )
                     return
-                self.progress.emit(
+                self._step(
                     f"Found {len(target_paths)} relevant file(s) — running analysis...", 0.10
                 )
 
@@ -86,7 +107,7 @@ class _AnalysisWorker(QThread):
             offset = 0.10 if not isinstance(self.target_source, list) else 0.0
 
             def _cb(step: str, pct: float) -> None:
-                self.progress.emit(step, offset + pct * (1.0 - offset))
+                self._step(step, offset + pct * (1.0 - offset))
 
             scored, metrics = run_analysis(
                 target_paths,
@@ -94,11 +115,15 @@ class _AnalysisWorker(QThread):
                 self.sigma_dir,
                 progress_cb=_cb,
             )
-            self.finished.emit(scored, metrics)
+            if self._stop:
+                raise _Stopped()
+            self.result.emit(scored, metrics)
+        except _Stopped:
+            raise
         except Exception as exc:
             logger.exception("Analysis failed")
             self.error.emit(str(exc))
-            self.finished.emit([], {})  # Q2: always emit finished so UI re-enables button
+            self.result.emit([], {})  # Q2: always emit a result so UI re-enables button
 
 
 class AnalysisTab(QWidget):
@@ -270,12 +295,23 @@ class AnalysisTab(QWidget):
         # The baseline THIS run uses: the selection can change before the
         # results are exported (Gemini audit 10-09).
         self._run_baseline_dir = self._baseline_dir
-        self._worker = _AnalysisWorker(self._target_source, self._baseline_dir, sigma_dir)
+        self._worker = _AnalysisWorker(self._target_source, self._baseline_dir, sigma_dir, parent=self)
         self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
+        self._worker.result.connect(self._on_finished)
+        self._worker.stopped.connect(self._on_stopped)
         self._worker.error.connect(self._on_error)
         self._worker.warning.connect(self._log)
         self._worker.start()
+
+    def stop_work(self) -> None:
+        """Ask a running analysis to stop (the window is closing)."""
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.request_stop()
+
+    def _on_stopped(self) -> None:
+        self._run_btn.setEnabled(True)
+        self._status_label.setText("Stopped")
+        self._log("Analysis stopped.")
 
     def _on_progress(self, step: str, pct: float) -> None:
         self._progress_bar.setValue(int(pct * 100))

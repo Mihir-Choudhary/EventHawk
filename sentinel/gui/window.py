@@ -127,6 +127,14 @@ class SentinelWindow(QDialog):
 
         root.addLayout(status_row)
 
+    def reject(self) -> None:
+        """Close button, Esc and close() all end here: stop running work first,
+        so no build or analysis keeps running behind a closed window
+        (Gemini audit 12-02)."""
+        for tab in (self._baseline_tab, self._analysis_tab):
+            tab.stop_work()
+        super().reject()
+
     def _connect_signals(self) -> None:
         self._baseline_tab.baseline_ready.connect(self._on_baseline_ready)
         self._analysis_tab.analysis_complete.connect(self._on_analysis_complete)

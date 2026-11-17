@@ -33,9 +33,16 @@ from sentinel.gui.widgets import forward_warnings, show_blocking
 logger = logging.getLogger(__name__)
 
 
+class _Stopped(Exception):
+    """Raised inside the worker at its next progress step after request_stop()."""
+
+
 class _BuildWorker(QThread):
+    # Its own result signal: naming it "finished" replaced QThread.finished
+    # (Gemini audit 12-02).
     progress = Signal(str, float)    # step, 0.0-1.0
-    finished = Signal(object)        # BaselineMeta or None on error
+    result = Signal(object)          # BaselineMeta or None on error
+    stopped = Signal()
     error = Signal(str)
     warning = Signal(str)            # builder log warnings, for the log pane
 
@@ -44,15 +51,29 @@ class _BuildWorker(QThread):
         evtx_folder: Path,
         output_dir: Path,
         sigma_dir: Path | None,
+        parent=None,
     ) -> None:
-        super().__init__()
+        super().__init__(parent)
+        self._stop = False
         self.evtx_folder = evtx_folder
         self.output_dir = output_dir
         self.sigma_dir = sigma_dir
 
+    def request_stop(self) -> None:
+        """Stop at the next progress step; nothing is saved after that."""
+        self._stop = True
+
+    def _step(self, step: str, pct: float) -> None:
+        if self._stop:
+            raise _Stopped()
+        self.progress.emit(step, pct)
+
     def run(self) -> None:
         with forward_warnings(self.warning.emit):
-            self._run()
+            try:
+                self._run()
+            except _Stopped:
+                self.stopped.emit()
 
     def _run(self) -> None:
         try:
@@ -62,9 +83,9 @@ class _BuildWorker(QThread):
             # ── Step 1: auto-find files containing target event IDs ────────────
             def _scan_cb(step: str, pct: float) -> None:
                 # Scale scan progress to 0-10% of total
-                self.progress.emit(step, pct * 0.10)
+                self._step(step, pct * 0.10)
 
-            self.progress.emit("Scanning EVTX files for process events...", 0.0)
+            self._step("Scanning EVTX files for process events...", 0.0)
             evtx_paths = find_relevant_evtx_files(self.evtx_folder, progress_cb=_scan_cb)
 
             if not evtx_paths:
@@ -77,14 +98,14 @@ class _BuildWorker(QThread):
                 )
                 return
 
-            self.progress.emit(
+            self._step(
                 f"Found {len(evtx_paths)} relevant file(s) — building baseline...", 0.10
             )
 
             # ── Step 2: build baseline (progress 10-100%) ────────────────────
             def _cb(step: str, pct: float) -> None:
                 # Remap builder progress from 0-1 into 0.10-1.0
-                self.progress.emit(step, 0.10 + pct * 0.90)
+                self._step(step, 0.10 + pct * 0.90)
 
             meta = build_baseline(
                 evtx_paths,
@@ -92,11 +113,13 @@ class _BuildWorker(QThread):
                 self.sigma_dir,
                 progress_cb=_cb,
             )
-            self.finished.emit(meta)
+            self.result.emit(meta)
+        except _Stopped:
+            raise
         except Exception as exc:
             logger.exception("Baseline build failed")
             self.error.emit(str(exc))
-            self.finished.emit(None)  # Q2: always emit finished so UI re-enables buttons
+            self.result.emit(None)  # Q2: always emit a result so UI re-enables buttons
 
 
 class BaselineTab(QWidget):
@@ -241,12 +264,24 @@ class BaselineTab(QWidget):
         self._progress_bar.setValue(0)
         self._progress_bar.show()
 
-        self._worker = _BuildWorker(evtx_dir, output_dir, sigma_dir)
+        self._worker = _BuildWorker(evtx_dir, output_dir, sigma_dir, parent=self)
         self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
+        self._worker.result.connect(self._on_finished)
+        self._worker.stopped.connect(self._on_stopped)
         self._worker.error.connect(self._on_error)
         self._worker.warning.connect(self._log)
         self._worker.start()
+
+    def stop_work(self) -> None:
+        """Ask a running build to stop (the window is closing)."""
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.request_stop()
+
+    def _on_stopped(self) -> None:
+        self._build_btn.setEnabled(True)
+        self._load_btn.setEnabled(True)
+        self._status_label.setText("Stopped")
+        self._log("Baseline build stopped; nothing was saved.")
 
     def _on_progress(self, step: str, pct: float) -> None:
         self._progress_bar.setValue(int(pct * 100))
