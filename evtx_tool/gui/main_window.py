@@ -3208,6 +3208,13 @@ class _LogonSessionDialog(QDialog):
         self._btn_clear.clicked.connect(self._on_clear_filter)
         btn_row.addWidget(self._btn_clear)
 
+        # The other forensic dialogs export CSV; this one had no export at all
+        # (Gemini audit 14-03).
+        btn_export = QPushButton("Export CSV…")
+        btn_export.setToolTip("Export the sessions as shown (filters and sort order) to a CSV file")
+        btn_export.clicked.connect(self._on_export_csv)
+        btn_row.addWidget(btn_export)
+
         btn_row.addStretch()
 
         btn_close = QPushButton("Close")
@@ -3299,6 +3306,33 @@ class _LogonSessionDialog(QDialog):
 
         self._tbl.setSortingEnabled(True)
         self._shown_sessions = sessions
+
+    def _on_export_csv(self) -> None:
+        """Write the table exactly as shown: its columns and text, the order
+        the analyst sorted it in, only the rows the display filters leave."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Logon Sessions", "logon_sessions.csv",
+            "CSV files (*.csv);;All files (*)"
+        )
+        if not path:
+            return
+        n = 0
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = _safe_csv_writer(f)
+                writer.writerow(self._HEADERS)
+                for r in range(self._tbl.rowCount()):
+                    if self._tbl.isRowHidden(r):
+                        continue
+                    writer.writerow([
+                        (self._tbl.item(r, c).text() if self._tbl.item(r, c) else "")
+                        for c in range(self._tbl.columnCount())
+                    ])
+                    n += 1
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Failed", f"Could not write CSV:\n{exc}")
+            return
+        QMessageBox.information(self, "Export Complete", f"Saved {n} session(s) to:\n{path}")
 
     # ── Interaction ───────────────────────────────────────────────────────
 
