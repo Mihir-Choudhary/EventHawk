@@ -15264,8 +15264,17 @@ class MainWindow(QMainWindow):
                     self._lbl_count.setText(f"{total:,} events" if total == shown
                                             else f"{shown:,} / {total:,} events")
                     return
-                n = file_state.model._total_rows
-                self._lbl_count.setText(f"{n:,} events")
+                shown = file_state.model._total_rows
+                try:
+                    total = file_state.model.tab_event_count()
+                except Exception:
+                    logger.warning("per-file tab total could not be counted", exc_info=True)
+                    total = None
+                if total is None:
+                    self._lbl_count.setText(f"{shown:,} events (file total unavailable)")
+                else:
+                    self._lbl_count.setText(f"{total:,} events" if shown == total
+                                            else f"{shown:,} / {total:,} events")
                 return
             n = self._hw_model.total_event_count()
             # Shown / total when a filter is active, as in Normal mode.  The

@@ -1601,6 +1601,27 @@ class ArrowTableModel(QAbstractTableModel):
         """Return unfiltered total (matches old API used in main_window.py)."""
         return len(self._full_table)
 
+    def tab_event_count(self) -> int:
+        """The rows this tab is made of, before any filter of its own: the
+        fixed pre-filter of a per-file or pivot tab, else the whole table.
+        A filtered per-file tab gave only its shown count, so a narrowed tab
+        looked like the whole file (Gemini audit 5-12).  Cached: the fixed
+        filter never changes."""
+        if self._fixed_where_sql in ("", "1=1"):
+            return len(self._full_table)
+        n = getattr(self, "_tab_count_cache", None)
+        if n is None:
+            import duckdb
+            con = duckdb.connect()
+            try:
+                con.register("events", self._full_table)
+                n = con.execute(f"SELECT count(*) FROM events WHERE {self._fixed_where_sql}",
+                                self._fixed_params).fetchone()[0]
+            finally:
+                con.close()
+            self._tab_count_cache = n
+        return n
+
     # ── Detail panel ──────────────────────────────────────────────────────────
 
     def get_event(self, row: int) -> dict | None:
