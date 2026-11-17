@@ -23,37 +23,44 @@ def _find_pythonw() -> str | None:
     """Search the Windows registry for the newest installed pythonw.exe."""
     import winreg
 
+    import re as _re
+
+    def _vkey(v: str):
+        # By version NUMBER: as text "3.9" sorted above "3.12" (Gemini 11-09).
+        return [int(x) for x in _re.findall(r"\d+", v)] or [0]
+
+    # Every registered Python of both hives, then the newest: the per-user
+    # hive was searched first and won outright, so an old per-user 3.9 beat a
+    # machine-wide 3.12 (Gemini audit 13-03).  Free-threaded builds ("3.13t")
+    # are skipped, as install.bat refuses them.
+    found: list = []
     for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
         for subpath in (r"SOFTWARE\Python\PythonCore",
                         r"SOFTWARE\Wow6432Node\Python\PythonCore"):
             try:
                 with winreg.OpenKey(hive, subpath) as core:
-                    versions: list[str] = []
                     idx = 0
                     while True:
                         try:
-                            versions.append(winreg.EnumKey(core, idx))
-                            idx += 1
+                            ver = winreg.EnumKey(core, idx)
                         except OSError:
                             break
-                    # By version NUMBER: as text "3.9" sorted above "3.12", so an
-                    # old 3.9 was started (Gemini audit 11-09).
-                    import re as _re
-
-                    def _vkey(v: str):
-                        return [int(x) for x in _re.findall(r"\d+", v)] or [0]
-                    for ver in sorted(versions, key=_vkey, reverse=True):
+                        idx += 1
+                        if _re.search(r"\dt(-32)?$", ver.lower()):   # e.g. "3.13t"
+                            continue
                         try:
                             with winreg.OpenKey(core, rf"{ver}\InstallPath") as inst:
                                 install_dir = winreg.QueryValue(inst, "").strip()
-                                pythonw = os.path.join(install_dir, "pythonw.exe")
-                                if os.path.isfile(pythonw):
-                                    return pythonw
                         except OSError:
                             continue
+                        pythonw = os.path.join(install_dir, "pythonw.exe")
+                        if os.path.isfile(pythonw):
+                            found.append((_vkey(ver), pythonw))
             except OSError:
                 continue
-    return None
+    if not found:
+        return None
+    return max(found, key=lambda f: f[0])[1]
 
 
 def _error(msg: str) -> None:

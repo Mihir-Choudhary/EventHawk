@@ -75,10 +75,13 @@ def find_hayabusa(custom_path: str | None = None) -> str | None:
     if custom_path and os.path.isfile(custom_path):
         return os.path.abspath(custom_path)
 
-    # 2. PATH lookup
-    found = shutil.which("hayabusa")
+    # 2. PATH lookup: absolute PATH folders only.  shutil.which looks in the
+    # current directory first on Windows (and takes .cmd / .bat), so a
+    # hayabusa planted in the folder EventHawk was started from -- often the
+    # evidence folder -- would be run (Gemini audit 13-03).
+    found = _which_absolute("hayabusa")
     if found:
-        return os.path.abspath(found)
+        return found
 
     # 3. Common locations
     candidates = _COMMON_PATHS_WIN if sys.platform == "win32" else _COMMON_PATHS_LINUX
@@ -86,6 +89,20 @@ def find_hayabusa(custom_path: str | None = None) -> str | None:
         if os.path.isfile(p):
             return os.path.abspath(p)
 
+    return None
+
+
+def _which_absolute(name: str) -> str | None:
+    """*name* as an executable in an absolute PATH folder; never the current
+    directory or a relative PATH entry; on Windows only name.exe."""
+    exe = name + ".exe" if sys.platform == "win32" else name
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        d = d.strip().strip('"')
+        if not d or not os.path.isabs(d):
+            continue
+        p = os.path.join(d, exe)
+        if os.path.isfile(p) and (sys.platform == "win32" or os.access(p, os.X_OK)):
+            return os.path.abspath(p)
     return None
 
 
@@ -248,7 +265,9 @@ def _resolve_input(evtx_paths: list[str], problems: list | None = None) -> tuple
     if missing:
         problems.append(f"Hayabusa did not scan {len(missing)} selected path(s) that no longer exist")
     if len(evtx_paths) == 1:
-        p = evtx_paths[0]
+        # Absolute: a relative name starting with "-" would read as an option
+        # (Gemini audit 13-03).
+        p = os.path.abspath(evtx_paths[0])
         if os.path.isdir(p):
             return "-d", p, None
         else:
@@ -261,7 +280,7 @@ def _resolve_input(evtx_paths: list[str], problems: list | None = None) -> tuple
     if all(os.path.isfile(p) for p in evtx_paths):
         parents = {os.path.normcase(os.path.abspath(str(Path(p).parent))) for p in evtx_paths}
         if len(parents) == 1:
-            parent = str(Path(evtx_paths[0]).parent)
+            parent = os.path.abspath(str(Path(evtx_paths[0]).parent))
             try:
                 all_evtx = {os.path.normcase(f) for f in os.listdir(parent) if f.lower().endswith(".evtx")}
             except OSError as _exc:
