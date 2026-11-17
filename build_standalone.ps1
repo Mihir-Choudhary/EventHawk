@@ -56,8 +56,22 @@ Write-Host "    verified: $($sig.Status)  [$($sig.SignerCertificate.Subject.Spli
 # 2 ── pip + all dependencies, fresh from PyPI, isolated --------------------
 Write-Host "==> [2/6] Bootstrapping pip and installing requirements (isolated from local packages)"
 "python$tag.zip`n.`nLib\site-packages`nimport site" | Set-Content "$dst\python$tag._pth" -Encoding ascii
-Invoke-WebRequest "https://bootstrap.pypa.io/get-pip.py" -OutFile "$WorkDir\get-pip.py"
-& "$dst\python.exe" "$WorkDir\get-pip.py" --no-warn-script-location -q
+# One pinned pip wheel, refused unless its SHA-256 matches; it was a
+# get-pip.py run without any check (Gemini audit 13-04).  A wheel is a zip:
+# unpacking it into site-packages installs pip.  To update: take the version,
+# URL and sha256 of the new py3-none-any wheel from https://pypi.org/pypi/pip/json
+$pipWhl = "pip-26.3-py3-none-any.whl"
+$pipUrl = "https://files.pythonhosted.org/packages/07/25/ee8c38ae72d66b844ce8eb9711ba905dba21ca1a8a0c960057c41cd23337/$pipWhl"
+$pipSha = 'f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13'
+Invoke-WebRequest $pipUrl -OutFile "$WorkDir\$pipWhl"
+$pipHash = (Get-FileHash "$WorkDir\$pipWhl" -Algorithm SHA256).Hash.ToLower()
+if ($pipHash -ne $pipSha) {
+    throw "Downloaded $pipWhl has SHA-256 $pipHash, expected $pipSha - aborting clean-room build"
+}
+Copy-Item "$WorkDir\$pipWhl" "$WorkDir\pip-wheel.zip"
+Expand-Archive "$WorkDir\pip-wheel.zip" -DestinationPath "$dst\Lib\site-packages" -Force
+& "$dst\python.exe" -m pip --version
+if ($LASTEXITCODE -ne 0) { throw "pip from $pipWhl does not run in the embedded Python" }
 & "$dst\python.exe" -m pip install --no-warn-script-location -q -r "$repo\requirements.txt"
 
 # 3 ── app code + icon + launcher -------------------------------------------

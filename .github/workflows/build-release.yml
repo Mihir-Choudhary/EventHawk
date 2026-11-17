@@ -49,6 +49,11 @@ jobs:
 
       - name: Assemble release ZIP
         shell: pwsh
+        # The tag reaches the script as data (env), never pasted into its code
+        # (Gemini audit 13-04).
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           $rel = "dist/release"
           New-Item -ItemType Directory -Force -Path $rel | Out-Null
@@ -73,7 +78,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$rel/profiles/defaults" | Out-Null
           Copy-Item evtx_tool/profiles/defaults/* "$rel/profiles/defaults/"
           # Tag builds use the tag name; manual runs fall back to "dev".
-          $ver = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "dev" }
+          $ver = if ($env:REF_TYPE -eq "tag") { $env:REF_NAME } else { "dev" }
+          if ($ver -notmatch '^[A-Za-z0-9._-]+$') { throw "unexpected tag name: $ver" }
           Compress-Archive -Path "$rel/*" -DestinationPath "EventHawk-$ver-win64.zip" -Force
           "ZIP=EventHawk-$ver-win64.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -86,10 +92,13 @@ jobs:
 
       - name: Publish GitHub Release
         if: github.ref_type == 'tag'
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: >
-          gh release create "${{ github.ref_name }}"
-          "${{ env.ZIP }}"
-          --title "EventHawk ${{ github.ref_name }}"
-          --notes "Automated build from ${{ github.sha }}. See README.md for what's new."
+          gh release create "$env:REF_NAME"
+          "$env:ZIP"
+          --title "EventHawk $env:REF_NAME"
+          --notes "Automated build from $env:SHA. See README.md for what's new."

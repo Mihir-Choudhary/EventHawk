@@ -24,9 +24,14 @@ cd "$(dirname "$0")"
 
 if [ ! -x .venv/bin/python ]; then
     echo "No .venv found — creating one and installing requirements…"
-    python3 -m venv --without-pip .venv
-    curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/eventhawk-get-pip.py
-    ./.venv/bin/python /tmp/eventhawk-get-pip.py -q
+    # pip comes from the interpreter itself (ensurepip): no script is
+    # downloaded and run (Gemini audit 13-04).
+    if ! python3 -m venv .venv; then
+        rm -rf .venv
+        echo "Could not create a virtual environment with pip." >&2
+        echo "On Debian / Ubuntu install it first:  sudo apt install python3-venv" >&2
+        exit 1
+    fi
     ./.venv/bin/python -m pip install -q -r requirements.txt
     echo "Dependencies installed."
 fi
