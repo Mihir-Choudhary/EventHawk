@@ -340,7 +340,8 @@ def launch(initial_paths: list[str] | None = None) -> None:
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("EventHawk")
-    app.setApplicationVersion("2.0")
+    from evtx_tool import __version__ as _eh_version      # one version (Gemini 14-04)
+    app.setApplicationVersion(_eh_version)
     app.setOrganizationName("DFIR Tools")
 
     # ── Set application-level icon (taskbar + title bar) ──────────────────

@@ -24,7 +24,14 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def main() -> int:
-    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.gettempdir(), "eventhawk_suite.txt")
+    # --help used to become the result file's name and start the whole suite
+    # (Gemini audit 14-04).
+    import argparse
+    ap = argparse.ArgumentParser(description="Run every tests/test_*.py in its own process.",
+                                 epilog="EVTX_TEST_LOGS / EVTX_TEST_LOGS_ONLINE: optional folders of test logs.")
+    ap.add_argument("result_log", nargs="?", default=os.path.join(tempfile.gettempdir(), "eventhawk_suite.txt"),
+                    help="file for the one-line-per-test results (default: %(default)s)")
+    out = ap.parse_args().result_log
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8")
     tests = sorted(glob.glob(os.path.join(REPO, "tests", "test_*.py")))
     fails = 0
