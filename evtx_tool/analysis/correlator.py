@@ -236,10 +236,11 @@ class _LogonSessionIndex:
 
     Maps every LogonId to its full session: the 4624 logon event, any 4672
     privilege-assignment events, any 4688 process-creation events spawned
-    under that session, and the 4634 logoff event.
+    under that session, and the 4647 / 4634 logoff event.
 
     LogonId field names per event type:
       4624 (logon)      -> TargetLogonId
+      4647 (user logoff)-> TargetLogonId
       4634 (logoff)     -> TargetLogonId
       4672 (privs)      -> SubjectLogonId
       4688 (proc)       -> SubjectLogonId
@@ -284,12 +285,32 @@ class _LogonSessionIndex:
             sk = current.get(k)
             return self.sessions[sk] if sk is not None else _new(k)
 
-        for ev in events:
+        def _closed_before(sess: dict, ev: dict) -> bool:
+            # *ev* comes after the session's 4634: the LogonId was destroyed,
+            # so the event belongs to a later session that reused it, not to
+            # this one (Gemini audit 8-07: a process started after the logoff
+            # joined the closed session's chain).  A 4647 is only the user's
+            # request; logoff work still runs under the session.
+            off = sess.get("logoff")
+            if off is None or off.get("event_id") != 4634:
+                return False
+            return not _ts_ge(off.get("timestamp", ""), ev.get("timestamp", ""))
+
+        # In time order: which session an event joins depends on what came
+        # before it, and the caller's list is not always sorted.  A stable
+        # sort; when any time cannot be read the list is used as given.
+        _rel = [ev for ev in events if ev.get("event_id", 0) in (4624, 4672, 4688, 4634, 4647)]
+        _keys = [_ts(ev.get("timestamp", "")) for ev in _rel]
+        if None not in _keys:
+            try:
+                _rel = [ev for _k, _i, ev in sorted(zip(_keys, range(len(_rel)), _rel),
+                                                    key=lambda t: (t[0], t[1]))]
+            except TypeError:           # naive and aware times mixed
+                pass
+        for ev in _rel:
             eid = ev.get("event_id", 0)
-            if eid not in (4624, 4672, 4688, 4634):
-                continue
             ed  = ev.get("event_data", {}) or {}
-            field = "TargetLogonId" if eid in (4624, 4634) else "SubjectLogonId"
+            field = "TargetLogonId" if eid in (4624, 4634, 4647) else "SubjectLogonId"
             raw = str(ed.get(field, "")).strip()
             if raw in self._SKIP_IDS:
                 continue
@@ -302,12 +323,20 @@ class _LogonSessionIndex:
                 if sess["logon"] is not None:
                     sess = _new(k)          # LogonId reused: a new session
                 sess["logon"] = ev
-            elif eid == 4672:
-                _get(k)["privs"].append(ev)
-            elif eid == 4688:
-                _get(k)["procs"].append(ev)
+            elif eid in (4672, 4688):
+                sess = _get(k)
+                if _closed_before(sess, ev):
+                    sess = _new(k)          # after the logoff: a later session
+                sess["privs" if eid == 4672 else "procs"].append(ev)
             else:
-                _get(k)["logoff"] = ev
+                # 4647 (the user logged off; ignored before, Gemini 8-07) or
+                # 4634.  The 4634 Windows writes when the session is destroyed
+                # replaces a 4647 as the end; a second end starts a new session.
+                sess = _get(k)
+                off = sess.get("logoff")
+                if off is not None and (off.get("event_id") == 4634 or eid == 4647):
+                    sess = _new(k)
+                sess["logoff"] = ev
 
 
 # ── Sysmon ProcessGuid correlation ────────────────────────────────────────────
@@ -1183,6 +1212,14 @@ def _rule_ps_exec_chain(idx: _EventIndex) -> list[dict]:
 
 # ── LogonId-session rules (accept both idx and session_idx) ──────────────────
 
+def _logon_id_text(logon_ev: dict) -> str:
+    """The LogonId as the 4624 recorded it, for a chain description.  The
+    session index's own key ("host|0x...|n") was printed instead since
+    da4b78d, a value no log holds (found with Gemini audit 8-07)."""
+    ed = (logon_ev or {}).get("event_data", {}) or {}
+    return str(ed.get("TargetLogonId", "") or "").strip() or "Unavailable"
+
+
 def _rule_logonid_privesc(idx: _EventIndex, session_idx: _LogonSessionIndex) -> list[dict]:
     """
     4624 (logon) + 4672 (dangerous special privileges) matched by exact LogonId.
@@ -1234,7 +1271,7 @@ def _rule_logonid_privesc(idx: _EventIndex, session_idx: _LogonSessionIndex) -> 
             severity    = "high",
             description = (
                 f"Logon (4624 {type_label}) linked to dangerous privilege assignment (4672) "
-                f"via LogonId {lid} for '{user}' on {computer}. "
+                f"via LogonId {_logon_id_text(logon_ev)} for '{user}' on {computer}. "
                 f"Privileges: {', '.join(sorted(found_privs))}. "
                 f"Exact LogonId match eliminates false positives from concurrent sessions."
             ),
@@ -1309,7 +1346,7 @@ def _rule_logonid_process_chain(idx: _EventIndex, session_idx: _LogonSessionInde
             severity    = "medium",
             description = (
                 f"Network logon (4624 Type=3) for '{user or '?'}' on {computer} "
-                f"spawned {len(procs)} process(es) under LogonId {lid} "
+                f"spawned {len(procs)} process(es) under LogonId {_logon_id_text(logon_ev)} "
                 f"({len(interesting_procs)} non-benign). "
                 f"Processes: {', '.join(proc_names) or '?'}. "
                 f"LogonId linking provides direct session-to-execution attribution."
