@@ -778,6 +778,13 @@ def main() -> int:
         def get_cascade_base_where(self):
             return (None, None)
 
+        # The popups count over popup_table() since 6ee536f (Gemini 5-03).
+        def popup_table(self):
+            return self._full_table
+
+        def popup_uses_base(self):
+            return False
+
         def close(self):
             """MainWindow.closeEvent calls this on the model it holds."""
             return None
