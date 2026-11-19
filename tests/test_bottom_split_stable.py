@@ -16,6 +16,10 @@ import sys
 import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Real fonts: offscreen Qt without them draws boxes of other widths, and
+# these checks measure text (they failed on every run without it).
+if os.name == "nt" and os.path.isdir(os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")):
+    os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.stdout.reconfigure(errors="backslashreplace")
 

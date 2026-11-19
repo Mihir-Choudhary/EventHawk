@@ -33,6 +33,12 @@ def main() -> int:
                     help="file for the one-line-per-test results (default: %(default)s)")
     out = ap.parse_args().result_log
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8")
+    # Offscreen Qt finds no fonts without this and draws boxes of other
+    # widths, so the layout tests measured the wrong text and failed
+    # (test_analysis_panel_toggle, test_bottom_split_stable since PR #19).
+    _fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    if os.name == "nt" and os.path.isdir(_fonts):
+        env.setdefault("QT_QPA_FONTDIR", _fonts)
     tests = sorted(glob.glob(os.path.join(REPO, "tests", "test_*.py")))
     fails = 0
     with open(out, "w", encoding="utf-8") as log:
