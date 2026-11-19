@@ -770,7 +770,8 @@ tr.suspicious { background: #1c1208; } tr.suspicious:hover { background: #261a0a
 .filter-toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
 .filter-toolbar label { color: #8b949e; font-size: 0.8em; white-space: nowrap; }
 .col-filter-select { background: #161b22; color: #c9d1d9; border: 1px solid #30363d;
-                     border-radius: 4px; padding: 4px 8px; font-size: 0.82em; min-width: 100px; }
+                     border-radius: 4px; padding: 4px 8px; font-size: 0.82em; min-width: 100px;
+                     max-width: 320px; }
 .col-filter-select:focus { border-color: #4fc3f7; outline: none; }
 .filter-toggle { padding: 4px 12px; border: 1px solid #30363d; border-radius: 4px;
                  background: #0d1117; color: #8b949e; cursor: pointer; font-size: 0.8em;
@@ -1495,8 +1496,12 @@ def export_html(
 
         # ── Filter toolbar ─────────────────────────────────────────────
         levels_set   = sorted(set(ev.get('level_name', 'Information') or '' for ev in events))
-        channels_set = sorted(set((ev.get('channel', '') or '')[:40] for ev in events if ev.get('channel')))
-        comps_set    = sorted(set((ev.get('computer', '') or '')[:30] for ev in events if ev.get('computer')))
+        # Whole names, every one: the values were cut to 40 / 30 characters
+        # (two channels sharing the first 40 became one option that selected
+        # both) and the lists stopped at 80 channels, 50 computers and 200
+        # event IDs, so the rest could not be picked (Gemini audit 6-07).
+        channels_set = sorted(set((ev.get('channel', '') or '') for ev in events if ev.get('channel')))
+        comps_set    = sorted(set((ev.get('computer', '') or '') for ev in events if ev.get('computer')))
         eids_set     = sorted(set(str(ev.get('event_id', '')) for ev in events))
 
         # Row 1: dropdown filters
@@ -1511,9 +1516,9 @@ def export_html(
             f.write("</select>\n")
 
         _sel("filterLevel",    "All Levels",    levels_set,        "_F.level=this.value;applyFilters()")
-        _sel("filterChannel",  "All Channels",  channels_set[:80], "_F.channel=this.value;applyFilters()")
-        _sel("filterComputer", "All Computers", comps_set[:50],    "_F.computer=this.value;applyFilters()")
-        _sel("filterEventID",  "All Event IDs", eids_set[:200],    "_F.eid=this.value;applyFilters()")
+        _sel("filterChannel",  "All Channels",  channels_set, "_F.channel=this.value;applyFilters()")
+        _sel("filterComputer", "All Computers", comps_set,    "_F.computer=this.value;applyFilters()")
+        _sel("filterEventID",  "All Event IDs", eids_set,     "_F.eid=this.value;applyFilters()")
         if all_tactics:
             _sel("filterTactic", "All Tactics", all_tactics,       "_F.tactic=this.value;applyFilters()")
         f.write("</div>\n")
@@ -1630,8 +1635,8 @@ def export_html(
                 f"<tr class='{row_class}' data-idx='{i}'"
                 f" data-ts='{_esc(raw_ts)}'"
                 f" data-level='{_esc(lvl_name)}'"
-                f" data-channel='{_esc((ev.get('channel','') or '')[:40])}'"
-                f" data-computer='{_esc((ev.get('computer','') or '')[:30])}'"
+                f" data-channel='{_esc(ev.get('channel','') or '')}'"
+                f" data-computer='{_esc(ev.get('computer','') or '')}'"
                 f" data-eid='{_esc(str(eid))}'"
                 f" data-susp='{'1' if is_susp else '0'}'"
                 f" data-has-atk='{'1' if attack_tags else '0'}'"
