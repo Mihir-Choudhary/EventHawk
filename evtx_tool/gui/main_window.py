@@ -13746,6 +13746,33 @@ class MainWindow(QMainWindow):
                     target.set_quick_filters(qf)
         self._sync_col_filters()
 
+    def _drop_custom_filter_everywhere(self, model, col_id: int) -> None:
+        """Drop custom column *col_id*'s filter in every tab whose table shows
+        *model*, the tab in front or not, with each tab's column-filter record."""
+        key = f"custom:{col_id}"
+        tabs = [("__all__", self._hw_model if self._hw_model is not None else self._proxy_model)]
+        tabs += [(fp, self._tab_filter_target(st)) for fp, st in self._file_tabs.items()]
+        seen: set = set()
+        for tab_key, target in tabs:
+            if target is None or id(target) in seen:
+                continue
+            src = target.sourceModel() if hasattr(target, "sourceModel") else target
+            if target is not model and src is not model:
+                continue
+            seen.add(id(target))
+            qf = target.get_quick_filters()
+            keep = [q for q in qf if q.get("key") != key]
+            if len(keep) != len(qf):
+                if self._hw_model is not None:
+                    target.set_quick_filters(keep)
+                else:
+                    with self._normal_filter_busy("Updating column…"):
+                        target.set_quick_filters(keep)
+            rec = self._col_filters.get(tab_key)
+            if rec:
+                self._col_filters[tab_key] = {i: v for i, v in rec.items() if v[2] != key}
+        self._sync_col_filters()
+
     # ── Custom columns: dialog and computation ────────────────────────────────
 
     def _selected_event_for_picker(self) -> "dict | None":
@@ -13960,9 +13987,12 @@ class MainWindow(QMainWindow):
         cid = compiled.spec.col_id
         try:
             if editing:
-                if model is self._custom_cols_model():
-                    # Its old filter names values the edited column no longer has.
-                    self._drop_custom_filter(cid)
+                # Its old filter names values the edited column no longer has:
+                # dropped in every tab showing this model.  Only the tab in
+                # front was checked, so switching tabs while the column was
+                # computed left the edited tab filtered by the old formula's
+                # values, hiding its events (Gemini audit 5-10 part 3).
+                self._drop_custom_filter_everywhere(model, cid)
                 model.update_custom_column(cid, compiled, values)
             else:
                 idx = model.add_custom_column(compiled, values)
