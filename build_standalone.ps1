@@ -1,43 +1,55 @@
 <#
     build_standalone.ps1  --  Build the portable, antivirus-friendly EventHawk standalone.
 
-    Produces (in .\dist):
-      * EventHawk-<version>-Setup.exe  -- Inno Setup installer (~57 MB). Installs to
-        Program Files with one-click Desktop + Start Menu shortcuts.
-      * EventHawk-portable.7z      -- extract anywhere, run EventHawk.cmd.
+    Produces (in -OutDir, default .\dist), <version> = evtx_tool.__version__:
+      * EventHawk-<version>-Setup.exe     -- Inno Setup installer. Installs for the
+        current user (no admin) or for all users, with Start Menu + Desktop shortcuts.
+      * EventHawk-<version>-portable.zip  -- extract anywhere, run EventHawk.exe
+        (or EventHawk.cmd). Nothing is installed.
     Bundles Python + PySide6 + DuckDB + PyArrow + every dependency and data file.
     End users need NOTHING installed.
 
     CLEAN-ROOM: this script never reads your local/global Python. It downloads a
     fresh Python "embeddable" build from python.org, HARD-FAILS unless python.exe
-    is Authenticode-signed by the Python Software Foundation, bootstraps pip, and
-    installs every dependency fresh from PyPI into an isolated runtime
-    (PYTHONNOUSERSITE=1, so AppData\Roaming\Python is ignored).
+    is Authenticode-signed by the Python Software Foundation, unpacks a pinned
+    pip wheel checked by SHA-256, and installs requirements-lock.txt with
+    --require-hashes --only-binary=:all: -- the exact packages, checked by hash,
+    that the test suite runs on -- into an isolated runtime (PYTHONNOUSERSITE=1).
 
-    WHY NOT PyInstaller: its bootloader is an antivirus false-positive magnet.
-    This ships the code-signed pythonw.exe and packages with Inno Setup (a
-    trusted installer) into Program Files, so AV has no unsigned stub to flag.
+    The Python version is the one the suite runs on (3.12): the default used to
+    be 3.14, which nothing had been tested on.
+
+    WHY NOT PyInstaller for the app: its bootloader is an antivirus false-positive
+    magnet. The installer's shortcuts start the PSF-signed pythonw.exe. The
+    portable folder also carries EventHawk.exe (-Launcher: the small launcher
+    built from launcher.py), which starts that same bundled pythonw.exe.
 
     NOTE ON AGGRESSIVE AV (e.g. Kaspersky): some engines quarantine the Rust EVTX
     parser (evtx/_native.pyd) on fresh install. If that happens, whitelist the
     build folder ($WorkDir) and the install folder in your AV. This is a
     false positive on a legitimate open-source parser.
 
-    Requirements: internet access, 7-Zip, Inno Setup 6
-      (winget install JRSoftware.InnoSetup).
-    Usage:   powershell -ExecutionPolicy Bypass -File build_standalone.ps1
+    Requirements: internet access; Inno Setup 6 for the installer
+      (winget install JRSoftware.InnoSetup), or -SkipInstaller.
+    Usage:   powershell -ExecutionPolicy Bypass -File build_standalone.ps1 [-Launcher dist\EventHawk.exe]
 #>
 param(
-    [string]$PyVersion = "3.14.4",
+    [string]$PyVersion = "3.12.10",
     [string]$WorkDir   = "$env:LOCALAPPDATA\eh-build",   # short path (avoids MAX_PATH)
     [string]$OutDir    = "$PSScriptRoot\dist",
-    [string]$ISCC      = ""                              # optional explicit ISCC.exe path
+    [string]$ISCC      = "",                             # optional explicit ISCC.exe path
+    [string]$Launcher  = "",                             # optional EventHawk.exe (launcher.py, PyInstaller)
+    [switch]$SkipInstaller
 )
 $ErrorActionPreference = "Stop"
 $env:PYTHONNOUSERSITE = "1"; $env:PYTHONPATH = ""       # isolate from local packages
 $repo = $PSScriptRoot
-$tag  = ($PyVersion -split '\.')[0..1] -join ''          # 3.14.4 -> 314
+$tag  = ($PyVersion -split '\.')[0..1] -join ''          # 3.12.10 -> 312
 $dst  = Join-Path $WorkDir "EventHawk"
+# One version for every file name and the installer: the package's own.
+$ver = (Select-String -Path "$repo\evtx_tool\__init__.py" -Pattern '^__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+if ($ver -notmatch '^[0-9A-Za-z.+-]+$') { throw "unexpected version in evtx_tool/__init__.py: $ver" }
+Write-Host "==> EventHawk $ver, Python $PyVersion"
 
 if (Test-Path $WorkDir) { Remove-Item $WorkDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $dst, $OutDir | Out-Null
@@ -53,8 +65,8 @@ if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Python
 }
 Write-Host "    verified: $($sig.Status)  [$($sig.SignerCertificate.Subject.Split(',')[0])]"
 
-# 2 ── pip + all dependencies, fresh from PyPI, isolated --------------------
-Write-Host "==> [2/6] Bootstrapping pip and installing requirements (isolated from local packages)"
+# 2 ── pip + all dependencies, pinned and hash-checked, isolated -----------
+Write-Host "==> [2/6] Bootstrapping pip and installing requirements-lock.txt (isolated from local packages)"
 "python$tag.zip`n.`nLib\site-packages`nimport site" | Set-Content "$dst\python$tag._pth" -Encoding ascii
 # One pinned pip wheel, refused unless its SHA-256 matches; it was a
 # get-pip.py run without any check (Gemini audit 13-04).  A wheel is a zip:
@@ -72,7 +84,11 @@ Copy-Item "$WorkDir\$pipWhl" "$WorkDir\pip-wheel.zip"
 Expand-Archive "$WorkDir\pip-wheel.zip" -DestinationPath "$dst\Lib\site-packages" -Force
 & "$dst\python.exe" -m pip --version
 if ($LASTEXITCODE -ne 0) { throw "pip from $pipWhl does not run in the embedded Python" }
-& "$dst\python.exe" -m pip install --no-warn-script-location -q -r "$repo\requirements.txt"
+# The exact, hash-checked packages the suite runs on.  requirements.txt holds
+# only minimum versions: building from it shipped whatever PyPI had that day.
+& "$dst\python.exe" -m pip install --no-warn-script-location -q --no-cache-dir `
+    --require-hashes --only-binary=:all: -r "$repo\requirements-lock.txt"
+if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-lock.txt failed (exit $LASTEXITCODE)" }
 
 # 3 ── app code + icon + launcher -------------------------------------------
 Write-Host "==> [3/6] App code + icon + launcher"
@@ -81,8 +97,13 @@ Copy-Item "$repo\evtx_tool" "$dst\evtx_tool" -Recurse -Force
 # the installed app reported "Sentinel Not Installed".
 Copy-Item "$repo\sentinel" "$dst\sentinel" -Recurse -Force
 Copy-Item "$repo\eventhawk_gui.py", "$repo\evtx_tool.py" $dst -Force
+Copy-Item "$repo\LICENSE" "$dst\LICENSE.txt" -Force
 Copy-Item "$repo\evtx_tool\resources\images\eventhawk_logo.ico" "$dst\EventHawk.ico" -Force
 "@echo off`r`nstart """" ""%~dp0pythonw.exe"" ""%~dp0eventhawk_gui.py"" %*" | Set-Content "$dst\EventHawk.cmd" -Encoding ascii
+if ($Launcher) {
+    if (-not (Test-Path $Launcher)) { throw "launcher not found: $Launcher" }
+    Copy-Item $Launcher "$dst\EventHawk.exe" -Force
+}
 
 # 4 ── trim dead weight (keep every FEATURE + every dist-info) --------------
 Write-Host "==> [4/6] Trimming dead weight"
@@ -92,7 +113,7 @@ $sp = "$dst\Lib\site-packages"
 # dist-info: keep them (duckdb etc. read their own metadata) EXCEPT build-only tools
 Get-ChildItem $sp -Directory | Where-Object { $_.Name -match '^(pip|setuptools|wheel)-.*\.dist-info$' } |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-Get-ChildItem $sp -Recurse -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem $dst -Recurse -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Get-ChildItem $sp -Recurse -Filter '*.pyi' | Remove-Item -Force -ErrorAction SilentlyContinue
 # PySide6: keep only QtCore/Gui/Widgets/Svg; drop WebEngine/QML/etc.
 $ps6 = "$sp\PySide6"
@@ -119,48 +140,38 @@ if (Test-Path "$ps6\resources") { Get-ChildItem "$ps6\resources" -File | Where-O
 $mb = [math]::Round((Get-ChildItem $dst -Recurse | Measure-Object Length -Sum).Sum / 1MB)
 Write-Host "    runtime: $mb MB"
 
-# 5 ── portable archives (extract-and-run, no install) ----------------------
-Write-Host "==> [5/6] Building portable archives"
+# 5 ── portable ZIP (extract-and-run, no install) ---------------------------
+Write-Host "==> [5/6] Building the portable ZIP"
+$portable = Join-Path $OutDir "EventHawk-$ver-portable.zip"
+if (Test-Path $portable) { Remove-Item $portable -Force }
 $sevenZip = @("$env:ProgramFiles\7-Zip\7z.exe","${env:ProgramFiles(x86)}\7-Zip\7z.exe") |
     Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($sevenZip) {
-    # .7z: smallest; needs 7-Zip / WinRAR to extract.
-    & $sevenZip a -t7z -mx=9 -m0=lzma2 -md=128m -ms=on "$OutDir\EventHawk-portable.7z" "$dst" | Out-Null
-    Write-Host "    portable .7z: $([math]::Round((Get-Item "$OutDir\EventHawk-portable.7z").Length/1MB)) MB (needs 7-Zip)"
-    # self-extracting .exe: double-click -> unpacks + runs EventHawk.cmd. No 7-Zip needed.
-    $sfxMod = Join-Path (Split-Path $sevenZip) "7z.sfx"
-    if (Test-Path $sfxMod) {
-        $cfg = "$WorkDir\sfx.txt"
-        @"
-;!@Install@!UTF-8!
-Title="EventHawk"
-RunProgram="EventHawk\\EventHawk.cmd"
-;!@InstallEnd@!
-"@ | Set-Content $cfg -Encoding utf8
-        $sfxExe = "$OutDir\EventHawk-portable.exe"
-        $fs = [System.IO.File]::Create($sfxExe)
-        foreach ($part in @($sfxMod, $cfg, "$OutDir\EventHawk-portable.7z")) {
-            $bytes = [System.IO.File]::ReadAllBytes($part); $fs.Write($bytes, 0, $bytes.Length)
-        }
-        $fs.Close()
-        Write-Host "    self-extractor .exe: $([math]::Round((Get-Item $sfxExe).Length/1MB)) MB (double-click to run)"
-    }
-} else { Write-Host "    7-Zip not found - skipping portable archives" -ForegroundColor Yellow }
+    # The folder itself goes in, so the ZIP extracts to one EventHawk folder.
+    & $sevenZip a -tzip -mx=7 "$portable" "$dst" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "7-Zip failed (exit $LASTEXITCODE)" }
+} else {
+    Compress-Archive -Path $dst -DestinationPath $portable -CompressionLevel Optimal
+}
+Write-Host "    portable: $portable ($([math]::Round((Get-Item $portable).Length/1MB)) MB)"
 
 # 6 ── Inno Setup installer -------------------------------------------------
-Write-Host "==> [6/6] Building installer with Inno Setup"
-if (-not $ISCC) {
-    $ISCC = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe","$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
-        Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($SkipInstaller) {
+    Write-Host "==> [6/6] Installer skipped (-SkipInstaller)"
+} else {
+    Write-Host "==> [6/6] Building installer with Inno Setup"
+    if (-not $ISCC) {
+        $ISCC = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe","$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+                  "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if (-not $ISCC) { throw "Inno Setup not found. Install with: winget install JRSoftware.InnoSetup  (or pass -ISCC <path>, or -SkipInstaller)" }
+    & $ISCC "/DSourceDir=$dst" "/DMyAppVersion=$ver" "/O$OutDir" "$repo\EventHawk.iss"
+    if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed (exit $LASTEXITCODE)" }
 }
-if (-not $ISCC) { throw "Inno Setup not found. Install with: winget install JRSoftware.InnoSetup  (or pass -ISCC <path>)" }
-& $ISCC "/DSourceDir=$dst" "/O$OutDir" "$repo\EventHawk.iss"
-if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed (exit $LASTEXITCODE)" }
 
-# The version EventHawk.iss builds (it was hard-coded 1.3.0 while the
-# installer is 2.0.0: Gemini audit 11-06).
-$issVer = (Select-String -Path (Join-Path $PSScriptRoot "EventHawk.iss") -Pattern '#define\s+MyAppVersion\s+"([^"]+)"').Matches[0].Groups[1].Value
-$setup = Join-Path $OutDir "EventHawk-$issVer-Setup.exe"
 Write-Host "`nDONE:" -ForegroundColor Green
-Write-Host "  installer: $setup ($([math]::Round((Get-Item $setup).Length/1MB)) MB)" -ForegroundColor Green
-if (Test-Path "$OutDir\EventHawk-portable.7z") { Write-Host "  portable : $OutDir\EventHawk-portable.7z" -ForegroundColor Green }
+$setup = Join-Path $OutDir "EventHawk-$ver-Setup.exe"
+if (Test-Path $setup) { Write-Host "  installer: $setup ($([math]::Round((Get-Item $setup).Length/1MB)) MB)" -ForegroundColor Green }
+Write-Host "  portable : $portable" -ForegroundColor Green
+Write-Host "  runtime  : $dst" -ForegroundColor Green

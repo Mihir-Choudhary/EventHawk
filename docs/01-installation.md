@@ -22,14 +22,16 @@ Inputs are `.evtx` files or folders containing them. This is not a reader for le
 
 ## Windows packages
 
-There are two build paths in this repository. Check the package you actually received rather than assuming every file called `EventHawk.exe` contains the application and Python.
+Each [release](https://github.com/Mihir-Choudhary/EventHawk/releases) has two Windows (64-bit) downloads; neither needs Python or anything else installed:
 
-| Build path | Runtime requirement |
+| Download | Use |
 |---|---|
-| `EventHawk.spec` / `launcher.py` | Thin launcher. Requires system Python, installed application dependencies, and `evtx_tool.py` with the application packages beside the launcher. |
-| `build_standalone.ps1` / `EventHawk.iss` | Stages an embeddable Python runtime and the application; generates portable/installer outputs according to installed build tools. |
+| `EventHawk-<version>-Setup.exe` | Installer. Run it, choose "only for me" (no admin) or all users. EventHawk is then in the Start Menu and Windows search. Uninstall from Settings > Apps; your profiles and logs in `%LOCALAPPDATA%\EventHawk` are kept. |
+| `EventHawk-<version>-portable.zip` | No install. Extract the `EventHawk` folder anywhere (a USB drive works) and run `EventHawk.exe`. |
 
-See [thin launcher](20-building-release.md) and [standalone build](21-building-standalone.md). These guides describe source build behavior, not a guarantee that a particular release asset is available or tested on your machine.
+Check a download against `SHA256SUMS.txt` from the same release: `Get-FileHash .\EventHawk-<version>-Setup.exe`. The programs are not code-signed, so Windows SmartScreen may ask before the first run.
+
+See [release builds](20-building-release.md) and [standalone build](21-building-standalone.md) for how the installer and the portable ZIP are made and tested.
 
 ## Troubleshooting
 

@@ -1,31 +1,51 @@
-# Building an embedded-runtime Windows package
+# Building the standalone Windows package
 
-`build_standalone.ps1` stages an embeddable Windows Python runtime and the application. This is separate from the [thin launcher](20-building-release.md). These are source-verified build instructions, not a claim that a new installer has been built or clean-machine tested.
+`build_standalone.ps1` makes the installer and the portable ZIP that a [release](20-building-release.md) ships. The release workflow runs it on GitHub; you can also run it yourself.
 
-## Inputs and operation
-
-The script accepts **PyVersion**, **WorkDir**, **OutDir** and **ISCC**. Its current PyVersion default is 3.14.4; that is a script setting, not a guarantee of remote availability or compatible dependency wheels. It downloads Python and pip bootstrap content and installs requirements, so building needs network access and the appropriate build environment.
-
-**WorkDir is disposable:** the script recursively removes an existing WorkDir before staging. Choose a dedicated build directory containing nothing you need. Read the script before running it. OutDir receives generated artifacts. Inno Setup 6 is needed for the installer; ISCC can name its compiler explicitly.
-
-From the repository root, after preparing those prerequisites:
+## Run it
 
 ```powershell
-.\build_standalone.ps1
+powershell -ExecutionPolicy Bypass -File build_standalone.ps1 [-Launcher dist\EventHawk.exe] [-SkipInstaller]
 ```
 
-## What the source stages
+| Parameter | Default | Meaning |
+|---|---|---|
+| `PyVersion` | 3.12.10 | Embeddable Python from python.org. The version the test suite runs on. |
+| `WorkDir` | `%LOCALAPPDATA%\eh-build` | Build folder. **Deleted and re-made on every run**: use one that holds nothing else. |
+| `OutDir` | `.\dist` | Where the ZIP and installer go. |
+| `ISCC` | found automatically | Inno Setup 6 compiler (`winget install JRSoftware.InnoSetup`). |
+| `Launcher` | none | `EventHawk.exe` built from `launcher.py` (`py -3.12 -m PyInstaller EventHawk.spec` gives `dist\EventHawk.exe`); copied into the package. |
+| `SkipInstaller` | off | Build the runtime and ZIP only (no Inno Setup needed). |
 
-The script checks the downloaded python.exe's Authenticode status and Python Software Foundation signer before proceeding. It installs requirements.txt, copies evtx_tool and sentinel plus evtx_tool.py/eventhawk_gui.py, adds an icon and EventHawk.cmd, and trims selected runtime files. The final Python path file isolates the deployed runtime from user site packages.
+It needs internet access (python.org, PyPI).
 
-Copying the sentinel package does not install optional pySigma: the script installs the main requirements, not sentinel/requirements.txt. Sentinel's heuristic pre-tagging therefore requires separate dependency preparation if advertised; non-Sigma analysis has its own path.
+## What it does
 
-When 7-Zip is found, the script produces EventHawk-portable.7z; a self-extracting portable EXE also depends on its SFX module. Inno Setup uses EventHawk.iss and currently names the installer EventHawk-2.0.0-Setup.exe. These names/defaults come from source; do not infer the next release version or availability from them. No package-size guarantee is made.
+1. Downloads the embeddable Python and stops unless `python.exe` is validly signed by the Python Software Foundation.
+2. Unpacks one pinned pip wheel, checked by SHA-256, then installs `requirements-lock.txt` with `--require-hashes --only-binary=:all:`: the exact package versions the test suite runs on, each checked by hash. `requirements.txt` (minimum versions) is for running from source and is not used here.
+3. Copies `evtx_tool`, `sentinel`, `evtx_tool.py`, `eventhawk_gui.py`, the licence, the icon, `EventHawk.cmd` and, with `-Launcher`, `EventHawk.exe`.
+4. Trims files the app does not use (other Qt modules, pip, caches). The final `python312._pth` keeps the runtime isolated from any Python on the user's machine.
+5. Writes `EventHawk-<version>-portable.zip` (one `EventHawk` folder).
+6. Compiles `EventHawk.iss` into `EventHawk-<version>-Setup.exe`, version from `evtx_tool/__init__.py`.
 
-## Verify the actual artifact
+## The installer
 
-Test extraction/installation and startup without relying on system Python or developer-installed packages. Verify dependencies after trimming, icons/resources/default profiles, parsing, Juggernaut workers, session tools, Sentinel and exports. Test launch from outside the source directory. A signature check on Python alone does not authenticate all downloaded dependencies or prove the application works.
+- Per-user install by default (no admin, `%LOCALAPPDATA%\Programs\EventHawk`), or all users (`Program Files`) after elevating.
+- Start Menu and optional Desktop shortcuts run the bundled, PSF-signed `pythonw.exe` with `eventhawk_gui.py`.
+- An upgrade replaces the program's code folders whole, so files an older version had do not linger.
+- Uninstalling removes the program only. `%LOCALAPPDATA%\EventHawk` (your profiles, logs and Sentinel's baseline key) is kept.
 
-EventHawk.iss offers per-user installation by default with an optional elevated installation mode and creates shortcuts to the bundled Python entry script. Review its uninstall cleanup too: it removes the application's local EventHawk directory, which includes GUI logs. Preserve needed diagnostic material before uninstalling.
+## Test what you built
 
-Do not claim a build passed unless its actual output was launched and tested. See [testing](22-testing.md) and [installation](01-installation.md).
+Run the smoke test with the package's own Python, on a log whose record count you took from Windows:
+
+```powershell
+$n = @(Get-WinEvent -Path C:\path\log.evtx -Oldest).Count
+<package>\python.exe scripts\smoke_standalone.py <package> C:\path\log.evtx $n 2.0.0
+```
+
+It checks that everything loads from the package, the CLI and Sentinel start, a CLI parse and a Juggernaut parse each read exactly `$n` events, and the main window opens.
+
+Some antivirus engines flag the Rust EVTX parser (`evtx\_native.pyd`) on a fresh install; that is a false positive on an open-source parser.
+
+See [testing](22-testing.md) and [installation](01-installation.md).

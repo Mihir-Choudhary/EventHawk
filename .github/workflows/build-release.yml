@@ -1,104 +1,237 @@
-name: Build EventHawk EXE
+name: Build, test and release EventHawk
 
-# Builds EventHawk.exe with PyInstaller and packages the release ZIP.
-#   * push a tag  v*   -> build + publish a GitHub Release with the ZIP attached
-#   * manual run       -> build + upload the ZIP as a workflow artifact
+# Every push to beta or main builds the Windows programs, runs the test suite,
+# and tests what was built: the portable ZIP and the installer are each run
+# on a real Windows event log, and the installer is installed, started,
+# checked and uninstalled.  The files are kept as a workflow artifact.
 #
-# Mirrors the manual steps in docs/20-building-release.md so releases are
-# reproducible and the compiled binary never has to live in the git tree.
+# A push to main whose version (evtx_tool/__init__.py __version__) has no
+# GitHub release yet also PUBLISHES it: tag vX.Y.Z on the pushed commit, with
+# the installer, the portable ZIP and SHA256SUMS.txt attached.  So a release is
+# made by raising __version__ and pushing main.  Pushing a tag vX.Y.Z (equal to
+# __version__) publishes that version too.  A push to beta never publishes.
+# Running the workflow by hand is a dry run: build and test, artifact only.
+#
+# Inside run: scripts every value comes from env:, never ${{ }} pasted into the
+# script (a tag or branch name is chosen by whoever pushes it; Gemini 13-04).
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main, beta]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
-  contents: write        # required to create the GitHub Release
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
+    name: Build and test (Windows)
     runs-on: windows-latest
-
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
+      tag_exists: ${{ steps.version.outputs.tag_exists }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Install PyInstaller
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyinstaller
-
-      - name: Install UPX
-        run: choco install upx -y --no-progress
-
-      - name: Build EXE
-        run: pyinstaller EventHawk.spec
-
-      - name: Show build output
-        shell: pwsh
-        run: |
-          $exe = Get-Item dist/EventHawk.exe
-          "Built {0}  ({1:N2} MB)" -f $exe.Name, ($exe.Length / 1MB)
-          $exe.VersionInfo | Format-List ProductName, FileVersion
-
-      - name: Assemble release ZIP
-        shell: pwsh
-        # The tag reaches the script as data (env), never pasted into its code
-        # (Gemini audit 13-04).
+      - name: Version, and whether this push publishes it
+        id: version
         env:
+          EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          $rel = "dist/release"
-          New-Item -ItemType Directory -Force -Path $rel | Out-Null
-          Copy-Item dist/EventHawk.exe $rel/
-          Copy-Item requirements.txt   $rel/
-          Copy-Item install.bat        $rel/
-          Copy-Item run.bat            $rel/
-          Copy-Item eventhawk_gui.py   $rel/     # run.bat starts it (Gemini audit 11-06)
-          Copy-Item README.md          $rel/
-          Copy-Item LICENSE            $rel/
-          # The application itself: launcher.py starts evtx_tool.py, which must
-          # sit next to EventHawk.exe with its packages (the ZIP had only the
-          # launcher, so a release could not start).
-          Copy-Item evtx_tool.py       $rel/
-          foreach ($pkg in "evtx_tool", "sentinel") {
-            Copy-Item $pkg "$rel/$pkg" -Recurse
-            Get-ChildItem "$rel/$pkg" -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+          $m = Select-String -Path evtx_tool/__init__.py -Pattern '^__version__\s*=\s*"([^"]+)"'
+          if (-not $m) { throw "no __version__ in evtx_tool/__init__.py" }
+          $version = $m.Matches[0].Groups[1].Value
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.]+)?$') { throw "unexpected version: $version" }
+          $tag = "v$version"
+          if ($env:REF_TYPE -eq "tag" -and $env:REF_NAME -ne $tag) {
+            throw "tag $($env:REF_NAME) does not match __version__ $version"
           }
-          if (-not (Test-Path "$rel/evtx_tool.py") -or -not (Test-Path "$rel/evtx_tool/__init__.py")) {
-            throw "release staging is missing the application"
-          }
-          New-Item -ItemType Directory -Force -Path "$rel/profiles/defaults" | Out-Null
-          Copy-Item evtx_tool/profiles/defaults/* "$rel/profiles/defaults/"
-          # Tag builds use the tag name; manual runs fall back to "dev".
-          $ver = if ($env:REF_TYPE -eq "tag") { $env:REF_NAME } else { "dev" }
-          if ($ver -notmatch '^[A-Za-z0-9._-]+$') { throw "unexpected tag name: $ver" }
-          Compress-Archive -Path "$rel/*" -DestinationPath "EventHawk-$ver-win64.zip" -Force
-          "ZIP=EventHawk-$ver-win64.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          gh release view $tag --json tagName 2>$null | Out-Null
+          $released = ($LASTEXITCODE -eq 0)
+          git ls-remote --exit-code --tags origin "refs/tags/$tag" 2>$null | Out-Null
+          $tagExists = ($LASTEXITCODE -eq 0)
+          $global:LASTEXITCODE = 0
+          $isMain = ($env:REF_TYPE -eq "branch" -and $env:REF_NAME -eq "main")
+          $isTag = ($env:REF_TYPE -eq "tag")
+          $publish = ($env:EVENT_NAME -eq "push" -and ($isMain -or $isTag) -and -not $released)
+          "version=$version", "tag=$tag", "publish=$($publish.ToString().ToLower())",
+            "tag_exists=$($tagExists.ToString().ToLower())" | Add-Content $env:GITHUB_OUTPUT
+          "VERSION=$version" | Add-Content $env:GITHUB_ENV
+          "OUT=$env:RUNNER_TEMP\release" | Add-Content $env:GITHUB_ENV
+          if ($publish) { "Will publish $tag" } else { "Build and test only ($($tag): released=$released, ref=$($env:REF_NAME))" }
 
-      - name: Upload workflow artifact
+      - name: Install the locked packages (exact versions, hash-checked)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-lock.txt
+
+      - name: Test suite
+        timeout-minutes: 120
+        run: |
+          # Synthetic tests only: the real test logs never leave the
+          # maintainer's PC, so the corpus parts of the tests skip here.
+          python tests/run_suite.py "$env:RUNNER_TEMP\suite.txt"
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content "$env:RUNNER_TEMP\suite.txt" | Where-Object { $_ -notmatch '^OK' }
+            throw "test suite failed"
+          }
+          Get-Content "$env:RUNNER_TEMP\suite.txt" -Tail 1
+
+      - name: Keep the test results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: EventHawk-win64
-          path: ${{ env.ZIP }}
+          name: suite-results
+          path: ${{ runner.temp }}/suite.txt
+          if-no-files-found: ignore
+
+      - name: Build the launcher EXE (launcher.py)
+        run: |
+          python -m pip install pyinstaller==6.22.3
+          python -m PyInstaller --noconfirm --clean EventHawk.spec
+          if (-not (Test-Path dist/EventHawk.exe)) { throw "dist/EventHawk.exe was not built" }
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup install failed" }
+
+      - name: Build the standalone runtime, portable ZIP and installer
+        run: |
+          ./build_standalone.ps1 -Launcher dist/EventHawk.exe -OutDir $env:OUT -WorkDir "$env:RUNNER_TEMP\eh-build"
+          Get-ChildItem $env:OUT | Format-Table Name, Length -AutoSize
+
+      - name: A real Windows event log to test on (this runner's own)
+        run: |
+          $log = "$env:RUNNER_TEMP\Application.evtx"
+          wevtutil epl Application $log
+          $n = @(Get-WinEvent -Path $log -Oldest -ErrorAction Stop).Count
+          if ($n -lt 1) { throw "the exported log is empty" }
+          "Application log: $n records (Get-WinEvent)"
+          "SMOKE_LOG=$log", "SMOKE_COUNT=$n" | Add-Content $env:GITHUB_ENV
+
+      - name: Test the portable ZIP
+        timeout-minutes: 20
+        run: |
+          $x = "$env:RUNNER_TEMP\portable"
+          Expand-Archive "$env:OUT\EventHawk-$env:VERSION-portable.zip" -DestinationPath $x
+          $app = "$x\EventHawk"
+          & "$app\python.exe" scripts/smoke_standalone.py $app $env:SMOKE_LOG $env:SMOKE_COUNT $env:VERSION
+          if ($LASTEXITCODE -ne 0) { throw "portable smoke test failed" }
+          # EventHawk.exe starts the bundled pythonw.exe and exits; the app must stay up.
+          $env:QT_QPA_PLATFORM = "offscreen"
+          Start-Process -FilePath "$app\EventHawk.exe" -WorkingDirectory $app
+          Start-Sleep -Seconds 20
+          $gui = Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe'" |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($app, [StringComparison]::OrdinalIgnoreCase) }
+          if (-not $gui) { throw "EventHawk.exe did not leave the app running" }
+          $gui | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          "EventHawk.exe started the bundled app"
+
+      - name: Test the installer (install, run, keep user data on uninstall)
+        timeout-minutes: 20
+        run: |
+          $dir = "$env:RUNNER_TEMP\installed"
+          $setup = "$env:OUT\EventHawk-$env:VERSION-Setup.exe"
+          $p = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES",
+            "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`"", "/LOG=`"$env:RUNNER_TEMP\install.log`""
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\install.log" -ErrorAction SilentlyContinue; throw "setup failed: exit $($p.ExitCode)" }
+          $lnk = Join-Path ([Environment]::GetFolderPath("Programs")) "EventHawk\EventHawk.lnk"
+          if (-not (Test-Path $lnk)) { throw "no Start Menu shortcut at $lnk" }
+          & "$dir\python.exe" scripts/smoke_standalone.py $dir $env:SMOKE_LOG $env:SMOKE_COUNT $env:VERSION
+          if ($LASTEXITCODE -ne 0) { throw "installed smoke test failed" }
+          # The analyst's own data must survive an uninstall.
+          $data = Join-Path $env:LOCALAPPDATA "EventHawk"
+          New-Item -ItemType Directory -Force $data | Out-Null
+          Set-Content "$data\keep-me.txt" "analyst data"
+          $p = Start-Process -FilePath "$dir\unins000.exe" -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          if ($p.ExitCode -ne 0) { throw "uninstall failed: exit $($p.ExitCode)" }
+          $deadline = (Get-Date).AddSeconds(120)
+          while ((Test-Path "$dir\python.exe") -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path "$dir\python.exe") { throw "uninstall left the program behind" }
+          if (-not (Test-Path "$data\keep-me.txt")) { throw "uninstall deleted the user's data folder" }
+          "Installed, tested, uninstalled; user data kept"
+
+      - name: Checksums
+        run: |
+          $files = Get-ChildItem $env:OUT -File | Where-Object { $_.Name -like "EventHawk-$env:VERSION-*" }
+          $lines = $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }
+          [IO.File]::WriteAllText("$env:OUT\SHA256SUMS.txt", (($lines -join "`n") + "`n"))
+          Get-Content "$env:OUT\SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EventHawk-${{ steps.version.outputs.version }}
+          path: |
+            ${{ runner.temp }}/release/EventHawk-*-Setup.exe
+            ${{ runner.temp }}/release/EventHawk-*-portable.zip
+            ${{ runner.temp }}/release/SHA256SUMS.txt
           if-no-files-found: error
 
-      - name: Publish GitHub Release
-        if: github.ref_type == 'tag'
-        shell: pwsh
+  publish:
+    name: Publish the GitHub release
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: EventHawk-${{ needs.build.outputs.version }}
+          path: release
+
+      - name: Create the release
+        working-directory: release
         env:
           GH_TOKEN: ${{ github.token }}
-          REF_NAME: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG_EXISTS: ${{ needs.build.outputs.tag_exists }}
           SHA: ${{ github.sha }}
-        run: >
-          gh release create "$env:REF_NAME"
-          "$env:ZIP"
-          --title "EventHawk $env:REF_NAME"
-          --notes "Automated build from $env:SHA. See README.md for what's new."
+        run: |
+          {
+            echo "EventHawk $VERSION for Windows (64-bit). Nothing else needs to be installed."
+            echo
+            echo "- **EventHawk-$VERSION-Setup.exe**: installer. Installs for you (no admin) or for all users; adds Start Menu and Desktop shortcuts."
+            echo "- **EventHawk-$VERSION-portable.zip**: no install. Extract it anywhere and run EventHawk.exe (or EventHawk.cmd)."
+            echo
+            echo "Built and tested from commit $SHA. SHA-256:"
+            echo
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } > notes.md
+          flags=()
+          if [ "$TAG_EXISTS" = "true" ]; then flags+=(--verify-tag); else flags+=(--target "$SHA"); fi
+          gh release create "$TAG" \
+            "EventHawk-$VERSION-Setup.exe" \
+            "EventHawk-$VERSION-portable.zip" \
+            SHA256SUMS.txt \
+            --title "EventHawk $VERSION" \
+            --notes-file notes.md \
+            "${flags[@]}"

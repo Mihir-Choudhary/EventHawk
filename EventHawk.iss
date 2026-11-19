@@ -1,5 +1,5 @@
 ; EventHawk - Inno Setup 6 installer
-; Bundles a portable, code-signed embeddable CPython 3.14 + PySide6/Qt app.
+; Bundles a portable, code-signed embeddable CPython 3.12 + PySide6/Qt app.
 ; Works for BOTH admin (all users -> Program Files) and non-admin (current user
 ; -> LocalAppData); the user chooses at install time. Creates one-click shortcuts.
 ;
@@ -10,7 +10,10 @@
 #endif
 
 #define MyAppName        "EventHawk"
-#define MyAppVersion     "2.0.0"
+; build_standalone.ps1 passes /DMyAppVersion=<evtx_tool.__version__>.
+#ifndef MyAppVersion
+  #define MyAppVersion   "2.0.0"
+#endif
 #define MyAppPublisher   "Mihir Singh Choudhary"
 #define MyAppURL         "https://github.com/Mihir-Choudhary/EventHawk"
 #define MyAppExeName     "pythonw.exe"
@@ -65,6 +68,16 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
 Filename: "{app}\{#MyAppExeName}"; Parameters: """{app}\{#MyAppEntryScript}"" gui"; WorkingDir: "{app}"; \
     Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
+[InstallDelete]
+; An upgrade replaces the program's code whole: files a newer version no longer
+; has (a removed module) would otherwise stay and could still be imported.
+Type: filesandordirs; Name: "{app}\evtx_tool"
+Type: filesandordirs; Name: "{app}\sentinel"
+Type: filesandordirs; Name: "{app}\Lib"
+
 [UninstallDelete]
+; Program files only.  %LOCALAPPDATA%\EventHawk is the analyst's own data (custom
+; profiles, logs, Sentinel's baseline key): uninstalling, or reinstalling,
+; deleted it, so every saved baseline had to be rebuilt.  It is kept.
 Type: filesandordirs; Name: "{app}\evtx_tool\__pycache__"
-Type: filesandordirs; Name: "{localappdata}\EventHawk"
+Type: filesandordirs; Name: "{app}\sentinel\__pycache__"

@@ -78,7 +78,11 @@ def main() -> None:
         _error(f"evtx_tool.py not found next to the launcher.\nExpected: {script}")
         return
 
-    pythonw = _find_pythonw()
+    # The standalone build (build_standalone.ps1) carries its own Python and
+    # every package next to this exe: use it, never a system Python that may
+    # lack the packages (the newest one found could have no PySide6).
+    bundled = os.path.join(base, "pythonw.exe")
+    pythonw = bundled if os.path.isfile(bundled) else _find_pythonw()
     if not pythonw:
         _error(
             "Python 3 not found on this system.\n"
