@@ -45,9 +45,9 @@ def main() -> int:
           visible() == [p for p in paths if p.endswith("System.evtx")], f"{len(visible())} shown")
     dlg._btn_clear_shown.click()
     check("'Clear shown' unticks only the shown rows",
-          dlg.selected_files() == {p for p in paths if not p.endswith("System.evtx")})
+          set(dlg.selected_files()) == {p for p in paths if not p.endswith("System.evtx")})
     search.setText("secur")
-    check("ticks survive a filter change", dlg.selected_files() == {p for p in paths if not p.endswith("System.evtx")})
+    check("ticks survive a filter change", set(dlg.selected_files()) == {p for p in paths if not p.endswith("System.evtx")})
     dlg._file_checks[0][0].setChecked(False)             # host00 Security
     search.setText("")
     check("an empty search shows every file again", len(visible()) == len(paths))
