@@ -89,7 +89,13 @@ def _setup_gui_logging() -> None:
     # problems (e.g. a filter/profile wiring failure) are visible immediately
     # instead of only landing in eventhawk_gui.log.  Previously the GUI logged
     # to file only, which is why some failures looked completely silent.
-    if not any(
+    # Only with a terminal: under pythonw.exe (a shortcut or double-click)
+    # sys.stderr is None, the handler failed on every warning, logging
+    # reported that on stderr -- by then the tee below, which logged it as a
+    # warning again -- and the loop ran to RecursionError inside whatever
+    # logged, e.g. a Qt call ("QLineEdit returned NULL"): the app started
+    # from a shortcut died as soon as Qt printed a warning.
+    if sys.stderr is not None and not any(
         isinstance(h, logging.StreamHandler)
         and not isinstance(h, RotatingFileHandler)
         and getattr(h, "stream", None) in (sys.stderr, sys.stdout)
@@ -222,25 +228,39 @@ def _setup_gui_logging() -> None:
         def __init__(self, original) -> None:
             self._orig = original
             self._buf  = ""
+            self._busy = False
 
         def write(self, text: str) -> int:
             try:
                 self._orig.write(text)
             except Exception:
                 pass
+            if self._busy:
+                # Written while a line is being logged (a handler reporting
+                # its own failure): it is in the original stream already, and
+                # logging it again would loop.
+                return len(text)
             self._buf += text
-            while "\n" in self._buf:
-                line, self._buf = self._buf.split("\n", 1)
-                stripped = line.strip()
-                if stripped:
-                    _stderr_log.warning("[stderr] %s", line)
+            self._busy = True
+            try:
+                while "\n" in self._buf:
+                    line, self._buf = self._buf.split("\n", 1)
+                    stripped = line.strip()
+                    if stripped:
+                        _stderr_log.warning("[stderr] %s", line)
+            finally:
+                self._busy = False
             return len(text)
 
         def flush(self) -> None:
             tail = self._buf.strip()
-            if tail:
-                _stderr_log.warning("[stderr] %s", self._buf.rstrip())
-                self._buf = ""
+            if tail and not self._busy:
+                line, self._buf = self._buf.rstrip(), ""
+                self._busy = True
+                try:
+                    _stderr_log.warning("[stderr] %s", line)
+                finally:
+                    self._busy = False
             try:
                 self._orig.flush()
             except Exception:
