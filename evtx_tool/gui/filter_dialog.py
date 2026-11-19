@@ -962,7 +962,8 @@ class FilterDialog(QDialog):
             for _k in ("date_from", "date_to"):
                 if cfg.get(_k):
                     try:
-                        _u = display_naive_to_utc(_dtp.strptime(cfg[_k][:19], "%Y-%m-%d %H:%M:%S"))
+                        _u = display_naive_to_utc(_dtp.strptime(cfg[_k][:19], "%Y-%m-%d %H:%M:%S"),
+                                                  upper=(_k == "date_to"))
                         cfg[_k + "_utc"] = _u.strftime("%Y-%m-%dT%H:%M:%SZ")
                     except ValueError:
                         pass

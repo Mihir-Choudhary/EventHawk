@@ -143,27 +143,76 @@ _tz_state: dict = {
 }
 
 
-def display_naive_to_utc(naive):
-    """The aware UTC instant of display-zone wall time *naive* -- the
-    conversion set_advanced_filter applies to the dialog's bounds, for
-    writing them into a saved preset (Gemini audit 4-05)."""
+def _display_naive_to_utc_fold(naive, fold):
+    """UTC instant of display wall time *naive* read with *fold* (0 = the first
+    of a repeated hour, 1 = the second)."""
     from datetime import timezone as _utc_tz, timedelta as _tdl
-    naive = naive.replace(tzinfo=None)
+    naive = naive.replace(tzinfo=None, fold=fold)
     mode = _tz_state.get("mode")
     if mode == "local":
         try:
             return naive.astimezone(_utc_tz.utc)
         except (OSError, OverflowError, ValueError):
-            return naive.replace(tzinfo=_utc_tz.utc)     # before 1970 on Windows
+            return naive.replace(tzinfo=_utc_tz.utc, fold=0)  # before 1970 on Windows
     if mode == "specific":
         try:
             from zoneinfo import ZoneInfo
             return naive.replace(tzinfo=ZoneInfo(_tz_state["specific"])).astimezone(_utc_tz.utc)
         except Exception:
-            return naive.replace(tzinfo=_utc_tz.utc)
+            return naive.replace(tzinfo=_utc_tz.utc, fold=0)
     if mode == "custom":
-        return (naive - _tdl(minutes=_tz_state.get("custom_offset_min", 0))).replace(tzinfo=_utc_tz.utc)
-    return naive.replace(tzinfo=_utc_tz.utc)
+        return (naive - _tdl(minutes=_tz_state.get("custom_offset_min", 0))).replace(
+            tzinfo=_utc_tz.utc, fold=0)
+    return naive.replace(tzinfo=_utc_tz.utc, fold=0)
+
+
+def display_naive_to_utc(naive, upper=False):
+    """The aware UTC instant of display-zone wall time *naive* -- the
+    conversion set_advanced_filter applies to the dialog's bounds, and that is
+    written into a saved preset (Gemini audit 4-05).
+
+    A filter bound means "shown at or after / at or before this wall time", so
+    the DST changes are resolved for that (Gemini audit 4-09):
+      * a repeated hour (fall back) is shown twice: a lower bound takes the
+        first instant, an upper bound (*upper*) the second, so every event the
+        table shows inside the window passes;
+      * a skipped hour (spring forward) is never shown: both bounds land on
+        the change itself (an upper bound one second before it, as bounds are
+        whole seconds and inclusive).
+    It used to read every bound as the first instant, so an upper bound in the
+    repeated hour dropped the events shown in its second pass."""
+    from datetime import timedelta as _tdl
+    naive = naive.replace(tzinfo=None, fold=0)
+    u0 = _display_naive_to_utc_fold(naive, 0)
+    u1 = _display_naive_to_utc_fold(naive, 1)
+    if u0 == u1:
+        return u0
+
+    def shown(u):
+        try:
+            return utc_to_display_naive(u).replace(fold=0)
+        except (OSError, OverflowError, ValueError):
+            return None
+
+    exact = [u for u in (u0, u1) if shown(u) == naive]
+    if exact:
+        return max(exact) if upper else min(exact)
+    # A skipped wall time: find the change, the first second shown after it.
+    lo, hi = min(u0, u1), max(u0, u1)
+    lo_s, hi_s = shown(lo), shown(hi)
+    if lo_s is None or hi_s is None or not (lo_s < naive < hi_s):
+        return u0                       # not a plain gap: keep the old reading
+    while (hi - lo) > _tdl(seconds=1):
+        mid = lo + (hi - lo) / 2
+        mid = mid.replace(microsecond=0)
+        if mid <= lo:
+            break
+        s = shown(mid)
+        if s is not None and s >= naive:
+            hi = mid
+        else:
+            lo = mid
+    return hi - _tdl(seconds=1) if upper else hi
 
 
 def utc_to_display_naive(dt):
@@ -1569,21 +1618,13 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             elif display_tz is not None or use_system_local:
                 # Re-interpret: read the boundary in the display timezone, then
                 # convert to true UTC.
-                def _boundary_to_utc(_d):
-                    naive = _d.replace(tzinfo=None)
-                    if use_system_local:
-                        try:
-                            return naive.astimezone(_tz.utc)
-                        except (OSError, OverflowError, ValueError):
-                            # Before 1970 on Windows: unconverted, as the table
-                            # shows it (Gemini audit 4-02).
-                            return naive.replace(tzinfo=_tz.utc)
-                    return naive.replace(tzinfo=display_tz).astimezone(_tz.utc)
-
+                # display_naive_to_utc: before 1970 on Windows unconverted, as
+                # the table shows it (4-02); repeated / skipped DST hours
+                # resolved per bound (4-09).
                 if self._adv_date_from:
-                    self._adv_date_from = _boundary_to_utc(self._adv_date_from)
+                    self._adv_date_from = display_naive_to_utc(self._adv_date_from)
                 if self._adv_date_to:
-                    self._adv_date_to = _boundary_to_utc(self._adv_date_to)
+                    self._adv_date_to = display_naive_to_utc(self._adv_date_to, upper=True)
 
         # Pre-extract date/time parts to avoid per-row method calls in filterAcceptsRow()
         self._adv_date_from_d = self._adv_date_from.date() if self._adv_date_from else None

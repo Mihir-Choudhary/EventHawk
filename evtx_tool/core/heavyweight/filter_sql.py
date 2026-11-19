@@ -773,18 +773,18 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
                 _disp_tz = _tz(offset=_td(minutes=_tz_state.get("custom_offset_min", 0)))
 
             if _disp_tz is not None or _use_system_local:
-                def _to_utc(s: str) -> str:
-                    """Re-interpret a 'YYYY-MM-DD HH:MM:SS' string from display TZ as UTC."""
+                from evtx_tool.gui.models import display_naive_to_utc
+
+                def _to_utc(s: str, upper: bool = False) -> str:
+                    """Re-interpret a 'YYYY-MM-DD HH:MM:SS' string from display TZ as UTC.
+                    The same conversion as Normal mode: DST of the bound's own
+                    date, a repeated hour's second pass for an upper bound
+                    (Gemini audit 4-09)."""
                     if not s or len(s) < 19:
                         return s
                     try:
                         naive = _dt_cls.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
-                        if _use_system_local:
-                            # naive -> treated as system local, DST resolved
-                            # for the boundary's own date.
-                            utc_dt = naive.astimezone(_tz.utc)
-                        else:
-                            utc_dt = naive.replace(tzinfo=_disp_tz).astimezone(_tz.utc)
+                        utc_dt = display_naive_to_utc(naive, upper=upper)
                         return utc_dt.strftime("%Y-%m-%d %H:%M:%S")
                     except Exception:
                         return s
@@ -796,7 +796,7 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
                     _ts_col = _display_local_ts_sql()
                 else:
                     df = _to_utc(df) if df else ""
-                    dt = _to_utc(dt) if dt else ""
+                    dt = _to_utc(dt, upper=True) if dt else ""
         except Exception as _exc:
             logger.warning("filter_sql: timezone correction failed: %s", _exc)
 
