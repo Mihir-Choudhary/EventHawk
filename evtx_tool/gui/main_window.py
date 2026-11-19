@@ -161,6 +161,18 @@ def unique_display_names(paths) -> dict:
     return out
 
 
+def _relayout(model) -> None:
+    """Tell the views a display-only change (time zone, precision) re-renders
+    every row.  layoutChanged must follow layoutAboutToBeChanged: a filter
+    proxy saves its persistent indexes on the first and remaps them on the
+    second.  The lone layoutChanged these refreshes sent left the selection
+    and the view holding indexes into the proxy's freed mapping, and the next
+    selectedRows() crashed the app (access violation, about one time zone
+    change in three in tests/test_detail_refresh_and_bookmark_clear.py)."""
+    model.layoutAboutToBeChanged.emit()
+    model.layoutChanged.emit()
+
+
 class CheckableComboBox(QComboBox):
     """
     A QComboBox that shows checkable items in its popup.
@@ -19888,19 +19900,19 @@ class MainWindow(QMainWindow):
                         pass
 
         # Refresh merged model
-        self._event_model.layoutChanged.emit()
+        _relayout(self._event_model)
 
         # Refresh every per-file tab model
         for _state in self._file_tabs.values():
             try:
-                _state.model.layoutChanged.emit()
+                _relayout(_state.model)
             except Exception:
                 pass
 
         # Refresh Juggernaut Mode model if active
         if getattr(self, "_hw_model", None) is not None:
             try:
-                self._hw_model.layoutChanged.emit()
+                _relayout(self._hw_model)
             except Exception:
                 pass
             # A Timestamp quick filter is a DISPLAYED date: its SQL is built
@@ -19979,21 +19991,21 @@ class MainWindow(QMainWindow):
 
         # Refresh merged model
         try:
-            self._event_model.layoutChanged.emit()
+            _relayout(self._event_model)
         except Exception:
             pass
 
         # Refresh every per-file tab model
         for _state in self._file_tabs.values():
             try:
-                _state.model.layoutChanged.emit()
+                _relayout(_state.model)
             except Exception:
                 pass
 
         # Refresh Juggernaut Mode model if active
         if getattr(self, "_hw_model", None) is not None:
             try:
-                self._hw_model.layoutChanged.emit()
+                _relayout(self._hw_model)
             except Exception:
                 pass
 
