@@ -83,11 +83,24 @@ def _flatten_fields_into(obj, flat: dict) -> None:
             continue  # XML metadata (#text/#attributes/@…), not a field
         if k == "Data" and isinstance(v, list):
             # Named-Data list: [{"#attributes":{"Name":X}, "#text":val}, …]
+            named: set = set()      # names set by this list
+            seen: set = set()       # names already turned into a list
             for item in v:
                 if isinstance(item, dict):
                     nm = (item.get("#attributes") or {}).get("Name")
                     if nm:
-                        flat[str(nm)] = item.get("#text", "")
+                        # A repeated Name keeps every value, as a list -- the
+                        # shape record_json gives repeated JSON keys; the last
+                        # value used to overwrite the others (Gemini 3-06).
+                        nm, val = str(nm), item.get("#text", "")
+                        if nm in seen:
+                            flat[nm].append(val)
+                        elif nm in flat and nm in named:
+                            flat[nm] = [flat[nm], val]
+                            seen.add(nm)
+                        else:
+                            flat[nm] = val
+                            named.add(nm)
                     else:
                         _flatten_fields_into(item, flat)
         elif isinstance(v, dict):
@@ -569,6 +582,20 @@ def condition_groups(conditions) -> "list[list[dict]]":
     return groups
 
 
+def condition_candidates(primary) -> "list[str]":
+    """The text values a field condition tests for one field value.
+
+    A repeated <Data Name> holds a list (record_json._keep_repeats): each
+    element is a value of its own, so "Files equals alpha.dll" matches an
+    event whose Files are alpha.dll and beta.dll.  The list used to be tested
+    as its Python text "['alpha.dll', 'beta.dll']", so equals / starts with /
+    ends with never matched it, in either mode (Gemini audit 3-06).  Positive
+    operators need one element to match, negative ones every element."""
+    if isinstance(primary, list):
+        return [("" if x is None else str(x)) for x in primary] or [""]
+    return ["" if primary is None else str(primary)]
+
+
 def _conditions_pass(event: dict, conditions: "list[dict]", cs: bool) -> bool:
     """Return True iff *event* satisfies the conditions: AND-combined, except
     that "equals" rows on the same field are OR-ed (see condition_groups).
@@ -640,7 +667,7 @@ def _conditions_pass(event: dict, conditions: "list[dict]", cs: bool) -> bool:
             # logging service (Sysmon, lsass): matching it too made "ProcessId
             # equals 888" match every event Sysmon logged (Gemini 3-17).
             primary = event.get(dual)          # an integer 0 stays "0"
-        candidates: list[str] = [_low(str(primary) if primary is not None else "")]
+        candidates: list[str] = [_low(c) for c in condition_candidates(primary)]
 
         # Pre-compute value variants for known fields (hex/decimal + symbolic)
         variants: "frozenset[str] | None" = None

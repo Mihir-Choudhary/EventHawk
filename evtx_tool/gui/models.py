@@ -2303,6 +2303,7 @@ class EventFilterProxyModel(QSortFilterProxyModel):
             # container element — identical to JM's ed_flat_json and normal-mode
             # _conditions_pass, so conditions match across all three paths.
             from evtx_tool.core.filters import flatten_fields as _flatten_fields
+            from evtx_tool.core.filters import condition_candidates as _condition_candidates
             ed_flat = _flatten_fields(ed)
             # Lazy-imported once outside the condition loop
             from evtx_tool.core.heavyweight.filter_sql import _FIELD_DUAL_SOURCE
@@ -2325,7 +2326,8 @@ class EventFilterProxyModel(QSortFilterProxyModel):
                     # System's <Execution> PID only when EventData has none:
                     # EventData's is the process the event is about (Gemini 3-17).
                     primary = ev.get(_dual)
-                candidates.append(str(primary) if primary is not None else "")
+                # A repeated <Data Name> (a list): each value (Gemini 3-06).
+                candidates.extend(_condition_candidates(primary))
                 if not self._adv_case_sensitive:
                     candidates = [c.lower() for c in candidates]
                 cv = cond["value"]

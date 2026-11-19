@@ -1009,6 +1009,7 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
         # regardless of which storage layer holds the PID (event_data vs
         # <Execution>).  See _FIELD_DUAL_SOURCE.
         base_exprs: list[str] = []
+        _arr_path = None    # JSON path of an EventData field that may hold a list
         if name in _TOP_LEVEL_COLS:
             # Direct column reference — safe (name comes from a known allowlist).
             # CAST to VARCHAR so all string operators work uniformly even on
@@ -1028,6 +1029,7 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
                                   f"CAST({_dual} AS VARCHAR))")
             else:
                 base_exprs.append(f"json_extract_string(ed_flat_json, '$.{name}')")
+                _arr_path = f"$.{name}"
         elif "\x00" not in name:
             # Any other name (spaces, dots, quotes, backslashes, slashes...):
             # a JSON Pointer, '/<name>', which takes every character literally
@@ -1041,6 +1043,7 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             _ptr = "/" + name.replace("~", "~0").replace("/", "~1")
             _ptr = _ptr.replace("'", "''")
             base_exprs.append(f"json_extract_string(ed_flat_json, '{_ptr}')")
+            _arr_path = _ptr
         else:
             logger.warning("filter_sql: skipping condition with unsafe field name %r", name)
             continue
@@ -1193,6 +1196,31 @@ def filter_config_to_sql(fc: dict) -> tuple[str, list[Any]]:
             # while dropping every event in normal mode — a silent divergence.
             logger.warning("filter_sql: unknown condition operator %r — matching no rows", op)
             clauses.append("1=0")
+
+        # A repeated <Data Name> is stored as a JSON list: test each element,
+        # as Normal mode does (core.filters.condition_candidates).  The list
+        # was compared as its JSON text '["a","b"]', so equals / starts with /
+        # ends with never matched it (Gemini audit 3-06).  Positive operators
+        # need one element to match, "not" operators every element; an empty
+        # list is one empty value.  Rows holding a plain value take the
+        # unchanged clause.
+        _c0, _p0 = _cond_marks[-1][1], _cond_marks[-1][2]
+        if (_arr_path is not None and len(clauses) == _c0 + 1
+                and clauses[-1] != "1=0" and base_expr in clauses[-1]):
+            _scalar = clauses[-1]
+            _elem = _scalar.replace(base_expr, "__ehx")
+            _cp = params[_p0:]
+            _agg = "list_bool_and" if op in ("not contains", "not equals") else "list_bool_or"
+            _lst = f"CAST(json_extract(ed_flat_json, '{_arr_path}') AS VARCHAR[])"
+            _lst = f"(CASE WHEN len({_lst}) = 0 THEN ['']::VARCHAR[] ELSE {_lst} END)"
+            # Only a row whose JSON holds a '[' can hold a list: the second
+            # JSON read (json_type) is skipped for every other row.
+            clauses[-1] = (f"(CASE WHEN CONTAINS(ed_flat_json, '[') "
+                           f"AND json_type(ed_flat_json, '{_arr_path}') = 'ARRAY' "
+                           f"THEN COALESCE({_agg}(list_transform({_lst}, __ehx -> {_elem})), false) "
+                           f"ELSE {_scalar} END)")
+            del params[_p0:]
+            params.extend(_cp + _cp)
 
     if _cond_marks:
         from evtx_tool.core.filters import condition_groups
