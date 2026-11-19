@@ -493,8 +493,14 @@ class NormalColValueWorker(QThread):
                     continue
                 # A custom column's empty value is information (the event lacks
                 # the field, or is outside the column's filter), so it is
-                # offered as "(empty)" to filter on.
-                if s or custom_id is not None:
+                # offered as "(empty)" to filter on.  So is an empty field
+                # (a blank Computer, Channel or User): Juggernaut's popup
+                # counts it ("WHERE ... IS NOT NULL" keeps ''), this one left
+                # it out, so those events could not be picked here and the
+                # counts did not add up (Gemini audit 5-10 part 2).  A missing
+                # field (None, NULL in Juggernaut) and an unreadable time stay
+                # out in both.
+                if s or custom_id is not None or self._col_key not in ("timestamp_date", "timestamp_hour"):
                     counts[s] = counts.get(s, 0) + 1
             lim = popup_limit(self._col_key, self._search_term)
             items = sorted(counts.items(), key=lambda x: -x[1])
