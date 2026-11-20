@@ -46,8 +46,13 @@ def main() -> int:
         t.addTopLevelItem(QTreeWidgetItem([text, n]))
     pump()
     h = [t.visualItemRect(t.topLevelItem(i)).height() for i in range(3)]
+    from PySide6.QtGui import QFontMetrics
+    # One more line of text = at least one more line spacing (a fixed ratio
+    # of the one-line row held only for offscreen Qt's box glyphs).
+    line = QFontMetrics(t.font()).lineSpacing()
     check("a short name takes one line", h[0] < 34, str(h))
-    check("a long name gets a taller row (it wraps, no ellipsis)", h[1] >= h[0] * 1.6 and h[2] >= h[0] * 1.6, str(h))
+    check("a long name gets a taller row (it wraps, no ellipsis)",
+          h[1] >= h[0] + line - 1 and h[2] >= h[0] + line - 1, f"{h}, line {line}")
     check("the item text itself is unchanged", t.topLevelItem(1).text(0) == long_name)
     w._file_tree_panel.setFixedWidth(520)
     pump()
@@ -58,7 +63,6 @@ def main() -> int:
     # line in the regular weight can need two.  The row must be measured in
     # the font it is drawn in, or the second line is cut off (user report:
     # "Biometrics / Operational" selected and clipped).
-    from PySide6.QtGui import QFontMetrics
     t.clear()
     name = "Biometrics / Operational"
     item = QTreeWidgetItem([name, "1,297"])
@@ -78,8 +82,8 @@ def main() -> int:
     f = item.font(0); f.setBold(True); item.setFont(0, f)
     pump()
     bold_h = t.visualItemRect(item).height()
-    check("bold (open) name gets the taller row it wraps to", gap < 4 or bold_h >= reg_h * 1.6,
-          f"regular {reg_h} px, bold {bold_h} px, bold is {gap} px wider")
+    check("bold (open) name gets the taller row it wraps to", gap < 4 or bold_h >= reg_h + fm.lineSpacing() - 1,
+          f"regular {reg_h} px, bold {bold_h} px, bold is {gap} px wider, line {fm.lineSpacing()}")
     t.setCurrentItem(item); pump()
     check("selecting it keeps the taller row", t.visualItemRect(item).height() == bold_h,
           str(t.visualItemRect(item).height()))
