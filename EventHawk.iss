@@ -20,6 +20,13 @@
 #define MyAppEntryScript "eventhawk_gui.py"
 #define MyAppIcon        "EventHawk.ico"
 
+; VersionInfoVersion takes numbers only: drop a pre-release suffix (X.Y.Z-rc1 -> X.Y.Z).
+#if Pos("-", MyAppVersion) > 0
+  #define NumericVersion Copy(MyAppVersion, 1, Pos("-", MyAppVersion) - 1)
+#else
+  #define NumericVersion MyAppVersion
+#endif
+
 [Setup]
 AppId={{B8E7A4D3-2C1F-4A5E-9D6B-3E8F1A2C4D5E}
 AppName={#MyAppName}
@@ -32,13 +39,19 @@ AppUpdatesURL={#MyAppURL}/releases
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; The licence page: Next stays disabled until "I accept the agreement" is chosen.
+; A silent install (/VERYSILENT) accepts it, as with every Inno Setup installer.
+LicenseFile=LICENSE
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; The bundled Python supports Windows 10 and newer.
+MinVersion=10.0
 ; Non-admin friendly: default to a per-user install (no UAC prompt, goes to
 ; LocalAppData). The user may elevate and install for all users (Program Files)
-; via the install-mode dialog. {autopf}/{autodesktop}/{group} follow the choice.
+; via the install-mode dialog, or from the command line with /ALLUSERS ("commandline";
+; /CURRENTUSER is the default either way). {autopf}/{autodesktop}/{group} follow the choice.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequiredOverridesAllowed=dialog commandline
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -47,6 +60,13 @@ UninstallDisplayIcon={app}\{#MyAppIcon}
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 OutputBaseFilename=EventHawk-{#MyAppVersion}-Setup
 OutputDir=Output
+VersionInfoVersion={#NumericVersion}
+VersionInfoTextVersion={#MyAppVersion}
+VersionInfoProductName={#MyAppName}
+VersionInfoProductVersion={#NumericVersion}
+VersionInfoProductTextVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Setup
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -79,5 +99,11 @@ Type: filesandordirs; Name: "{app}\Lib"
 ; Program files only.  %LOCALAPPDATA%\EventHawk is the analyst's own data (custom
 ; profiles, logs, Sentinel's baseline key): uninstalling, or reinstalling,
 ; deleted it, so every saved baseline had to be rebuilt.  It is kept.
-Type: filesandordirs; Name: "{app}\evtx_tool\__pycache__"
-Type: filesandordirs; Name: "{app}\sentinel\__pycache__"
+; The three code folders go whole: they hold only program files and the
+; bytecode caches Python writes into every package while the app runs (an
+; uninstall left 264 .pyc files, 6.5 MB, when only the two top-level
+; __pycache__ folders were listed).  {app}\profiles (custom profiles of a
+; per-user install, whose shortcut starts in {app}) and log folders are kept.
+Type: filesandordirs; Name: "{app}\evtx_tool"
+Type: filesandordirs; Name: "{app}\sentinel"
+Type: filesandordirs; Name: "{app}\Lib"

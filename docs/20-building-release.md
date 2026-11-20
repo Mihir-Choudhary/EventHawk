@@ -6,7 +6,7 @@
 
 | File | What it is |
 |---|---|
-| `EventHawk-<version>-Setup.exe` | Installer. Installs for the current user (no admin) or, after elevating, for all users. Adds Start Menu and Desktop shortcuts, so EventHawk can be found from Windows search, and an uninstaller. |
+| `EventHawk-<version>-Setup.exe` | Installer. Shows the licence (Apache 2.0) first: Next stays disabled until "I accept the agreement" is chosen. Installs for the current user (no admin) or, after elevating, for all users. Adds Start Menu and Desktop shortcuts, so EventHawk can be found from Windows search, and an uninstaller. |
 | `EventHawk-<version>-portable.zip` | No install. Extract anywhere and run `EventHawk.exe` (or `EventHawk.cmd`). |
 | `SHA256SUMS.txt` | SHA-256 of both files. |
 
