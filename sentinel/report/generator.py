@@ -132,6 +132,8 @@ def _build_header(meta: "BaselineMeta", metrics: dict, scored_events: list | Non
         "suppression_rate_pct": metrics.get("suppression_rate_pct", 0.0),
         # F11/S5: input file hashes for forensic chain-of-custody
         "input_file_hashes": metrics.get("input_file_hashes", {}),
+        # Which Sigma rules tagged the events, and which were not applied.
+        "sigma": metrics.get("sigma") or "no Sigma rules selected",
     }
 
 

@@ -5,8 +5,9 @@
 # `python-evtx` package is a different library and will not work)
 evtx>=0.11.0
 
-# Sigma rule evaluation — optional; if absent, tagging is skipped with a warning
-pySigma>=0.10.0
+# Sigma rules (reads the rules; sentinel/analysis/sigma_tagger.py evaluates them).
+# Needed only when a Sigma rules folder is selected; without it that is an error.
+pySigma>=2.1.0
 
 # NOTE: PySide6 is required for the GUI but already installed by the main evtx_tool.
 # NOTE: The XOR8 probabilistic filter is pure Python (stdlib only), no extra package needed.

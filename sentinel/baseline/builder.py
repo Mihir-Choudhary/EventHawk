@@ -109,10 +109,13 @@ def build_baseline(
     _cb("Sigma pre-tagging", 0.10)
     if sigma_rules_dir and sigma_rules_dir.exists():
         from sentinel.analysis.sigma_tagger import SigmaTagger
-        tagger = SigmaTagger(sigma_rules_dir)
+        tagger = SigmaTagger(sigma_rules_dir)          # SigmaUnavailable: not skipped silently
         for ev in raw_events:
             ev.attck_tags = tagger.tag(ev)
-        logger.info("Sigma pre-tagging complete")
+        logger.info("%s", tagger.summary())
+        _cb(tagger.summary(), 0.12)
+    elif sigma_rules_dir:
+        raise FileNotFoundError(f"Sigma rules folder not found: {sigma_rules_dir}")
     else:
         logger.info("No Sigma rules directory provided; skipping pre-tagging")
 

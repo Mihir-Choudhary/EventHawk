@@ -146,6 +146,8 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     print(f"  Aggregate (T2):   {metrics.get('tier2_aggregate', 0)}")
     print(f"  Edge cases (T3):  {t3}")
     print(f"  Critical (T4):    {t4}")
+    if metrics.get("sigma"):
+        print(f"  {metrics['sigma']['summary']}")
     print(f"{'='*60}")
 
     if t4 > 0:

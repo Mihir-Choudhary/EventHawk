@@ -37,6 +37,6 @@ The version is `__version__` in `evtx_tool/__init__.py`. To release: raise it (a
 
 - The runner's Application log is small and holds no attack data; parsing breadth is covered by the test suite and by the maintainer's corpus runs, not here.
 - The programs are not code-signed. Windows SmartScreen may warn on first run; the bundled `python.exe` / `pythonw.exe` are signed by the Python Software Foundation (checked at build time).
-- Sentinel's Sigma pre-tagging needs pySigma, which is not bundled (it is not in the tested set either); without it, Sentinel logs that pre-tagging is off and runs the rest of its analysis.
+- pySigma is bundled for Sentinel's Sigma pre-tagging; no Sigma rules are bundled (the user supplies them).
 
 See [installation](01-installation.md) and [tests](22-testing.md).

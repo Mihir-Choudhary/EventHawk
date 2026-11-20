@@ -138,9 +138,12 @@ def run_analysis(
     sigma_tagger = None
     if sigma_rules_dir and sigma_rules_dir.exists():
         from sentinel.analysis.sigma_tagger import SigmaTagger
-        sigma_tagger = SigmaTagger(sigma_rules_dir)
+        sigma_tagger = SigmaTagger(sigma_rules_dir)     # SigmaUnavailable: not skipped silently
         for ev in raw_events:
             ev.attck_tags = sigma_tagger.tag(ev)
+        logger.info("%s", sigma_tagger.summary())
+    elif sigma_rules_dir:
+        raise FileNotFoundError(f"Sigma rules folder not found: {sigma_rules_dir}")
 
     # ── Set up per-host trackers ───────────────────────────────────────────────
     baseline_dist = meta.baseline_process_dist
@@ -248,6 +251,8 @@ def run_analysis(
     metrics["baseline_stability"] = meta.stability_score
     from sentinel.analysis.parser import last_failed_files
     metrics["failed_files"] = last_failed_files()      # reported by the caller (10-08)
+    if sigma_tagger is not None:
+        metrics["sigma"] = dict(sigma_tagger.status, summary=sigma_tagger.summary())
     logger.info(
         "Analysis complete: %d events scored, tier4=%d, tier3=%d, hosts=%d",
         len(scored),

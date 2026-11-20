@@ -344,6 +344,8 @@ class AnalysisTab(QWidget):
             self.analysis_complete.emit([], metrics)
             return
 
+        if metrics.get("sigma"):
+            self._log(metrics["sigma"].get("summary", ""))
         self._progress_bar.setValue(100)
         t4 = metrics.get("tier4_critical", 0)
         t3 = metrics.get("tier3_highlight", 0)

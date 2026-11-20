@@ -24,6 +24,9 @@ orjson>=3.9.0        # ~5x faster JSON serialisation; falls back to stdlib if ab
                      # (core/_json_compat.py, core/heavyweight/engine.py)
 reportlab>=4.0       # PDF report generation (output/pdf_exporter.py)
 
+# ── Sentinel Sigma rules ──────────────────────────────────────────────────────
+pySigma>=2.1.0       # reads Sigma rules for Sentinel (sentinel/analysis/sigma_tagger.py)
+
 # ── GUI ────────────────────────────────────────────────────────────────────────
 PySide6>=6.6.0       # Qt6 GUI (gui/*, analysis/analysis_runner.py)
 

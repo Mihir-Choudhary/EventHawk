@@ -17,6 +17,6 @@ The parser recognizes Security process creation/termination (4688/4689) and supp
 
 Boundaries are calibrated from baseline scores and adjusted for scoring; they are not universal 20/45/70 cutoffs. The scoring adjustment keeps aggregate/highlight floors of 45/70 while the suppression boundary remains baseline-derived with drift headroom. Results depend on the baseline, configuration, recorded fields and target scope. Missing command lines, lineage or hashes limit the corresponding signals.
 
-The optional Sigma integration is heuristic title-keyword pre-tagging, not full Sigma condition evaluation. Its tags do not automatically remove events from the baseline. See [Sigma limitations](18-sentinel-sigma.md).
+The optional Sigma pre-tagging evaluates Windows process_creation rules against Sysmon 1 / Security 4688 events; a test on a field Sentinel does not keep is unknown and never makes a rule match. Its tags do not remove events from the baseline. See [Sigma pre-tagging](18-sentinel-sigma.md).
 
 See [building a baseline](16-sentinel-baseline.md) and [analysis/reporting](17-sentinel-analysis.md). Earlier screenshots in `screenshots/` are illustrations, not current output verification.

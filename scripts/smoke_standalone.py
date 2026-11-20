@@ -77,7 +77,32 @@ def main() -> None:
         fail(f"Juggernaut parse holds {table.num_rows} events, the log holds {expected}")
     print(f"ok  Juggernaut parse: {table.num_rows} of {expected} events", flush=True)
 
-    # 5. main window
+    # 5. Sentinel's Sigma rules: pySigma is in the folder and a rule matches
+    import sigma.collection as _sigma_coll      # "sigma" is a namespace package: no __file__
+    if not os.path.abspath(_sigma_coll.__file__).lower().startswith(folder.lower()):
+        fail(f"pySigma loaded from outside the folder: {_sigma_coll.__file__}")
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from sentinel.analysis.sigma_tagger import SigmaTagger
+    from sentinel.models import RawEvent
+    rules = Path(tmp) / "sigma"
+    rules.mkdir()
+    (rules / "smoke.yml").write_text(
+        "title: Smoke\nid: 00000000-0000-4000-8000-00000000f00d\ntags: [attack.t1059]\n"
+        "logsource: {category: process_creation, product: windows}\n"
+        "detection:\n  sel:\n    CommandLine|contains: 'zzsmoke42'\n  condition: sel\n", encoding="utf-8")
+    tagger = SigmaTagger(rules)
+
+    def _ev(cmd):
+        return RawEvent(timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc), host="H", event_id=1,
+                        process_guid="", pid=1, ppid=0, parent_guid="", process_name="a.exe",
+                        process_path="C:\\a.exe", parent_name="", parent_path="", cmdline=cmd,
+                        user="", integrity_level="", image_hash="")
+    if tagger.rule_count != 1 or tagger.tag(_ev("a.exe zzsmoke42")) != ["T1059"] or tagger.tag(_ev("a.exe")):
+        fail(f"Sentinel Sigma matching: {tagger.summary()}")
+    print("ok  Sentinel Sigma rules: pySigma loads from the folder, a rule matches", flush=True)
+
+    # 6. main window
     from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)

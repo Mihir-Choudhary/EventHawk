@@ -9,12 +9,11 @@ Gemini audit 10-11 (Medium):
    kept punctuation in title keywords, loaded only *.yml (not *.yaml) and
    validated only a file's first YAML document.
 
-Expected: each right.  The Sigma part uses a stand-in rule collection
-(pySigma is not installed here).  Synthetic.
+Expected: each right.  Part 3 is checked by test_sentinel_sigma_matching.py
+(the keyword fallback it tested was replaced by real Sigma matching).  Synthetic.
 """
 import os
 import sys
-import types
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -53,14 +52,8 @@ def main() -> int:
     src = inspect.getsource(E.run_analysis)
     check("the engine keys drift by the same host key", "host_key(ev.host)" in src or "_host_key(ev.host)" in src)
 
-    from sentinel.analysis.sigma_tagger import SigmaTagger
-    tg = SigmaTagger.__new__(SigmaTagger)
-    tg._rules = []
-    rule = types.SimpleNamespace(tags=["ATTACK.T1059.001", "attack.execution"], title="Mimikatz, PowerShell!")
-    tg._build_keyword_fallback(types.SimpleNamespace(rules=[rule]))
-    got = [(sorted(p.keywords) if hasattr(p, "keywords") else None, ids) for p, ids in tg._rules]
-    check("upper-case tags read, punctuation stripped from keywords",
-          got == [(["mimikatz", "powershell"], ["T1059.001"])], str(got))
+    # Part 3 (tags in any case, *.yaml, every YAML document) moved to
+    # test_sentinel_sigma_matching.py with the real Sigma matcher.
     n = sum(ok for _, ok, _ in CHECKS)
     print(f"{n}/{len(CHECKS)} checks passed")
     return 0 if n == len(CHECKS) else 1
