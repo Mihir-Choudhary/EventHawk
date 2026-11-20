@@ -17,6 +17,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
+from sentinel.analysis.sigma_tagger import SigmaUnavailable  # noqa: E402  (no pySigma import)
+
 logger = logging.getLogger("sentinel.cli")
 
 
@@ -75,6 +77,10 @@ def _cmd_build(args: argparse.Namespace) -> int:
             meta.event_count, meta.stability_score, output_dir,
         )
         return 0
+    except SigmaUnavailable as exc:
+        print()
+        logger.error("Build failed: %s", exc)
+        return 1
     except ValueError as exc:
         print()
         logger.error("Build failed: %s", exc)
@@ -127,8 +133,13 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         else:
             target_paths.append(p)
 
-    scored, metrics = run_analysis(target_paths, baseline_dir, sigma_dir, progress_cb=_cb,
-                                   config_path=Path(args.config) if getattr(args, "config", None) else None)
+    try:
+        scored, metrics = run_analysis(target_paths, baseline_dir, sigma_dir, progress_cb=_cb,
+                                       config_path=Path(args.config) if getattr(args, "config", None) else None)
+    except SigmaUnavailable as exc:
+        print()
+        logger.error("Analysis failed: %s", exc)
+        return 1
     print()
 
     # Load meta for report

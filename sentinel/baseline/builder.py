@@ -67,6 +67,16 @@ def build_baseline(
         logger.debug("build_baseline [%.0f%%] %s", pct * 100, step)
 
     # ── 0.1  Parse ────────────────────────────────────────────────────────────
+    # The Sigma rules load before any parsing: a missing pySigma or rules
+    # folder is reported at once, not after the whole parse.
+    tagger = None
+    if sigma_rules_dir:
+        if not sigma_rules_dir.exists():
+            raise FileNotFoundError(f"Sigma rules folder not found: {sigma_rules_dir}")
+        from sentinel.analysis.sigma_tagger import SigmaTagger
+        _cb("Loading Sigma rules", 0.0)
+        tagger = SigmaTagger(sigma_rules_dir)          # SigmaUnavailable: not skipped silently
+
     # F11/S5: Hash input files before parsing for forensic chain-of-custody
     _cb("Hashing input EVTX files", 0.0)
     from sentinel.analysis.parser import hash_evtx_files, parse_evtx_files
@@ -107,15 +117,11 @@ def build_baseline(
 
     # ── 0.3  Sigma pre-tagging ────────────────────────────────────────────────
     _cb("Sigma pre-tagging", 0.10)
-    if sigma_rules_dir and sigma_rules_dir.exists():
-        from sentinel.analysis.sigma_tagger import SigmaTagger
-        tagger = SigmaTagger(sigma_rules_dir)          # SigmaUnavailable: not skipped silently
+    if tagger is not None:
         for ev in raw_events:
             ev.attck_tags = tagger.tag(ev)
         logger.info("%s", tagger.summary())
         _cb(tagger.summary(), 0.12)
-    elif sigma_rules_dir:
-        raise FileNotFoundError(f"Sigma rules folder not found: {sigma_rules_dir}")
     else:
         logger.info("No Sigma rules directory provided; skipping pre-tagging")
 

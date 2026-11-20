@@ -326,6 +326,9 @@ class AnalysisTab(QWidget):
         _bd = getattr(self, "_run_baseline_dir", None)
         if _bd:
             metrics["baseline_dir"] = str(_bd)
+        # Which Sigma rules were applied, also when nothing was scored.
+        if metrics.get("sigma"):
+            self._log(metrics["sigma"].get("summary", ""))
 
         # B25: Legitimate completion with 0 scored events — inform user
         if not scored:
@@ -344,8 +347,6 @@ class AnalysisTab(QWidget):
             self.analysis_complete.emit([], metrics)
             return
 
-        if metrics.get("sigma"):
-            self._log(metrics["sigma"].get("summary", ""))
         self._progress_bar.setValue(100)
         t4 = metrics.get("tier4_critical", 0)
         t3 = metrics.get("tier3_highlight", 0)

@@ -95,6 +95,40 @@ RULES = {
     "r12.yml": rule("00000000-0000-4000-8000-000000000012", "Long S Demo",
                     ["attack.t1140"],
                     "  sel:\n    CommandLine|contains: 'zzlongs'\n  condition: sel"),
+    # 13: startswith + base64offset + wide (UTF-16) base64, 1 of them.
+    "r13.yml": rule("00000000-0000-4000-8000-000000000013", "Encoded Demo",
+                    ["attack.t1132"],
+                    "  s_start:\n    CommandLine|startswith: 'zzstart'\n"
+                    "  s_b64:\n    CommandLine|base64offset|contains: 'zzb64marker'\n"
+                    "  s_wide:\n    CommandLine|wide|base64offset|contains: 'zzwidemark'\n"
+                    "  condition: 1 of them"),
+    # 14: number comparison, field reference, exists, all of them.
+    "r14.yml": rule("00000000-0000-4000-8000-000000000014", "Compare Demo",
+                    ["attack.t1057"],
+                    "  sel_img:\n    Image|endswith: '\\ttdemo.exe'\n"
+                    "  sel_pid:\n    ProcessId|gt: 500\n"
+                    "  sel_ref:\n    Image|fieldref: ParentImage\n"
+                    "  sel_cmd:\n    CommandLine|exists: true\n"
+                    "  condition: all of them"),
+    # 15: exists:false on a field Sentinel does not keep -> unknown.
+    "r15.yml": rule("00000000-0000-4000-8000-000000000015", "Exists Demo",
+                    ["attack.t1027.005"],
+                    "  sel:\n    Image|endswith: '\\ssdemo.exe'\n    OriginalFileName|exists: false\n"
+                    "  condition: sel"),
+    # 16: not 1 of filter_*, and "not ParentImage: null".
+    "r16.yml": rule("00000000-0000-4000-8000-000000000016", "Filters Demo",
+                    ["attack.t1204"],
+                    "  sel:\n    Image|endswith: '\\rrdemo.exe'\n"
+                    "  filter_a:\n    CommandLine|contains: 'zzskipa'\n"
+                    "  filter_b:\n    ParentImage|endswith: '\\zzskipb.exe'\n"
+                    "  filter_null:\n    ParentImage: null\n"
+                    "  condition: sel and not 1 of filter_*"),
+    # 17: Security 4688 without a recorded command line, under a not-filter.
+    "r17.yml": rule("00000000-0000-4000-8000-000000000017", "No Cmdline Demo",
+                    ["attack.t1033"],
+                    "  sel:\n    Image|endswith: '\\qqdemo.exe'\n"
+                    "  filter:\n    CommandLine|contains: 'zzharmless'\n"
+                    "  condition: sel and not filter"),
     # Not applied: another category, no technique, a broken rule.
     "r09.yml": rule("00000000-0000-4000-8000-000000000009", "Network Demo", ["attack.t1071"],
                     "  sel:\n    DestinationPort: 4444\n  condition: sel", category="network_connection"),
@@ -105,13 +139,18 @@ RULES = {
 }
 
 
-def ev(eid, cmd, img, parent=r"C:\Windows\explorer.exe", user=r"ZZHOST\zzuser"):
+def ev(eid, cmd, img, parent=r"C:\Windows\explorer.exe", user=r"ZZHOST\zzuser", pid=100):
     from sentinel.models import RawEvent
     return RawEvent(timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc), host="ZZHOST", event_id=eid,
-                    process_guid="", pid=100, ppid=50, parent_guid="",
+                    process_guid="", pid=pid, ppid=50, parent_guid="",
                     process_name=img.rsplit("\\", 1)[-1], process_path=img,
                     parent_name=parent.rsplit("\\", 1)[-1] if parent else "", parent_path=parent,
                     cmdline=cmd, user=user, integrity_level="Medium", image_hash="")
+
+
+def b64(data: bytes) -> str:
+    import base64
+    return base64.b64encode(data).decode("ascii")
 
 
 def main() -> int:
@@ -153,7 +192,7 @@ def main() -> int:
 
     t = ST.SigmaTagger(d)
     st = t.status
-    check("9 rules applied", st["rules_applied"] == 9, t.summary())
+    check("14 rules applied", st["rules_applied"] == 14, t.summary())
     check("skipped by reason: other category 1, no technique 1, unreadable 1",
           st["skipped"].get("not a Windows process_creation rule") == 1
           and st["skipped"].get("no ATT&CK technique tag") == 1
@@ -197,6 +236,37 @@ def main() -> int:
         # quick text check must not skip the rule for it.
         ("look-alike letter (long s): matched as the evaluator does",
          ev(1, "q.exe zzlong\u017f", r"C:\t\q.exe"), ["T1140"]),
+        ("startswith: matches at the start", ev(1, "zzstart.exe /x", r"C:\t\e.exe"), ["T1132"]),
+        ("startswith: not in the middle", ev(1, "e.exe zzstart", r"C:\t\e.exe"), []),
+        ("base64offset: the encoded marker matches",
+         ev(1, "e.exe -enc " + b64(b"zzb64marker tail"), r"C:\t\e.exe"), ["T1132"]),
+        ("base64offset: the marker at offset 1 matches",
+         ev(1, "e.exe -enc " + b64(b"x" + b"zzb64marker tail"), r"C:\t\e.exe"), ["T1132"]),
+        ("wide base64: UTF-16 encoded marker matches",
+         ev(1, "e.exe -enc " + b64("zzwidemark!".encode("utf-16-le")), r"C:\t\e.exe"), ["T1132"]),
+        ("encoded text not containing the marker: no tag",
+         ev(1, "e.exe -enc " + b64(b"something else entirely"), r"C:\t\e.exe"), []),
+        ("all of them: pid > 500, Image = ParentImage, CommandLine exists",
+         ev(1, "ttdemo.exe", r"C:\t\ttdemo.exe", parent=r"C:\t\ttdemo.exe", pid=900), ["T1057"]),
+        ("all of them: pid 100 is not > 500",
+         ev(1, "ttdemo.exe", r"C:\t\ttdemo.exe", parent=r"C:\t\ttdemo.exe", pid=100), []),
+        ("all of them: fieldref differs", ev(1, "ttdemo.exe", r"C:\t\ttdemo.exe", pid=900), []),
+        ("all of them on 4688: ProcessId not kept -> unknown, no tag",
+         ev(4688, "ttdemo.exe", r"C:\t\ttdemo.exe", parent=r"C:\t\ttdemo.exe", pid=900), []),
+        ("exists:false on a field Sentinel lacks: unknown, no tag",
+         ev(1, "ssdemo.exe", r"C:\t\ssdemo.exe"), []),
+        ("not 1 of filter_*: no filter true -> rule 16", ev(1, "rrdemo.exe", r"C:\t\rrdemo.exe"), ["T1204"]),
+        ("not 1 of filter_*: filter_a true -> no tag", ev(1, "rrdemo.exe zzskipa", r"C:\t\rrdemo.exe"), []),
+        ("not 1 of filter_*: filter_b true -> no tag",
+         ev(1, "rrdemo.exe", r"C:\t\rrdemo.exe", parent=r"C:\x\zzskipb.exe"), []),
+        ("not 1 of filter_*: empty ParentImage (filter_null) -> no tag",
+         ev(1, "rrdemo.exe", r"C:\t\rrdemo.exe", parent=""), []),
+        ("4688 with no command line recorded, not-filter on it: unknown, no tag",
+         ev(4688, "", r"C:\t\qqdemo.exe"), []),
+        ("4688 with a command line, filter false: rule 17", ev(4688, "qqdemo.exe /a", r"C:\t\qqdemo.exe"),
+         ["T1033"]),
+        ("Sysmon with an empty command line is a real empty value: rule 17",
+         ev(1, "", r"C:\t\qqdemo.exe"), ["T1033"]),
     ]
     for name, e, want in cases:
         got = t.tag(e)

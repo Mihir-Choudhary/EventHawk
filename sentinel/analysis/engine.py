@@ -102,6 +102,16 @@ def run_analysis(
                 stored_bounds.as_dict(), tier_bounds.as_dict())
 
     # ── Parse target events ───────────────────────────────────────────────────
+    # The Sigma rules load before any parsing: a missing pySigma or rules
+    # folder is reported at once, also for a target with no events.
+    sigma_tagger = None
+    if sigma_rules_dir:
+        if not sigma_rules_dir.exists():
+            raise FileNotFoundError(f"Sigma rules folder not found: {sigma_rules_dir}")
+        from sentinel.analysis.sigma_tagger import SigmaTagger
+        _cb("Loading Sigma rules", 0.02)
+        sigma_tagger = SigmaTagger(sigma_rules_dir)     # SigmaUnavailable: not skipped silently
+
     _cb("Hashing input EVTX files", 0.04)
     from sentinel.analysis.parser import hash_evtx_files, parse_evtx_files, parse_evtx_files_parallel
     input_file_hashes = hash_evtx_files(target_paths)
@@ -135,15 +145,10 @@ def run_analysis(
 
     # ── Sigma pre-tagging (on raw events before normalization) ─────────────────
     _cb("Sigma pre-tagging", 0.10)
-    sigma_tagger = None
-    if sigma_rules_dir and sigma_rules_dir.exists():
-        from sentinel.analysis.sigma_tagger import SigmaTagger
-        sigma_tagger = SigmaTagger(sigma_rules_dir)     # SigmaUnavailable: not skipped silently
+    if sigma_tagger is not None:
         for ev in raw_events:
             ev.attck_tags = sigma_tagger.tag(ev)
         logger.info("%s", sigma_tagger.summary())
-    elif sigma_rules_dir:
-        raise FileNotFoundError(f"Sigma rules folder not found: {sigma_rules_dir}")
 
     # ── Set up per-host trackers ───────────────────────────────────────────────
     baseline_dist = meta.baseline_process_dist
