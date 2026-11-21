@@ -89,6 +89,18 @@ def pick_payload(event):
                 return {"Data": v["#text"]}
         elif v not in (None, ""):
             return {"Data": v}
+    # Another payload section: Windows writes <ProcessingErrorData> (ErrorCode,
+    # DataItemName, EventPayload) when the provider's template does not fit the
+    # data, and the schema also allows BinaryEventData / DebugData.  Reading
+    # only EventData / UserData showed such an event with no data at all (931
+    # records in the test corpus, AppLocker among them).  Kept under the
+    # section's own name, so it reads as what it is: data Windows did not render.
+    if isinstance(event, dict):
+        for key, v in event.items():
+            if key in ("System", "RenderingInfo", "EventData", "UserData") or str(key).startswith("#"):
+                continue
+            if v not in (None, "", {}):
+                return {key: v}
     return {}
 
 
