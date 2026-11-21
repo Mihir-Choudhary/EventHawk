@@ -6,7 +6,7 @@ name.  Six of seven public single-machine collections do this.  Exact-name
 matching therefore drops events when an analyst asks for "this host".
 
 These synthetic cases pin the grouping rules of
-docs/superpowers/specs/2026-10-23-time-window-pivot-and-host-identity-design.md
+the host-identity design notes
 section 2: renames and a single domain suffix link automatically; two domains
 and shared local log files are only suggestions; IP literals stay whole;
 blank names are never linked; confirm/reject regroup.
