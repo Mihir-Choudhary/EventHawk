@@ -41,6 +41,7 @@ def _jm_load_question(tool: str, n: int) -> str:
 from evtx_tool.output.exporters import safe_csv_writer as _safe_csv_writer  # noqa: E402
 from evtx_tool.output.exporters import SafeDictWriter as _SafeDictWriter    # noqa: E402
 from evtx_tool.output.exporters import event_data_text as _event_data_text  # noqa: E402
+from evtx_tool.output.exporters import export_open as _export_open          # noqa: E402
 
 from PySide6.QtCore import (
     QEvent, QModelIndex, QObject, QPoint, QSortFilterProxyModel, Qt, QThread, QTimer, Signal, Slot,
@@ -3376,7 +3377,7 @@ class _LogonSessionDialog(QDialog):
             return
         n = 0
         try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            with _export_open(path, newline="", encoding="utf-8-sig") as f:
                 writer = _safe_csv_writer(f)
                 writer.writerow(self._HEADERS)
                 for r in range(self._tbl.rowCount()):
@@ -4799,7 +4800,7 @@ class _WifiHistoryDialog(QDialog):
         if not path:
             return
         try:
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            with _export_open(path, newline="", encoding="utf-8-sig") as f:
                 writer = _safe_csv_writer(f)
                 writer.writerow(self._HEADERS)
                 # Low fix: rebuild row order from the table's current visual state
@@ -6625,7 +6626,7 @@ class _RemoteAssistanceDialog(QDialog):
             if not ordered:
                 ordered = list(self._shown_sessions)
 
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            with _export_open(path, newline="", encoding="utf-8-sig") as f:
                 writer = _safe_csv_writer(f)
                 # L2 fix: extractors are ordered to match _HEADERS exactly.
                 # Adding a new column to _HEADERS must be accompanied by a
@@ -7033,17 +7034,49 @@ class _JMExportWorker(QThread):
         self._cancel = True
 
     # ── helpers ───────────────────────────────────────────────────────────
+    # CSV / JSON are written to a temporary file next to the destination and
+    # moved over it only when complete (HTML / XML go through
+    # exporters.export, which does the same).  Failure or cancellation removes
+    # that temporary file only: it used to delete self._path, the analyst's
+    # existing file, even when the export had refused it or failed before
+    # opening anything (Codex audit A2-01).
+    _tmp: str | None = None
+
     def _discard_partial(self) -> None:
+        tmp, self._tmp = self._tmp, None
+        if not tmp:
+            return
         try:
-            if os.path.exists(self._path):
-                os.remove(self._path)
+            if os.path.exists(tmp):
+                os.remove(tmp)
         except OSError as exc:
-            logger.warning("Could not remove partial export %s: %s", self._path, exc)
+            logger.warning("Could not remove partial export %s: %s", tmp, exc)
+
+    def _open_tmp(self, **open_kw):
+        import tempfile
+        dest_dir = os.path.dirname(os.path.abspath(self._path))
+        os.makedirs(dest_dir, exist_ok=True)
+        fd, self._tmp = tempfile.mkstemp(prefix=".eventhawk_export_", suffix="." + self._ext,
+                                         dir=dest_dir)
+        return os.fdopen(fd, "w", **open_kw)
+
+    def _commit_tmp(self) -> None:
+        if self._cancel or not self._tmp:
+            return
+        # Checked again just before replacing: the file may have changed since.
+        from evtx_tool.output.exporters import _refuse_evtx_destination
+        _refuse_evtx_destination(self._path)
+        os.replace(self._tmp, self._path)
+        self._tmp = None
 
     def run(self) -> None:
         import duckdb as _duckdb
         con = None
         try:
+            # Never over an event log, whatever its name (Gemini 6-11): the
+            # streaming CSV / JSON path used to skip this check.
+            from evtx_tool.output.exporters import _refuse_evtx_destination
+            _refuse_evtx_destination(self._path)
             con = _duckdb.connect()
             con.execute(f"SET threads={max(2, min((os.cpu_count() or 4) - 1, 16))}")
             con.register("events", self._full_table)
@@ -7143,7 +7176,7 @@ class _JMExportWorker(QThread):
             headers = csv_headers(keys, n_rows, export_titles(self._custom))
             pos, width = {h: i for i, h in enumerate(headers)}, len(headers)
             cursor = con.execute(f"SELECT {cols} {src} ORDER BY {self._order_sql}", self._params)
-            with open(self._path, "w", newline="", encoding="utf-8-sig") as fh:
+            with self._open_tmp(newline="", encoding="utf-8-sig") as fh:
                 writer = _safe_csv_writer(fh)
                 writer.writerow(headers)
                 while not self._cancel:
@@ -7164,7 +7197,7 @@ class _JMExportWorker(QThread):
             from evtx_tool.analysis.normalizer import SemanticNormalizer
             normalize = SemanticNormalizer.get().enrich
             cursor = con.execute(f"SELECT {cols} {src} ORDER BY {self._order_sql}", self._params)
-            with open(self._path, "w", encoding="utf-8") as fh:
+            with self._open_tmp(encoding="utf-8") as fh:
                 fh.write("[\n")
                 first = True
                 while not self._cancel:
@@ -7184,6 +7217,7 @@ class _JMExportWorker(QThread):
                     written += len(batch)
                     self.progress.emit(written)
                 fh.write("\n]\n")
+        self._commit_tmp()
         return written
 
     def _require_shards(self, con) -> None:
@@ -7917,7 +7951,7 @@ class _ComputerNormalisationDialog(QDialog):
             if not ordered:
                 ordered = list(self._shown_rows)
 
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            with _export_open(path, newline="", encoding="utf-8-sig") as f:
                 writer = _safe_csv_writer(f)
                 writer.writerow([
                     "Normalised Name", "Variants", "Events",
@@ -17858,7 +17892,7 @@ class MainWindow(QMainWindow):
                 "Event ID", "Level", "Timestamp", "Computer",
                 "Channel", "User", "ATT&CK", "Source File",
             ]
-            with open(path, "w", newline="", encoding="utf-8-sig") as f:   # BOM: Excel reads it as UTF-8 (Gemini 6-10)
+            with _export_open(path, newline="", encoding="utf-8-sig") as f:   # BOM: Excel reads it as UTF-8 (Gemini 6-10)
                 writer = _safe_csv_writer(f)
                 writer.writerow(headers)
                 for ev in filtered:
@@ -18013,7 +18047,7 @@ class MainWindow(QMainWindow):
                     ("Users", "users"), ("Computers", "computers"),
                 ]
                 count = 0
-                with open(path, "w", encoding="utf-8-sig", newline="") as fh:
+                with _export_open(path, encoding="utf-8-sig", newline="") as fh:
                     writer = _safe_csv_writer(fh)
                     writer.writerow(["type", "value", "count", "first_seen",
                                      "last_seen", "score"])
@@ -18049,7 +18083,7 @@ class MainWindow(QMainWindow):
                     ("Users", "users"), ("Computers", "computers"),
                 ]
                 count = 0
-                with open(path, "w", encoding="utf-8", newline="") as fh:
+                with _export_open(path, encoding="utf-8", newline="") as fh:
                     for label, key in _ioc_keys:
                         items = _iocs.get(key) or []
                         if items:
@@ -20758,7 +20792,7 @@ class MainWindow(QMainWindow):
             ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
             fields = ["record_id", "event_id", "timestamp", "computer", "source_file"]
             if ext == "csv":
-                with open(path, "w", newline="", encoding="utf-8-sig") as fh:   # BOM: Excel reads it as UTF-8 (Gemini 6-10)
+                with _export_open(path, newline="", encoding="utf-8-sig") as fh:   # BOM: Excel reads it as UTF-8 (Gemini 6-10)
                     writer = _SafeDictWriter(fh, fieldnames=fields, extrasaction="ignore")
                     writer.writeheader()
                     writer.writerows(self._bookmarks)
@@ -20766,7 +20800,7 @@ class MainWindow(QMainWindow):
                 # Default to JSON if extension unrecognised or .json
                 if not path.lower().endswith(".json"):
                     path += ".json"
-                with open(path, "w", encoding="utf-8") as fh:
+                with _export_open(path, encoding="utf-8") as fh:
                     _json.dump(self._bookmarks, fh, indent=2, default=str)
             n = len(self._bookmarks)
             QMessageBox.information(

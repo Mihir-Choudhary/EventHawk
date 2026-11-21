@@ -12,9 +12,12 @@ Export formats:
 """
 from __future__ import annotations
 
+import contextlib
 import csv
 import hashlib
 import json
+import os
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +25,42 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sentinel.models import BaselineMeta, ScoredEvent
+
+
+_EVTX_MAGIC = b"ElfFile\x00"
+
+
+@contextlib.contextmanager
+def _report_open(path: Path, **open_kw):
+    """Write a report to a temporary file and move it over `path` when done.
+
+    An event log is never a report destination (by name or content), and a
+    failed write leaves an earlier file as it was.  Sentinel runs without
+    evtx_tool, so this is its own copy of exporters.export_open (Codex audit
+    A2-01 follow-up).
+    """
+    def _refuse() -> None:
+        if path.suffix.lower() == ".evtx":
+            raise ValueError(f"Refusing to write a report to '{path}': a .evtx path is an event log")
+        try:
+            with open(path, "rb") as fh:
+                if fh.read(len(_EVTX_MAGIC)) == _EVTX_MAGIC:
+                    raise ValueError(f"Refusing to write a report to '{path}': that file is an EVTX event log")
+        except OSError:
+            pass
+    _refuse()
+    fd, tmp = tempfile.mkstemp(prefix=".sentinel_report_", suffix=path.suffix, dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", **open_kw) as fh:
+            yield fh
+        _refuse()
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def generate_report(
@@ -54,7 +93,7 @@ def generate_report(
 
     if output_path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as fh:
+        with _report_open(output_path, encoding="utf-8") as fh:
             json.dump(report, fh, indent=2, default=str)
 
     return report
@@ -86,7 +125,7 @@ def generate_csv_report(
     events_to_export = [e for e in scored_events if e.tier >= 3]
     events_to_export.sort(key=lambda e: (e.tier, -e.composite))
 
-    with open(output_path, "w", encoding="utf-8", newline="") as fh:
+    with _report_open(output_path, encoding="utf-8", newline="") as fh:
         # Formula-safe like every EventHawk CSV (user rule; Codex CK91-1), with
         # Sentinel's own copy of the rule: Sentinel runs without evtx_tool
         # (Gemini audit 10-12).

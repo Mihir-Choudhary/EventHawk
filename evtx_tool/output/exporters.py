@@ -17,6 +17,7 @@ HTML exporter now includes:
 from __future__ import annotations
 
 import base64
+import contextlib
 import csv
 import json
 import logging
@@ -1812,6 +1813,34 @@ def export(
 
 
 _EVTX_MAGIC = b"ElfFile\x00"
+
+
+@contextlib.contextmanager
+def export_open(filepath: str, mode: str = "w", **open_kw):
+    """open() for an export destination the analyst chose.
+
+    Refuses an event log (by name or content, as export() does), writes to a
+    temporary file next to it and moves that over the destination only when
+    the block ends without an error.  A failed export leaves the destination
+    as it was: never a truncated report, never a deleted file (Gemini 6-11,
+    Codex audit A2-01; session, IOC, bookmark and System Activity exports
+    wrote the destination directly).
+    """
+    _refuse_evtx_destination(filepath)
+    dest_dir = os.path.dirname(os.path.abspath(filepath))
+    os.makedirs(dest_dir, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".eventhawk_export_", suffix=Path(filepath).suffix, dir=dest_dir)
+    try:
+        with os.fdopen(fd, mode, **open_kw) as fh:
+            yield fh
+        _refuse_evtx_destination(filepath)
+        os.replace(tmp, filepath)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _refuse_evtx_destination(filepath: str) -> None:

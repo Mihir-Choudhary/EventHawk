@@ -21,6 +21,8 @@ import uuid
 logger = logging.getLogger(__name__)
 from datetime import datetime, timezone
 
+from evtx_tool.output.exporters import export_open as _export_open
+
 # IOC types to skip in exports
 _SKIP = frozenset({"summary", "correlation"})
 
@@ -192,7 +194,7 @@ def export_stix(iocs: dict, filepath: str, skipped: "dict | None" = None) -> int
         "objects":      objects,
     }
 
-    with open(filepath, "w", encoding="utf-8", errors="backslashreplace") as fh:
+    with _export_open(filepath, encoding="utf-8", errors="backslashreplace") as fh:
         json.dump(bundle, fh, indent=2, ensure_ascii=False)
 
     return len(objects)
@@ -275,7 +277,7 @@ def export_misp(iocs: dict, filepath: str) -> int:
         }
     }
 
-    with open(filepath, "w", encoding="utf-8", errors="backslashreplace") as fh:
+    with _export_open(filepath, encoding="utf-8", errors="backslashreplace") as fh:
         json.dump(misp_event, fh, indent=2, ensure_ascii=False)
 
     return len(attrs)
@@ -385,7 +387,7 @@ def export_yara(iocs: dict, filepath: str) -> int:
 
     lines.append("}")
 
-    with open(filepath, "w", encoding="utf-8", errors="backslashreplace") as fh:
+    with _export_open(filepath, encoding="utf-8", errors="backslashreplace") as fh:
         fh.write("\n".join(lines) + "\n")
 
     return count

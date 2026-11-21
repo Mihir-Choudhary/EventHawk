@@ -472,9 +472,9 @@ class SystemActivityDialog(QDialog):
         return write_html_report(path, self._res, self._events, digits=self._digits)
 
     def write_csv(self, path, timeline: bool):
-        from evtx_tool.output.exporters import safe_csv_writer
+        from evtx_tool.output.exporters import export_open, safe_csv_writer
         tbl = self._tbl if timeline else self._tbl_pts
-        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        with export_open(path, newline="", encoding="utf-8-sig") as f:
             w = safe_csv_writer(f)
             w.writerow(TIMELINE_HEADERS if timeline else MOMENT_HEADERS)
             for it in self.visible_order(tbl):
