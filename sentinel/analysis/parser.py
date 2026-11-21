@@ -509,6 +509,18 @@ def _flatten_event_data(event_data) -> dict[str, str]:
     return {}
 
 
+# The EventData names Sigma's fields come from; an absent one is recorded in
+# RawEvent.missing (old Security 4688 versions have no ParentProcessName).
+_KEYS_4688 = ("NewProcessName", "ParentProcessName", "CommandLine", "SubjectUserName",
+              "NewProcessId", "ProcessId")
+_KEYS_SYSMON1 = ("Image", "ParentImage", "CommandLine", "User", "IntegrityLevel", "Hashes",
+                 "ProcessGuid", "ParentProcessGuid", "ProcessId", "ParentProcessId")
+
+
+def _missing(d: dict, keys: tuple[str, ...]) -> frozenset[str]:
+    return frozenset(k for k in keys if k not in d)
+
+
 def _from_4688(ts: datetime, host: str, eid: int, d: dict) -> RawEvent:
     proc_path   = d.get("NewProcessName", "")
     parent_path = d.get("ParentProcessName", "")
@@ -526,6 +538,7 @@ def _from_4688(ts: datetime, host: str, eid: int, d: dict) -> RawEvent:
         user=d.get("SubjectUserName", ""),
         integrity_level=d.get("MandatoryLabel", ""),
         image_hash="",
+        missing=_missing(d, _KEYS_4688),
     )
 
 
@@ -546,6 +559,7 @@ def _from_sysmon1(ts: datetime, host: str, eid: int, d: dict) -> RawEvent:
         user=d.get("User", ""),
         integrity_level=d.get("IntegrityLevel", ""),
         image_hash=d.get("Hashes", ""),
+        missing=_missing(d, _KEYS_SYSMON1),
     )
 
 

@@ -8,8 +8,11 @@ and tags the event with the ATT&CK technique IDs of every rule that matches.
 
 Forensic rules:
   * A rule is applied only to the events it is written for: logsource category
-    ``process_creation`` (Sysmon 1, Security 4688).  Other rules are counted as
-    not applicable, never run against the wrong events.
+    ``process_creation`` (Sysmon 1, Security 4688), and of those only the
+    source its ``service`` names (sysmon: 1, security: 4688; another service is
+    skipped).  Other rules are counted as not applicable, never run against the
+    wrong events.  A rule that can never be TRUE with the fields Sentinel keeps
+    is skipped and counted, not reported as applied.
   * Sentinel does not keep every field of an event (no ParentCommandLine,
     OriginalFileName, ...).  A test on a field Sentinel lacks is *unknown*, and
     the condition is evaluated in three-valued logic: an event is tagged only
@@ -76,35 +79,55 @@ def _or(results) -> bool | None:
 # name -> (value, exact).  exact=False: a match proves the rule's test, a miss
 # does not (the log holds a different form of the value).
 
+#
+# A field the event does not have (RawEvent.missing) is left out, i.e.
+# unknown: the parser stores it as "" or 0, which the log never recorded.  Old
+# Security 4688 events have no ParentProcessName at all; reading that as an
+# empty parent made "not ParentImage contains X" TRUE and tagged every one of
+# them (Codex audit A2-02).  A field that is present but empty is a real
+# empty value.
+
+# The field names each event type can have (lower case), for the check that a
+# rule can be evaluated at all (see _possible).
+_FIELDS_BY_ID: dict[int, frozenset[str]] = {
+    1: frozenset({"computer", "eventid", "image", "parentimage", "commandline", "user",
+                  "integritylevel", "hashes", "processguid", "parentprocessguid",
+                  "processid", "parentprocessid"}),
+    4688: frozenset({"computer", "eventid", "image", "newprocessname", "parentimage",
+                     "parentprocessname", "commandline", "subjectusername", "user"}),
+}
+
+
 def event_fields(ev: "RawEvent") -> dict[str, tuple[str, bool]]:
     f: dict[str, tuple[str, bool]] = {}
+    missing = getattr(ev, "missing", frozenset())
+
+    def put(name: str, value, source: str, exact: bool = True) -> None:
+        if source not in missing:
+            f[name] = (value, exact)
+
     if ev.host:
         f["Computer"] = (ev.host, True)
     f["EventID"] = (str(ev.event_id), True)
     if ev.event_id == 1:                       # Sysmon: the fields Sigma names
-        f.update({
-            "Image":             (ev.process_path, True),
-            "ParentImage":       (ev.parent_path, True),
-            "CommandLine":       (ev.cmdline, True),
-            "User":              (ev.user, True),
-            "IntegrityLevel":    (ev.integrity_level, True),
-            "Hashes":            (ev.image_hash, True),
-            "ProcessGuid":       (ev.process_guid, True),
-            "ParentProcessGuid": (ev.parent_guid, True),
-            "ProcessId":         (str(ev.pid), True),
-            "ParentProcessId":   (str(ev.ppid), True),
-        })
+        for name, value in (("Image", ev.process_path), ("ParentImage", ev.parent_path),
+                            ("CommandLine", ev.cmdline), ("User", ev.user),
+                            ("IntegrityLevel", ev.integrity_level), ("Hashes", ev.image_hash),
+                            ("ProcessGuid", ev.process_guid),
+                            ("ParentProcessGuid", ev.parent_guid),
+                            ("ProcessId", str(ev.pid)), ("ParentProcessId", str(ev.ppid))):
+            put(name, value, name)
     elif ev.event_id == 4688:                  # Security: Sigma's field mapping
         for name in ("Image", "NewProcessName"):
-            f[name] = (ev.process_path, True)
+            put(name, ev.process_path, "NewProcessName")
         for name in ("ParentImage", "ParentProcessName"):
-            f[name] = (ev.parent_path, True)
+            put(name, ev.parent_path, "ParentProcessName")
         # Empty when command-line auditing is off: unknown, not "".
         if ev.cmdline:
-            f["CommandLine"] = (ev.cmdline, True)
+            put("CommandLine", ev.cmdline, "CommandLine")
         if ev.user:
-            f["SubjectUserName"] = (ev.user, True)
-            f["User"] = (ev.user, False)
+            put("SubjectUserName", ev.user, "SubjectUserName")
+            put("User", ev.user, "SubjectUserName", False)
     return f
 
 
@@ -234,6 +257,8 @@ def _compile(node) -> Callable[[dict], bool | None]:
             def _null(f):
                 got = _lookup(f, name)
                 if got is None:
+                    # Not recorded (a field Sentinel does not keep, or one the
+                    # event lacks): the real value is unknown, not null.
                     return None
                 return True if got[0] == "" else (False if got[1] else None)
             return _null
@@ -297,6 +322,12 @@ def _string_needs(value) -> list[str] | None:
     if isinstance(value, T.SigmaString):
         parts = [p for p in value.s if isinstance(p, str)]
         longest = max(parts, key=len, default="")
+        # Not plain ASCII: the case-insensitive regex can match letters that
+        # str.lower() does not produce (a long s matches "s", a dotted capital I
+        # matches "i"), so the text is no safe filter: always evaluate the rule
+        # (Codex audit A2-04).
+        if not longest.isascii():
+            return None
         return [longest.lower()] if len(longest) >= 3 else None
     return None
 
@@ -321,6 +352,58 @@ def _needs(node):
         texts = _string_needs(node.value)
         return None if texts is None else [("*", t) for t in texts]
     return None                                 # NOT, null, exists, regex, ...
+
+
+# ── can the rule be TRUE at all on an event type? ─────────────────────────────
+# _possible(node, known) -> the results the node can take ({True, False, None})
+# when the event can only have the fields in `known`.  A test on a field the
+# event type never has is always unknown, so a rule built only on such fields
+# can never tag: it is counted as skipped, not as applied (Codex audit A2-05).
+
+_T, _F, _N = True, False, None
+_ALL = frozenset({_T, _F, _N})
+
+
+def _possible(node, known: frozenset[str]) -> frozenset:
+    import sigma.conditions as C
+    import sigma.types as T
+
+    if isinstance(node, (C.ConditionAND, C.ConditionOR)):
+        kids = [_possible(a, known) for a in node.args]
+        out = set()
+        if isinstance(node, C.ConditionAND):
+            if all(_T in k for k in kids):
+                out.add(_T)
+            if any(_F in k for k in kids):
+                out.add(_F)
+        else:
+            if any(_T in k for k in kids):
+                out.add(_T)
+            if all(_F in k for k in kids):
+                out.add(_F)
+        if any(_N in k for k in kids):
+            out.add(_N)
+        return frozenset(out)
+    if isinstance(node, C.ConditionNOT):
+        kid = _possible(node.args[0], known)
+        return frozenset({(None if r is None else not r) for r in kid})
+    if isinstance(node, C.ConditionFieldEqualsValueExpression):
+        names = [node.field]
+        if isinstance(node.value, T.SigmaFieldReference):
+            names.append(node.value.field)
+        return _ALL if all(str(n).lower() in known for n in names) else frozenset({_N})
+    if isinstance(node, C.ConditionValueExpression):
+        return frozenset({_T, _N})              # a keyword: a miss is unknown
+    return _ALL
+
+
+# logsource service -> the event IDs a rule for it may run on (Codex audit
+# A2-03: a Security-only rule was run against Sysmon events).
+_SERVICE_IDS: dict[str | None, tuple[int, ...]] = {
+    None: _PROCESS_CREATE_IDS,
+    "sysmon": (1,),
+    "security": (4688,),
+}
 
 
 def _candidates(index: dict, fields: dict) -> set[int]:
@@ -365,7 +448,7 @@ class SigmaTagger:
     """
 
     def __init__(self, rules_dir: Path) -> None:
-        # (title, technique_ids, evaluator, needs-or-None)
+        # (title, technique_ids, evaluator, needs-or-None, event IDs it runs on)
         self._rules: list[tuple] = []
         self._mode: str = "none"
         self.status: dict = {
@@ -425,6 +508,10 @@ class SigmaTagger:
             if (ls.category or "") != "process_creation" or (ls.product or "windows") != "windows":
                 skipped["not a Windows process_creation rule"] += 1
                 continue
+            service = (ls.service or "").lower() or None
+            if service not in _SERVICE_IDS:
+                skipped[f"logsource service {service!r} (only sysmon and security are read)"] += 1
+                continue
             techniques = sorted({
                 str(t).lower().replace("attack.", "", 1).upper()
                 for t in (rule.tags or [])
@@ -438,6 +525,10 @@ class SigmaTagger:
                 evals = [_compile(tree) for tree in trees]
                 alts = [_needs(tree) for tree in trees]
                 needs = None if any(a is None for a in alts) else [x for a in alts for x in a]
+                # The event types the rule is written for (service) and on
+                # which it can be TRUE at all (the fields Sentinel keeps).
+                ids = tuple(i for i in _SERVICE_IDS[service]
+                            if any(_T in _possible(tree, _FIELDS_BY_ID[i]) for tree in trees))
             except _Unsupported as exc:
                 skipped[f"uses {exc}"] += 1
                 logger.info("Sigma rule %r not applied: uses %s", title, exc)
@@ -446,13 +537,18 @@ class SigmaTagger:
                 skipped["rule pySigma cannot read"] += 1
                 logger.warning("Skipping Sigma rule %r: %s", title, exc)
                 continue
+            if not ids:
+                skipped["cannot match: needs fields Sentinel does not keep"] += 1
+                logger.info("Sigma rule %r not applied: every test is on a field Sentinel does "
+                            "not keep for its events", title)
+                continue
             ev_fn = evals[0] if len(evals) == 1 else (lambda f, _e=evals: _or(e(f) for e in _e))
-            self._rules.append((title, techniques, ev_fn, needs))
+            self._rules.append((title, techniques, ev_fn, needs, frozenset(ids)))
 
         # Rules indexed by the text they need; the rest are always evaluated.
         by: dict[str, dict[str, list[int]]] = {}
         self._always: list[int] = []
-        for i, (_t, _tech, _fn, needs) in enumerate(self._rules):
+        for i, (_t, _tech, _fn, needs, _ids) in enumerate(self._rules):
             if needs is None:
                 self._always.append(i)
                 continue
@@ -475,8 +571,8 @@ class SigmaTagger:
         cand.update(self._always)
         out = []
         for i in sorted(cand):
-            title, tech, fn, _needs_ = self._rules[i]
-            if fn(fields) is True:
+            title, tech, fn, _needs_, ids = self._rules[i]
+            if ev.event_id in ids and fn(fields) is True:
                 out.append((title, tech))
         return out
 

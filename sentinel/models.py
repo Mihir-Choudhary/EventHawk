@@ -29,6 +29,10 @@ class RawEvent:
     attck_tags: list[str] = field(default_factory=list)
     flags: set[str] = field(default_factory=set)
     record_id: int = 0       # EventRecordID; identifies copies of the same record
+    # EventData names the event does not have (the fields above then hold ""
+    # or 0, which is not a value the log recorded).  Set for Sysmon 1 and
+    # Security 4688, where Sigma rules read them (Codex audit A2-02).
+    missing: frozenset[str] = frozenset()
 
 
 @dataclass

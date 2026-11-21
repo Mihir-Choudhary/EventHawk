@@ -192,7 +192,12 @@ def main() -> int:
 
     t = ST.SigmaTagger(d)
     st = t.status
-    check("14 rules applied", st["rules_applied"] == 14, t.summary())
+    # r03 and r15 can never be TRUE (every path needs ParentCommandLine or
+    # OriginalFileName, which Sentinel does not keep): skipped and counted,
+    # not "applied" (Codex audit A2-05).  They still tag nothing below.
+    check("12 rules applied", st["rules_applied"] == 12, t.summary())
+    check("r03 and r15 skipped: cannot match with Sentinel's fields",
+          st["skipped"].get("cannot match: needs fields Sentinel does not keep") == 2, str(st["skipped"]))
     check("skipped by reason: other category 1, no technique 1, unreadable 1",
           st["skipped"].get("not a Windows process_creation rule") == 1
           and st["skipped"].get("no ATT&CK technique tag") == 1
