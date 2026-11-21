@@ -16927,6 +16927,18 @@ class MainWindow(QMainWindow):
             if isinstance(x, dict):
                 out = {}
                 for k2, x2 in x.items():
+                    if k2 == "#attributes" and isinstance(x2, dict):
+                        # Attribute values are data (a certificate's
+                        # Thumbprint, AccountName, ProcessName...): they were
+                        # hidden here while every export showed them.  Only
+                        # namespace declarations are left out; the rest are
+                        # shown as "@name: value", as in the CSV / HTML text.
+                        a = {ak: av for ak, av in x2.items()
+                             if not str(ak).startswith("xmlns")
+                             and av is not None and str(av).strip()}
+                        if a:
+                            out[k2] = a
+                        continue
                     if k2 != "#text" and str(k2).startswith("#"):
                         continue
                     x2 = _clean(x2)

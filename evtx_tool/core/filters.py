@@ -42,18 +42,34 @@ logger = logging.getLogger(__name__)
 # the EventData/UserData (including nested and named <Data Name=…> elements),
 # not just the handful of pre-extracted metadata columns.
 
-def _walk_searchable_values(obj, out: list) -> None:
+# Elements whose Name attribute is a field label, not a value.
+_LABEL_PARENTS = frozenset({"Data", "ComplexData"})
+
+
+def _walk_searchable_values(obj, out: list, parent: str = "") -> None:
     if isinstance(obj, dict):
         for k, v in obj.items():
-            # '#attributes' holds field-name labels (e.g. <Data Name="X">), not
-            # data values — skip it so search stays values-only.  '#text' IS the
-            # element's value and is recursed into normally.
             if k == "#attributes":
+                # An element's attributes can hold data (a certificate's
+                # Thumbprint, AccountName, ProcessName; an EKU's OID): those
+                # were unsearchable.  Left out: namespace declarations, and the
+                # Name of a <Data> / <ComplexData> element, which is a field
+                # label -- search stays values-only.
+                if isinstance(v, dict):
+                    for ak, av in v.items():
+                        ak = str(ak)
+                        if ak.startswith("xmlns"):
+                            continue
+                        if ak == "Name" and parent in _LABEL_PARENTS:
+                            continue
+                        _walk_searchable_values(av, out, ak)
                 continue
-            _walk_searchable_values(v, out)
+            # '#text' IS the element's value: it keeps the element's name as
+            # parent; a list keeps the key it hangs under (Data: [...]).
+            _walk_searchable_values(v, out, parent if k == "#text" else str(k))
     elif isinstance(obj, (list, tuple)):
         for v in obj:
-            _walk_searchable_values(v, out)
+            _walk_searchable_values(v, out, parent)
     elif obj is not None:
         out.append(str(obj))
 

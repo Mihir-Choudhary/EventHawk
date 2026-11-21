@@ -76,7 +76,9 @@ def main() -> int:
     check("unnamed items one per line (unchanged)", f({"#text": ["v1", "v2"]}) == "v1\nv2")
     check("blank unnamed items dropped (unchanged)", f({"#text": ["v1", None, "  ", "v2"]}) == "v1\nv2")
     check("#text scalar stripped (unchanged)", f({"#text": "  v "}) == "v")
-    check("#text with attributes -> text only (unchanged)", f({"#text": "v", "#attributes": {"a": "1"}}) == "v")
+    # Attribute values are data (a certificate's Thumbprint): shown, as in the exports.
+    check("#text with attributes -> text and @attribute", f({"#text": "v", "#attributes": {"a": "1"}}) == "v\n@a: 1")
+    check("xmlns attribute still hidden", f({"#text": "v", "#attributes": {"xmlns": "urn:x"}}) == "v")
     check("plain list (unchanged)", f(["a", "b"]) == "a\nb")
     check("plain string stripped (unchanged)", f("  s ") == "s")
     check("0 is shown (unchanged)", f(0) == "0")
